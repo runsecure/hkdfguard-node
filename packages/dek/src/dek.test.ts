@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
-import { chmodSync, mkdtempSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, it, mock } from 'node:test';
 import {
   AuthenticationFailedError, CACHE_AAD_PREFIX, ClosedError, configurationAad, configurationPurpose, EncryptionLimitReachedError, HkdfGuardError, InvalidArgumentError,
@@ -9,7 +9,7 @@ import {
   type DataEncryptionKey as DataEncryptionKeyContract, type DataProtector,
 } from '@runsecure/hkdfguard-abstractions';
 import { capturingLogger, FakeKeyWrapper, RecordingFactory, TestProvider } from '@runsecure/hkdfguard-test-support';
-import { buildKeyRing, readKeyFile, type KeyRingConfig } from './build.js';
+import { buildKeyRing, readKeyFile, verifyKeyFileLocation, type KeyFileSystem, type KeyRingConfig } from './build.js';
 import { DefaultFormatProvider, InvalidFormatError } from './format.js';
 import { DataEncryptionKey } from './key.js';
 import { DuplicateVersionError, KeyRing } from './keyring.js';
@@ -390,6 +390,67 @@ describe('buildKeyRing', () => {
     } finally {
       await ring.close();
     }
+  });
+
+  it('follows a symbolic link to a key file, as a Kubernetes secret mount uses', { skip: process.platform === 'win32' }, async () => {
+    const target = keyFile('wrapped');
+    const link = join(mkdtempSync(join(tmpdir(), 'hkdfguard-dek-')), 'key.link');
+    symlinkSync(target, link);
+    assert.equal(new TextDecoder().decode(await readKeyFile(link)), 'wrapped');
+  });
+
+  it('refuses a key file under a folder its group or others can write, unless the folder is sticky', { skip: process.platform === 'win32' }, async () => {
+    const invalid = (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE' && e.message.includes('could replace');
+    for (const mode of [0o770, 0o707, 0o777]) {
+      const path = keyFile('wrapped');
+      chmodSync(dirname(path), mode);
+      await assert.rejects(readKeyFile(path), invalid, mode.toString(8));
+    }
+    const path = keyFile('wrapped');
+    chmodSync(dirname(path), 0o1777);
+    assert.equal((await readKeyFile(path)).length, 7);
+  });
+
+  it('only reads a key file: its contents, mode and times are unchanged', { skip: process.platform === 'win32' }, async () => {
+    const path = keyFile('wrapped', 100);
+    chmodSync(path, 0o400);
+    const before = statSync(path);
+    await readKeyFile(path);
+    const ring = await buildKeyRing({ ...base(new RecordingFactory()), keyFiles: { 1: path } });
+    await ring.close();
+    const after = statSync(path);
+    assert.equal(readFileSync(path, 'utf8'), 'wrapped');
+    assert.equal(after.mode, before.mode);
+    assert.equal(after.mtimeMs, before.mtimeMs);
+    assert.equal(after.uid, before.uid);
+  });
+
+  it("checks the owner of the key file, every folder above it, and any link to it", async () => {
+    // A simulated filesystem: tests can't create files owned by another user.
+    const me = 501, other = 502;
+    const tree = (entries: Record<string, { uid?: number; mode?: number; type?: 'dir' | 'file' | 'link'; to?: string }>): KeyFileSystem => ({
+      lstat: async (p) => {
+        const e = entries[p];
+        if (e === undefined) throw Object.assign(new Error(`ENOENT ${p}`), { code: 'ENOENT' });
+        const type = e.type ?? 'dir';
+        return { uid: e.uid ?? 0, mode: e.mode ?? 0o755, isDirectory: () => type === 'dir', isFile: () => type === 'file', isSymbolicLink: () => type === 'link' };
+      },
+      realpath: async (p) => entries[p]?.to ?? p,
+    });
+    const base = { '/': {}, '/etc': {}, '/etc/app': {}, '/etc/app/key.v1': { type: 'file' as const, mode: 0o600 } };
+    const refused = (fragment: string) => (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE' && e.message.includes(fragment);
+
+    assert.equal(await verifyKeyFileLocation('/etc/app/key.v1', me, tree(base)), '/etc/app/key.v1');
+    assert.equal(await verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc/app': { uid: me, mode: 0o700 }, '/etc/app/key.v1': { type: 'file', uid: me } })), '/etc/app/key.v1');
+    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc/app/key.v1': { type: 'file', uid: other } })), refused('owned by uid 502'));
+    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc/app': { uid: other } })), refused("under '/etc/app', which is owned by uid 502"));
+    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc': { uid: other } })), refused("under '/etc', which is owned by uid 502"));
+    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/': { mode: 0o775 } })), refused("under '/'"));
+
+    const linked = { ...base, '/srv': {}, '/srv/key': { type: 'link' as const, to: '/etc/app/key.v1' } };
+    assert.equal(await verifyKeyFileLocation('/srv/key', me, tree(linked)), '/etc/app/key.v1');
+    await assert.rejects(verifyKeyFileLocation('/srv/key', me, tree({ ...linked, '/srv/key': { type: 'link', uid: other, to: '/etc/app/key.v1' } })), refused('symbolic link that is owned by uid 502'));
+    await assert.rejects(verifyKeyFileLocation('/srv/key', me, tree({ ...linked, '/srv': { mode: 0o777 } })), refused("under '/srv'"));
   });
 
   it('uses the configured format provider', async () => {

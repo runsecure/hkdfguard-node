@@ -142,6 +142,19 @@ describe('keyRingOptionsFromJson', () => {
       { ServiceName: 'svc', EphemeralKeys: [1], FailOpenOnRefreshFailure: true });
   });
 
+  it('never repeats a value or the document in its errors', () => {
+    const secret = 'Password=hunter2';
+    for (const document of [
+      `{"HkdfGuard":{"KeyRefreshInterval":"${secret}"}}`, `{"HkdfGuard":{"FailOpenOnRefreshFailure":"${secret}"}}`,
+      `{"HkdfGuard":{"EphemeralKeys":["${secret}"]}}`, `{"HkdfGuard":{"KeyFiles":[{"Version":"${secret}","Path":"/k"}]}}`,
+      `{"HkdfGuard":{"ServiceName":"${secret}"},}`, `{"ConnectionStrings":"${secret}" "HkdfGuard":{}}`,
+    ]) {
+      assert.throws(() => keyRingOptionsFromJson(document), (e: unknown) => e instanceof HkdfGuardError && !e.message.includes('hunter2'), document);
+    }
+    assert.throws(() => keyRingOptionsFromJson('{"HkdfGuard":{"KeyRefreshInterval":"sixty"}}'), /'HkdfGuard:KeyRefreshInterval' must be an integer, got a string\./);
+    assert.throws(() => keyRingOptionsFromJson('{"HkdfGuard":{"KeyRefreshInterval":1.5}}'), /got a number with a fraction\./);
+  });
+
   it('reports a missing section, bad JSON, or a value of the wrong type', () => {
     const cases: [string, string][] = [
       ['{"Other":{}}', 'HkdfGuard'], ['{"Security":{}}', 'Security:HkdfGuard'], ['{"HkdfGuard":', 'HkdfGuard'],

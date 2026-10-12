@@ -1,4 +1,6 @@
-import { open } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, open, realpath } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import {
   HkdfGuardError, InvalidArgumentError, MAX_WRAPPED_KEY_BYTES, RefreshFailurePolicy, validateServiceName,
   type CryptoProvider, type CryptoProviderFactory, type EncryptedFormatProvider, type KeyWrapper,
@@ -12,6 +14,8 @@ const DAY_MS = 24 * HOUR_MS;
 
 // Group- and other-write: anyone with either could choose the key new data is encrypted under.
 const KEY_FILE_FORBIDDEN_MODE = 0o022;
+// A sticky directory (/tmp) lets others create entries, but not rename or delete anyone else's.
+const STICKY_BIT = 0o1000;
 
 /** How often a ring with ephemeral keys rotates them, unless configured otherwise. */
 export const DEFAULT_EPHEMERAL_KEY_ROTATION_HOURS = 24;
@@ -35,7 +39,7 @@ export const MAX_KEY_FILE_MAX_AGE_DAYS = 3650;
 /** The fraction of the maximum age after which a warning is logged: 90%, about five weeks of a year. */
 export const KEY_FILE_AGE_WARNING_FRACTION = 0.9;
 
-/** A key file that is empty, or larger than MAX_WRAPPED_KEY_BYTES. */
+/** A key file that is empty, larger than MAX_WRAPPED_KEY_BYTES, or in a location someone else could replace it in. */
 export class InvalidKeyFileError extends HkdfGuardError {
   constructor(message: string) {
     super('ERR_HKDFGUARD_INVALID_KEY_FILE', message);
@@ -136,7 +140,8 @@ function entries(keyFiles: KeyRingConfig['keyFiles']): [number, string][] {
 
 /**
  * Reads a wrapped DEK, refusing anything that isn't a regular file, one its group or other users can
- * write (outside Windows, whose ACLs are the owner's to set), an empty file, or one over
+ * write, or - outside Windows, whose ACLs the native tool sets - one in a location anyone but root
+ * or this process's user could replace it in (see {@link verifyKeyFileLocation}), an empty file, or one over
  * MAX_WRAPPED_KEY_BYTES - never reading more than one byte past the limit, so a wrong path (a log, a
  * device) can't make startup read without bound. The checks are made on the opened file, so they
  * describe what is read, not a path that may have changed in between.
@@ -145,16 +150,75 @@ export async function readKeyFile(path: string): Promise<Uint8Array> {
   return (await readKeyFileWithTime(path)).wrapped;
 }
 
+/** The parts of lstat and realpath the location check uses; replaced in tests. @internal */
+export interface KeyFileSystem {
+  lstat(path: string): Promise<{ uid: number; mode: number; isDirectory(): boolean; isSymbolicLink(): boolean; isFile(): boolean }>;
+  realpath(path: string): Promise<string>;
+}
+
+const nodeFileSystem: KeyFileSystem = { lstat, realpath };
+
+function ownerProblem(uid: number, euid: number): string | undefined {
+  return uid === 0 || uid === euid ? undefined : `is owned by uid ${uid}; only root or this process's user (uid ${euid}) may own a key file and the folders above it`;
+}
+
+/**
+ * Checks where a key file lives, outside Windows, and returns its real path. Anyone who can replace
+ * a key file chooses the key new data is encrypted under, so the file and every folder above it, up
+ * to /, must be owned by root or by this process's user, and no folder may be writable by its
+ * group or by others unless it is sticky (as /tmp is). A symbolic link is followed - Kubernetes
+ * mounts secrets through them - but must itself be owned by root or this user, and the folders
+ * holding it are held to the same rule. Only reads: nothing about the file is changed.
+ * @internal Exported for tests.
+ */
+export async function verifyKeyFileLocation(path: string, euid: number, fs: KeyFileSystem = nodeFileSystem): Promise<string> {
+  const absolute = resolve(path);
+  const link = await fs.lstat(absolute);
+  if (link.isSymbolicLink()) {
+    const problem = ownerProblem(link.uid, euid);
+    if (problem !== undefined) throw new InvalidKeyFileError(`Key file '${path}' is a symbolic link that ${problem}.`);
+  }
+  const real = await fs.realpath(absolute);
+  const target = real === absolute ? link : await fs.lstat(real);
+  const problem = ownerProblem(target.uid, euid);
+  if (problem !== undefined) throw new InvalidKeyFileError(`Key file '${path}' ${problem}.`);
+
+  await verifyFolders(dirname(real), path, euid, fs);
+  if (link.isSymbolicLink()) await verifyFolders(await fs.realpath(dirname(absolute)), path, euid, fs);
+  return real;
+}
+
+async function verifyFolders(directory: string, path: string, euid: number, fs: KeyFileSystem): Promise<void> {
+  for (let folder = directory; ; folder = dirname(folder)) {
+    const status = await fs.lstat(folder);
+    if (!status.isDirectory()) throw new InvalidKeyFileError(`Key file '${path}' is under '${folder}', which is not a folder.`);
+    const problem = ownerProblem(status.uid, euid);
+    if (problem !== undefined) throw new InvalidKeyFileError(`Key file '${path}' is under '${folder}', which ${problem}.`);
+    if ((status.mode & KEY_FILE_FORBIDDEN_MODE) !== 0 && (status.mode & STICKY_BIT) === 0) {
+      const mode = (status.mode & 0o7777).toString(8).padStart(4, '0');
+      throw new InvalidKeyFileError(`Key file '${path}' is under '${folder}', which its group or others can write (mode ${mode}), so they could replace the key file.`);
+    }
+    if (dirname(folder) === folder) return;
+  }
+}
+
 /** {@link readKeyFile}, with the opened file's modification time - the key file's age. */
 async function readKeyFileWithTime(path: string): Promise<{ wrapped: Uint8Array; modifiedMs: number }> {
-  const file = await open(path, 'r');
+  const unix = process.platform !== 'win32';
+  // Outside Windows the real path is checked, then opened without following a link, so what is read
+  // is the file that was checked. Windows ACLs are not checked here (see the getting-started guide).
+  const file = unix
+    ? await open(await verifyKeyFileLocation(path, process.geteuid!()), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    : await open(path, 'r');
   try {
     const stats = await file.stat();
     if (!stats.isFile()) throw new InvalidKeyFileError(`Key file '${path}' is not a regular file.`);
-    if (process.platform !== 'win32' && (stats.mode & KEY_FILE_FORBIDDEN_MODE) !== 0) {
+    if (unix && (stats.mode & KEY_FILE_FORBIDDEN_MODE) !== 0) {
       const mode = (stats.mode & 0o777).toString(8).padStart(4, '0');
       throw new InvalidKeyFileError(`Key file '${path}' is writable by its group or by others (mode ${mode}); only its owner may write it.`);
     }
+    const owner = unix ? ownerProblem(stats.uid, process.geteuid!()) : undefined;
+    if (owner !== undefined) throw new InvalidKeyFileError(`Key file '${path}' ${owner}.`);
     const buffer = new Uint8Array(MAX_WRAPPED_KEY_BYTES + 1);
     let total = 0;
     for (;;) {
