@@ -1,0 +1,24 @@
+{
+  "name": "@runsecure/hkdfguard-diagnostics",
+  "version": "0.1.0",
+  "description": "HkdfGuard OpenTelemetry tracing, metrics and logging names and helpers shared by every HkdfGuard package.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/**/*.test*"
+  ],
+  "scripts": {
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@runsecure/hkdfguard-test-support": "0.0.0"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1"
+  }
+}
