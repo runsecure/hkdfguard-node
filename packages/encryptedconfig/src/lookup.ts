@@ -1,4 +1,4 @@
-import { cacheMatchKey, HkdfGuardError, InvalidArgumentError } from '@runsecure/hkdfguard-abstractions';
+import { cacheMatchKey, HkdfGuardError, InvalidArgumentError, jsonErrorLocation } from '@runsecure/hkdfguard-abstractions';
 import type { Lookup } from './reader.js';
 
 /** Two configuration keys that differ only in ASCII case, which would make a lookup ambiguous. */
@@ -32,19 +32,26 @@ export function mapLookup(values: Readonly<Record<string, string>> | ReadonlyMap
  * Reads keys from environment variables the way .NET's environment configuration does: each ':' in
  * the key becomes "__", after `prefix` - so with prefix "APP_", "ConnectionStrings:Admin" reads
  * APP_ConnectionStrings__Admin. Variable names are matched exactly, as the environment does on Linux
- * and macOS.
+ * and macOS. Only a variable's own string value is returned, never an inherited property such as
+ * "constructor".
  */
 export function envLookup(prefix = '', env: Readonly<Record<string, string | undefined>> = process.env): Lookup {
-  return (key) => env[prefix + key.replaceAll(':', '__')];
+  return (key) => {
+    const name = prefix + key.replaceAll(':', '__');
+    const value = Object.hasOwn(env, name) ? env[name] : undefined;
+    return typeof value === 'string' ? value : undefined;
+  };
 }
 
 /**
  * Flattens a JSON document into configuration keys the way .NET's JSON configuration does: nested
  * object members join with ':' ("ConnectionStrings:Admin") and array elements use their index
  * ("Hosts:0"). Strings are taken as they are, numbers exactly as written ("1.50" stays "1.50"),
- * booleans as "true" or "false", and null as "". Pass the result to mapLookup.
+ * booleans as "true" or "false", and null as "". Pass the result to mapLookup. Every key -
+ * "__proto__" included - is an ordinary entry of the result.
  *
- * @throws InvalidArgumentError the document is not a JSON object.
+ * @throws InvalidArgumentError the document is not a JSON object. Its message gives only where the
+ * JSON is broken, never any of the document, which holds secrets.
  * @throws DuplicateKeyError two keys differ only in ASCII case.
  */
 export function flattenJson(document: string): Record<string, string> {
@@ -55,7 +62,7 @@ export function flattenJson(document: string): Record<string, string> {
       return typeof value === 'number' && context?.source !== undefined ? new RawNumber(context.source) : value;
     } as (this: unknown, key: string, value: unknown) => unknown);
   } catch (error) {
-    throw new InvalidArgumentError(`Invalid JSON: ${(error as Error).message}`, 'ERR_HKDFGUARD_INVALID_JSON');
+    throw new InvalidArgumentError(`Invalid JSON${jsonErrorLocation(error)}.`, 'ERR_HKDFGUARD_INVALID_JSON');
   }
   if (root === null || typeof root !== 'object' || Array.isArray(root)) {
     throw new InvalidArgumentError('Invalid JSON: the document must be an object.', 'ERR_HKDFGUARD_INVALID_JSON');
@@ -75,7 +82,10 @@ export function flattenJson(document: string): Record<string, string> {
     const other = seen.get(matchKey(prefix));
     if (other !== undefined) throw new DuplicateKeyError(`'${prefix}' and '${other}' differ only in case.`);
     seen.set(matchKey(prefix), prefix);
-    values[prefix] = node === null ? '' : node instanceof RawNumber ? node.source : String(node);
+    // Defined, not assigned, so a "__proto__" key is an entry rather than a prototype change.
+    Object.defineProperty(values, prefix, {
+      value: node === null ? '' : node instanceof RawNumber ? node.source : String(node), enumerable: true, writable: true, configurable: true,
+    });
   };
   walk('', root);
   return values;

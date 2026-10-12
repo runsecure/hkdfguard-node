@@ -42,10 +42,13 @@ export class AesGcmPipelineDataProtector implements PipelineDataProtector {
     return this.#session.budget.count;
   }
 
-  /** The key, base64-encoded as ASCII bytes: encoded once, into a buffer zeroed on close. */
+  /**
+   * The key, base64-encoded as ASCII bytes: encoded once, into a buffer zeroed on close. Encoded
+   * byte to byte, so the key never exists as a string, which could not be zeroed.
+   */
   keyBase64(): Uint8Array {
     this.#requireOpen();
-    this.#base64 ??= encoder.encode(Buffer.from(this.#key.buffer, this.#key.byteOffset, this.#key.byteLength).toString('base64'));
+    this.#base64 ??= base64Bytes(this.#key);
     return this.#base64;
   }
 
@@ -109,4 +112,40 @@ export class AesGcmPipelineDataProtector implements PipelineDataProtector {
       throw new ClosedError('This pipeline data protector has been closed.');
     }
   }
+}
+
+/** The ASCII code of the standard-base64 digit for `v` (0-63), computed without branches or a table indexed by secret bits. */
+function base64Digit(v: number): number {
+  let c = v + 65; //              0-25 -> 'A'-'Z'
+  c += ((25 - v) >> 8) & 6; //    26-51 -> 'a'-'z'
+  c -= ((51 - v) >> 8) & 75; //   52-61 -> '0'-'9'
+  c -= ((61 - v) >> 8) & 15; //   62 -> '+'
+  c += ((62 - v) >> 8) & 3; //    63 -> '/'
+  return c;
+}
+
+/**
+ * `data` as padded standard base64, written straight into a new byte buffer - never through a
+ * string - in time that depends only on its length. @internal Exported for tests.
+ */
+export function base64Bytes(data: Uint8Array): Uint8Array {
+  const out = new Uint8Array(Math.ceil(data.length / 3) * 4);
+  let o = 0;
+  let i = 0;
+  for (; i + 3 <= data.length; i += 3) {
+    const n = (data[i]! << 16) | (data[i + 1]! << 8) | data[i + 2]!;
+    out[o++] = base64Digit((n >> 18) & 63);
+    out[o++] = base64Digit((n >> 12) & 63);
+    out[o++] = base64Digit((n >> 6) & 63);
+    out[o++] = base64Digit(n & 63);
+  }
+  const remaining = data.length - i;
+  if (remaining > 0) {
+    const n = (data[i]! << 16) | (remaining === 2 ? data[i + 1]! << 8 : 0);
+    out[o++] = base64Digit((n >> 18) & 63);
+    out[o++] = base64Digit((n >> 12) & 63);
+    out[o++] = remaining === 2 ? base64Digit((n >> 6) & 63) : 0x3d;
+    out[o++] = 0x3d;
+  }
+  return out;
 }

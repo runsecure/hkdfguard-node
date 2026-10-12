@@ -124,6 +124,37 @@ describe('lookups', () => {
     assert.equal(lookup('ConnectionStrings:Missing'), undefined);
   });
 
+  it('envLookup returns only own string values, never an inherited property', () => {
+    for (const env of [{}, process.env]) {
+      const lookup = envLookup('', env);
+      for (const inherited of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf']) {
+        assert.equal(lookup(inherited), undefined, inherited);
+      }
+    }
+    const name = 'HKDFGUARD_TEST_ENV_LOOKUP';
+    process.env[name] = 'set';
+    try {
+      assert.equal(envLookup()(name), 'set');
+    } finally {
+      delete process.env[name];
+    }
+    assert.equal(envLookup('', { odd: 7 } as unknown as Record<string, string>)('odd'), undefined);
+  });
+
+  it('flattenJson keeps a "__proto__" key as an ordinary entry', () => {
+    const values = flattenJson('{"__proto__":{"Secret":"x"},"constructor":"y"}');
+    assert.equal(values['__proto__:Secret'], 'x');
+    assert.equal(values['constructor'], 'y');
+    assert.equal(mapLookup(values)('__PROTO__:secret'), 'x');
+  });
+
+  it('never repeats the document in a JSON error', () => {
+    for (const document of ['{"Admin":"Password=hunter2;","x":tru}', '{"Admin":"Password=hunter2;"}}', '{"Admin":"Password=hunter2;", 7}', '"Password=hunter2"']) {
+      assert.throws(() => flattenJson(document), (e: unknown) => e instanceof HkdfGuardError && !e.message.includes('hunter2') && !e.message.includes('Password'), document);
+    }
+    assert.throws(() => flattenJson('{"a":1,}'), /^InvalidArgumentError: Invalid JSON at (position \d+|line \d+ column \d+)\.$/);
+  });
+
   it('flattenJson flattens like .NET configuration, keeping numbers as written', () => {
     assert.deepEqual(flattenJson(`{
       "ConnectionStrings": { "Admin": "enc::v1::AAAA", "Reporting": "plain" },

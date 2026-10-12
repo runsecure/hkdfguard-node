@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import {
   AuthenticationFailedError, CACHE_AAD_PREFIX, cacheAad, CONFIGURATION_PURPOSE_PREFIX, configurationAad, configurationPurpose,
   DEFAULT_MAX_REFRESH_FAILURES, HkdfGuardError, InvalidCacheNameError, InvalidConfigurationKeyError, InvalidServiceNameError,
-  isValidServiceName, isZero, KeyNotFoundError, MAX_SERVICE_NAME_LENGTH, MAX_WRAPPED_KEY_BYTES, RefreshFailurePolicy,
+  isValidServiceName, isZero, jsonErrorLocation, jsonKind, KeyNotFoundError, MAX_SERVICE_NAME_LENGTH, MAX_WRAPPED_KEY_BYTES, RefreshFailurePolicy,
   serviceNameProblem, validateServiceName, wipe,
 } from './index.js';
 
@@ -152,5 +152,24 @@ describe('errors', () => {
     assert.equal(error.name, 'KeyNotFoundError');
     assert.equal(error.cause, cause);
     assert.equal(new AuthenticationFailedError().code, 'ERR_HKDFGUARD_AUTHENTICATION_FAILED');
+  });
+});
+
+describe('JSON error helpers', () => {
+  it('give a location without any of the document', () => {
+    for (const document of ['{"a":"secret",}', '{"a":"secret"}}', '{"a":"secret" "b"}', '{"a":\n"secret",\n}']) {
+      let caught: unknown;
+      try { JSON.parse(document); } catch (error) { caught = error; }
+      const location = jsonErrorLocation(caught);
+      assert.match(location, /^ at (position \d+|line \d+ column \d+)$/, document);
+      assert.ok(!location.includes('secret'));
+    }
+    assert.equal(jsonErrorLocation(new Error('Unexpected token "secret"')), '');
+    assert.equal(jsonErrorLocation('not an error'), '');
+  });
+
+  it('name the kind of a value, never the value', () => {
+    assert.deepEqual([null, [], 'x', 1, 1.5, true, {}].map(jsonKind),
+      ['null', 'an array', 'a string', 'an integer', 'a number with a fraction', 'a boolean', 'an object']);
   });
 });

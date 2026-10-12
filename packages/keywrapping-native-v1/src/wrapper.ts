@@ -15,8 +15,10 @@ const INT32_MAX = 2 ** 31 - 1;
  * and any number of payloads sharing the same service. The native ABI has no AAD.
  *
  * Native calls run on libuv's thread pool, so the event loop is never blocked by a TPM. The signal
- * is checked before each call; a call that has started runs to completion. Don't touch a result
- * buffer until its call has settled - the native side writes into it on another thread.
+ * is checked before each call; a call that has started runs to completion. The native library works
+ * on the add-on's own copies of both buffers, zeroed afterwards, and the result is copied into
+ * `result` on the main thread as the call settles - so no other thread ever holds a pointer into a
+ * JavaScript buffer. A result buffer detached or shrunk meanwhile fails the call.
  */
 export class NativeKeyWrapperV1 implements KeyWrapper {
   private constructor(

@@ -6,7 +6,7 @@ import {
   KeyNotFoundError, type EncryptedFormatProvider,
 } from '@runsecure/hkdfguard-abstractions';
 import { TestFormatProvider } from '@runsecure/hkdfguard-test-support';
-import { AesGcmPipelineDataProtector } from './pipeline.js';
+import { AesGcmPipelineDataProtector, base64Bytes } from './pipeline.js';
 import { EncryptionBudget } from './session.js';
 
 const id = 'Pipeline:Secret';
@@ -79,6 +79,17 @@ describe('AesGcmPipelineDataProtector', () => {
     const first = p.keyBase64();
     assert.equal(new TextDecoder().decode(first), Buffer.from(key).toString('base64'));
     assert.equal(p.keyBase64(), first);
+  });
+
+  it('encodes base64 byte to byte, matching Node for every length and byte value', () => {
+    for (let length = 0; length <= 66; length++) {
+      const data = new Uint8Array(randomBytes(length));
+      assert.equal(new TextDecoder().decode(base64Bytes(data)), Buffer.from(data).toString('base64'), `length ${length}`);
+    }
+    const every = Uint8Array.from({ length: 256 * 3 }, (_, i) => (i % 3 === 0 ? i / 3 : 255 - (i % 256)));
+    assert.equal(new TextDecoder().decode(base64Bytes(every)), Buffer.from(every).toString('base64'));
+    const allDigits = Uint8Array.from(Buffer.from('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', 'base64'));
+    assert.equal(new TextDecoder().decode(base64Bytes(allDigits)), 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/');
   });
 
   it("counts against the key's budget", () => {

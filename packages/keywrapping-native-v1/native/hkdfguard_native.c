@@ -4,7 +4,9 @@
  *   - load / unload / bind: map the verified KMS library (dlopen, LoadLibraryExW) and resolve its
  *     exports. The TypeScript loader decides whether a file may be loaded; this never searches.
  *   - wrapDek / unwrapDek / generateAndWrapDek: call the library on libuv's thread pool, so a TPM or
- *     Secure Enclave operation never blocks the event loop. Each resolves to [status, written].
+ *     Secure Enclave operation never blocks the event loop. The library works on the add-on's own
+ *     copies of the buffers, zeroed afterwards; the result reaches the caller's buffer on the main
+ *     thread when the call completes. Each resolves to [status, written].
  *   - hardenProcess: the Linux library's process-hardening call.
  *   - symbolImagePath (Unix): which file the dynamic linker mapped an export from (dladdr).
  *   - loadedPath (Linux): which file an already-loaded soname is bound to (RTLD_NOLOAD + dlinfo).
@@ -278,20 +280,63 @@ static napi_value bind(napi_env env, napi_callback_info info) {
 
 /* --- KMS calls on the thread pool ---------------------------------------------------------------- */
 
+/* Zeroes memory in a way the compiler may not remove as a dead store. */
+static void secure_zero(void* data, size_t length) {
+  if (data == NULL) return;
+#if defined(_WIN32)
+  SecureZeroMemory(data, length);
+#else
+  volatile uint8_t* p = (volatile uint8_t*)data;
+  while (length-- > 0) *p++ = 0;
+#endif
+}
+
+/* The bytes of a Uint8Array, without throwing; 0 if it isn't one. */
+static int typed_bytes(napi_env env, napi_value value, uint8_t** data, size_t* length) {
+  napi_typedarray_type type;
+  napi_value buffer;
+  size_t offset;
+  void* raw = NULL;
+  if (napi_get_typedarray_info(env, value, &type, length, &raw, &buffer, &offset) != napi_ok || type != napi_uint8_array) return 0;
+  *data = (uint8_t*)raw;
+  return 1;
+}
+
+/*
+ * One KMS call. The thread-pool thread never touches JavaScript memory: the library reads its own
+ * copy of the input and writes its own output buffer, and the result is copied into the caller's
+ * buffer on the main thread when the call completes. A caller's ArrayBuffer can be detached or
+ * resized while the call runs, and a raw pointer into it would then point at freed memory. Both
+ * copies are zeroed before they are freed: a wrap's input and an unwrap's output are plaintext DEKs.
+ */
 typedef struct {
   napi_async_work work;
   napi_deferred deferred;
   void* fn;
   int generate; /* hkdfguard_generate_and_wrap_dek's shape, rather than wrap/unwrap's */
   char* service;
-  const uint8_t* input;
+  uint8_t* input; /* the add-on's copy of the input; NULL when it is empty */
   int32_t input_length;
-  uint8_t* output;
-  int32_t output_length;
-  napi_ref input_ref; /* keep the caller's buffers alive until the call completes */
-  napi_ref output_ref;
+  uint8_t* output; /* the add-on's output buffer; NULL when the caller's is empty */
+  int32_t output_capacity;
+  int32_t output_length; /* in: the capacity; out: what the library reports */
+  napi_ref output_ref; /* the caller's result buffer, written only on the main thread */
   int32_t status;
 } kms_call;
+
+static void free_call(napi_env env, kms_call* call) {
+  if (call->input != NULL) {
+    secure_zero(call->input, (size_t)call->input_length);
+    free(call->input);
+  }
+  if (call->output != NULL) {
+    secure_zero(call->output, (size_t)call->output_capacity);
+    free(call->output);
+  }
+  if (call->output_ref != NULL) napi_delete_reference(env, call->output_ref);
+  free(call->service);
+  free(call);
+}
 
 static void execute_call(napi_env env, void* data) {
   (void)env;
@@ -303,20 +348,37 @@ static void execute_call(napi_env env, void* data) {
 
 static void complete_call(napi_env env, napi_status status, void* data) {
   kms_call* call = data;
-  if (status == napi_ok) {
+  const char* failure = status == napi_ok ? NULL : "hkdfguard_native: the KMS call was cancelled";
+
+  /* On success, copy what the library wrote into the caller's buffer - provided it is still there at
+   * its full size. A count out of range is not copied; it is reported, and refused by the caller. */
+  int32_t written = call->output_length;
+  if (failure == NULL && call->status == 0 && written > 0 && written <= call->output_capacity) {
+    napi_value target_value = NULL;
+    uint8_t* target = NULL;
+    size_t target_length = 0;
+    if (napi_get_reference_value(env, call->output_ref, &target_value) != napi_ok || target_value == NULL
+        || !typed_bytes(env, target_value, &target, &target_length) || target == NULL || target_length < (size_t)written) {
+      failure = "hkdfguard_native: the result buffer was detached or shrunk during the KMS call";
+    } else {
+      memcpy(target, call->output, (size_t)written);
+    }
+  }
+
+  if (failure == NULL) {
     napi_value result;
     napi_create_array_with_length(env, 2, &result);
     napi_set_element(env, result, 0, js_int(env, call->status));
-    napi_set_element(env, result, 1, js_int(env, call->output_length));
+    napi_set_element(env, result, 1, js_int(env, written));
     napi_resolve_deferred(env, call->deferred, result);
   } else {
-    napi_reject_deferred(env, call->deferred, js_string(env, "hkdfguard_native: the KMS call was cancelled"));
+    napi_value message, error;
+    napi_create_string_utf8(env, failure, NAPI_AUTO_LENGTH, &message);
+    napi_create_error(env, NULL, message, &error);
+    napi_reject_deferred(env, call->deferred, error);
   }
-  if (call->input_ref != NULL) napi_delete_reference(env, call->input_ref);
-  if (call->output_ref != NULL) napi_delete_reference(env, call->output_ref);
   napi_delete_async_work(env, call->work);
-  free(call->service);
-  free(call);
+  free_call(env, call);
 }
 
 /* start_call(env, info, which): wrapDek/unwrapDek(library, service, input, output) or
@@ -344,25 +406,44 @@ static napi_value start_call(napi_env env, napi_callback_info info, int which) {
   call->service = utf8_arg(env, argv[1]);
   napi_value output_value = argv[call->generate ? 2 : 3];
   uint8_t* input = NULL;
+  uint8_t* output = NULL;
   size_t input_length = 0, output_length = 0;
   if (call->service == NULL
       || (!call->generate && !bytes_arg(env, argv[2], &input, &input_length))
-      || !bytes_arg(env, output_value, &call->output, &output_length)) {
-    free(call->service);
-    free(call);
+      || !bytes_arg(env, output_value, &output, &output_length)) {
+    free_call(env, call);
     return NULL;
   }
-  call->input = input;
+
+  /* The library gets copies (see kms_call); an empty buffer stays NULL, which it rejects itself. */
   call->input_length = (int32_t)input_length;
-  call->output_length = (int32_t)output_length;
-  if (!call->generate) CHECK(napi_create_reference(env, argv[2], 1, &call->input_ref));
-  CHECK(napi_create_reference(env, output_value, 1, &call->output_ref));
+  call->output_capacity = call->output_length = (int32_t)output_length;
+  if (input_length > 0) {
+    call->input = malloc(input_length);
+    if (call->input != NULL) memcpy(call->input, input, input_length);
+  }
+  if (output_length > 0) call->output = calloc(1, output_length);
+  if ((input_length > 0 && call->input == NULL) || (output_length > 0 && call->output == NULL)) {
+    free_call(env, call);
+    napi_throw_error(env, NULL, "hkdfguard_native: out of memory");
+    return NULL;
+  }
 
   napi_value promise, name;
-  CHECK(napi_create_promise(env, &call->deferred, &promise));
-  CHECK(napi_create_string_utf8(env, "hkdfguard_kms_call", NAPI_AUTO_LENGTH, &name));
-  CHECK(napi_create_async_work(env, NULL, name, execute_call, complete_call, call, &call->work));
-  CHECK(napi_queue_async_work(env, call->work));
+  if (napi_create_reference(env, output_value, 1, &call->output_ref) != napi_ok
+      || napi_create_promise(env, &call->deferred, &promise) != napi_ok
+      || napi_create_string_utf8(env, "hkdfguard_kms_call", NAPI_AUTO_LENGTH, &name) != napi_ok
+      || napi_create_async_work(env, NULL, name, execute_call, complete_call, call, &call->work) != napi_ok) {
+    free_call(env, call);
+    napi_throw_error(env, NULL, "hkdfguard_native: the KMS call could not be started");
+    return NULL;
+  }
+  if (napi_queue_async_work(env, call->work) != napi_ok) {
+    napi_delete_async_work(env, call->work);
+    free_call(env, call);
+    napi_throw_error(env, NULL, "hkdfguard_native: the KMS call could not be queued");
+    return NULL;
+  }
   return promise;
 }
 

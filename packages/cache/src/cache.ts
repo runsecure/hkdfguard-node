@@ -28,13 +28,14 @@ export class ProtectedCache implements ProtectedCacheContract {
   }
 
   /**
-   * Encrypts `plaintext` and stores it under `name`; `plaintext` is zeroed whatever happens.
+   * Encrypts `plaintext` and stores it under `name`; `plaintext` is zeroed whatever happens. A value
+   * whose key the ring has retired has expired, so it no longer holds the name.
    * @throws AlreadyExistsError a value is already stored under `name`, in any ASCII case.
    * @throws EmptyValueError, InvalidCacheNameError
    */
   add(name: string, plaintext: Uint8Array): void {
     this.#write(SpanNames.cache.add, name, plaintext, (key, entry) => {
-      if (this.#store.entries.has(key)) {
+      if (this.#store.cached(key) !== undefined) { // an expired entry no longer holds the name
         throw new AlreadyExistsError(`An item with the name '${name}' has already been added.`);
       }
       this.#store.entries.set(key, entry);

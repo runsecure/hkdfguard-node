@@ -1,16 +1,21 @@
-import { open } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, open, realpath } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import {
   HkdfGuardError, InvalidArgumentError, MAX_WRAPPED_KEY_BYTES, RefreshFailurePolicy, validateServiceName,
   type CryptoProvider, type CryptoProviderFactory, type EncryptedFormatProvider, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
-import type { Logger } from '@runsecure/hkdfguard-diagnostics';
-import { DataEncryptionKey } from './key.js';
+import { HkdfGuardLog, type Logger } from '@runsecure/hkdfguard-diagnostics';
+import { DataEncryptionKey, type EncryptionDeadline } from './key.js';
 import { KeyRing, Rotation } from './keyring.js';
 
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 // Group- and other-write: anyone with either could choose the key new data is encrypted under.
 const KEY_FILE_FORBIDDEN_MODE = 0o022;
+// A sticky directory (/tmp) lets others create entries, but not rename or delete anyone else's.
+const STICKY_BIT = 0o1000;
 
 /** How often a ring with ephemeral keys rotates them, unless configured otherwise. */
 export const DEFAULT_EPHEMERAL_KEY_ROTATION_HOURS = 24;
@@ -22,8 +27,19 @@ export const MAX_EPHEMERAL_KEY_ROTATION_HOURS = 1193;
 export const DEFAULT_EPHEMERAL_KEY_RETENTION_HOURS = 24;
 /** The shortest retention accepted, in minutes. */
 export const MIN_EPHEMERAL_KEY_RETENTION_MINUTES = 1;
+/**
+ * How many days after it was last written a key file stops encrypting, unless configured otherwise.
+ * AES-GCM with random nonces is safe for about 2^32 encryptions under one key in total, and a key
+ * file outlives the process that counts them, so it is bounded by age instead: rotate key files by
+ * deploying a new one at a higher version. Decryption under an old key file never stops.
+ */
+export const DEFAULT_KEY_FILE_MAX_AGE_DAYS = 365;
+/** The longest key-file age accepted, in days. */
+export const MAX_KEY_FILE_MAX_AGE_DAYS = 3650;
+/** The fraction of the maximum age after which a warning is logged: 90%, about five weeks of a year. */
+export const KEY_FILE_AGE_WARNING_FRACTION = 0.9;
 
-/** A key file that is empty, or larger than MAX_WRAPPED_KEY_BYTES. */
+/** A key file that is empty, larger than MAX_WRAPPED_KEY_BYTES, or in a location someone else could replace it in. */
 export class InvalidKeyFileError extends HkdfGuardError {
   constructor(message: string) {
     super('ERR_HKDFGUARD_INVALID_KEY_FILE', message);
@@ -65,7 +81,14 @@ export interface KeyRingConfig {
   disableEphemeralKeyRotation?: boolean;
   /** Minutes (at least 1) a superseded ephemeral key stays registered for decryption; 24 hours when omitted. */
   ephemeralKeyRetentionMinutes?: number;
-  /** Receives an entry for every rotation, failed rotation and retirement. */
+  /**
+   * Days (1-3650) after a key file was last written that it stops encrypting; 365 when omitted. Its
+   * age is its modification time, so copy key files with their timestamps preserved (cp -p, rsync
+   * -t). A warning is logged at 90% of the age; past it, encrypt throws EncryptionLimitReachedError
+   * and decryption still works. Only the current version ever encrypts, so only it is reported.
+   */
+  keyFileMaxAgeDays?: number;
+  /** Receives an entry for every rotation, failed rotation and retirement, and for a current key file nearing or past its age. */
   logger?: Logger;
   /** Cancels reading key files and revealing keys; anything already created is closed. */
   signal?: AbortSignal;
@@ -95,6 +118,10 @@ function validate(config: KeyRingConfig): void {
   if (hours !== undefined && config.disableEphemeralKeyRotation) {
     throw invalid("disableEphemeralKeyRotation and ephemeralKeyRotationHours can't both be set: one turns rotation off, the other schedules it.");
   }
+  const days = config.keyFileMaxAgeDays;
+  if (days !== undefined && !(Number.isInteger(days) && days >= 1 && days <= MAX_KEY_FILE_MAX_AGE_DAYS)) {
+    throw invalid(`keyFileMaxAgeDays must be between 1 and ${MAX_KEY_FILE_MAX_AGE_DAYS}.`);
+  }
   const minutes = config.ephemeralKeyRetentionMinutes;
   if (minutes !== undefined && !(Number.isFinite(minutes) && minutes >= MIN_EPHEMERAL_KEY_RETENTION_MINUTES)) {
     throw invalid(`ephemeralKeyRetentionMinutes must be at least ${MIN_EPHEMERAL_KEY_RETENTION_MINUTES}.`);
@@ -113,20 +140,85 @@ function entries(keyFiles: KeyRingConfig['keyFiles']): [number, string][] {
 
 /**
  * Reads a wrapped DEK, refusing anything that isn't a regular file, one its group or other users can
- * write (outside Windows, whose ACLs are the owner's to set), an empty file, or one over
+ * write, or - outside Windows, whose ACLs the native tool sets - one in a location anyone but root
+ * or this process's user could replace it in (see {@link verifyKeyFileLocation}), an empty file, or one over
  * MAX_WRAPPED_KEY_BYTES - never reading more than one byte past the limit, so a wrong path (a log, a
  * device) can't make startup read without bound. The checks are made on the opened file, so they
  * describe what is read, not a path that may have changed in between.
  */
 export async function readKeyFile(path: string): Promise<Uint8Array> {
-  const file = await open(path, 'r');
+  return (await readKeyFileWithTime(path)).wrapped;
+}
+
+/** The parts of lstat and realpath the location check uses; replaced in tests. @internal */
+export interface KeyFileSystem {
+  lstat(path: string): Promise<{ uid: number; mode: number; isDirectory(): boolean; isSymbolicLink(): boolean; isFile(): boolean }>;
+  realpath(path: string): Promise<string>;
+}
+
+const nodeFileSystem: KeyFileSystem = { lstat, realpath };
+
+function ownerProblem(uid: number, euid: number): string | undefined {
+  return uid === 0 || uid === euid ? undefined : `is owned by uid ${uid}; only root or this process's user (uid ${euid}) may own a key file and the folders above it`;
+}
+
+/**
+ * Checks where a key file lives, outside Windows, and returns its real path. Anyone who can replace
+ * a key file chooses the key new data is encrypted under, so the file and every folder above it, up
+ * to /, must be owned by root or by this process's user, and no folder may be writable by its
+ * group or by others unless it is sticky (as /tmp is). A symbolic link is followed - Kubernetes
+ * mounts secrets through them - but must itself be owned by root or this user, and the folders
+ * holding it are held to the same rule. Only reads: nothing about the file is changed.
+ * @internal Exported for tests.
+ */
+export async function verifyKeyFileLocation(path: string, euid: number, fs: KeyFileSystem = nodeFileSystem): Promise<string> {
+  const absolute = resolve(path);
+  const link = await fs.lstat(absolute);
+  if (link.isSymbolicLink()) {
+    const problem = ownerProblem(link.uid, euid);
+    if (problem !== undefined) throw new InvalidKeyFileError(`Key file '${path}' is a symbolic link that ${problem}.`);
+  }
+  const real = await fs.realpath(absolute);
+  const target = real === absolute ? link : await fs.lstat(real);
+  const problem = ownerProblem(target.uid, euid);
+  if (problem !== undefined) throw new InvalidKeyFileError(`Key file '${path}' ${problem}.`);
+
+  await verifyFolders(dirname(real), path, euid, fs);
+  if (link.isSymbolicLink()) await verifyFolders(await fs.realpath(dirname(absolute)), path, euid, fs);
+  return real;
+}
+
+async function verifyFolders(directory: string, path: string, euid: number, fs: KeyFileSystem): Promise<void> {
+  for (let folder = directory; ; folder = dirname(folder)) {
+    const status = await fs.lstat(folder);
+    if (!status.isDirectory()) throw new InvalidKeyFileError(`Key file '${path}' is under '${folder}', which is not a folder.`);
+    const problem = ownerProblem(status.uid, euid);
+    if (problem !== undefined) throw new InvalidKeyFileError(`Key file '${path}' is under '${folder}', which ${problem}.`);
+    if ((status.mode & KEY_FILE_FORBIDDEN_MODE) !== 0 && (status.mode & STICKY_BIT) === 0) {
+      const mode = (status.mode & 0o7777).toString(8).padStart(4, '0');
+      throw new InvalidKeyFileError(`Key file '${path}' is under '${folder}', which its group or others can write (mode ${mode}), so they could replace the key file.`);
+    }
+    if (dirname(folder) === folder) return;
+  }
+}
+
+/** {@link readKeyFile}, with the opened file's modification time - the key file's age. */
+async function readKeyFileWithTime(path: string): Promise<{ wrapped: Uint8Array; modifiedMs: number }> {
+  const unix = process.platform !== 'win32';
+  // Outside Windows the real path is checked, then opened without following a link, so what is read
+  // is the file that was checked. Windows ACLs are not checked here (see the getting-started guide).
+  const file = unix
+    ? await open(await verifyKeyFileLocation(path, process.geteuid!()), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    : await open(path, 'r');
   try {
     const stats = await file.stat();
     if (!stats.isFile()) throw new InvalidKeyFileError(`Key file '${path}' is not a regular file.`);
-    if (process.platform !== 'win32' && (stats.mode & KEY_FILE_FORBIDDEN_MODE) !== 0) {
+    if (unix && (stats.mode & KEY_FILE_FORBIDDEN_MODE) !== 0) {
       const mode = (stats.mode & 0o777).toString(8).padStart(4, '0');
       throw new InvalidKeyFileError(`Key file '${path}' is writable by its group or by others (mode ${mode}); only its owner may write it.`);
     }
+    const owner = unix ? ownerProblem(stats.uid, process.geteuid!()) : undefined;
+    if (owner !== undefined) throw new InvalidKeyFileError(`Key file '${path}' ${owner}.`);
     const buffer = new Uint8Array(MAX_WRAPPED_KEY_BYTES + 1);
     let total = 0;
     for (;;) {
@@ -139,20 +231,32 @@ export async function readKeyFile(path: string): Promise<Uint8Array> {
     if (total > MAX_WRAPPED_KEY_BYTES) {
       throw new InvalidKeyFileError(`Key file '${path}' is larger than ${MAX_WRAPPED_KEY_BYTES} bytes (MAX_WRAPPED_KEY_BYTES); a wrapped key never is.`);
     }
-    return buffer.slice(0, total);
+    return { wrapped: buffer.slice(0, total), modifiedMs: stats.mtimeMs };
   } finally {
     await file.close();
   }
 }
 
-async function addOwned(ring: KeyRing, version: number, provider: CryptoProvider): Promise<void> {
-  const key = new DataEncryptionKey(provider);
+async function addOwned(ring: KeyRing, version: number, provider: CryptoProvider, deadline?: EncryptionDeadline): Promise<void> {
+  const key = new DataEncryptionKey(provider, deadline);
   try {
     ring.add(version, key);
   } catch (error) {
     await key.close();
     throw error;
   }
+}
+
+/** When the key file at `path`, last written at `modifiedMs`, stops encrypting, and who hears about it. */
+function keyFileDeadline(version: number, path: string, modifiedMs: number, maxAgeDays: number, logger: Logger | undefined): EncryptionDeadline {
+  const refuseAt = modifiedMs + maxAgeDays * DAY_MS;
+  return {
+    warnAt: modifiedMs + maxAgeDays * DAY_MS * KEY_FILE_AGE_WARNING_FRACTION,
+    refuseAt,
+    reason: `Key file '${path}' (version ${version}) was last written ${new Date(modifiedMs).toISOString()}, more than ${maxAgeDays} days ago (keyFileMaxAgeDays), so it no longer encrypts: AES-GCM is only safe for a bounded number of encryptions under one key. Deploy a new key file at a higher version; values under this one still decrypt.`,
+    onWarning: () => HkdfGuardLog.keyFileAgeWarning(logger, version, path, new Date(refuseAt)),
+    onExpired: () => HkdfGuardLog.keyFileExpired(logger, version, path),
+  };
 }
 
 /**
@@ -167,10 +271,12 @@ export async function buildKeyRing(config: KeyRingConfig, internals: BuildIntern
   const ring = new KeyRing(config.formatProvider);
 
   try {
+    const maxAgeDays = config.keyFileMaxAgeDays ?? DEFAULT_KEY_FILE_MAX_AGE_DAYS;
     for (const [version, path] of entries(config.keyFiles)) {
       signal?.throwIfAborted();
-      const wrapped = await readKeyFile(path);
-      await addOwned(ring, version, await factory.create(keyWrapper, wrapped, providerOptions));
+      const { wrapped, modifiedMs } = await readKeyFileWithTime(path);
+      await addOwned(ring, version, await factory.create(keyWrapper, wrapped, providerOptions),
+        keyFileDeadline(version, path, modifiedMs, maxAgeDays, config.logger));
     }
     for (const version of config.ephemeralKeys ?? []) {
       signal?.throwIfAborted();
@@ -180,6 +286,10 @@ export async function buildKeyRing(config: KeyRingConfig, internals: BuildIntern
     await ring.close().catch(() => undefined);
     throw error;
   }
+
+  // Report a current key file already nearing or past its age now, not at its first encrypt.
+  const current = ring.tryGet(ring.currentVersion);
+  if (current instanceof DataEncryptionKey) current.checkDeadline();
 
   const ephemeral = config.ephemeralKeys ?? [];
   if (ephemeral.length > 0 && !config.disableEphemeralKeyRotation) {

@@ -128,6 +128,32 @@ export function wipe(buffer: Uint8Array | undefined): void {
   buffer?.fill(0);
 }
 
+/**
+ * Why `JSON.parse` failed, as a location only - never V8's own message, which can quote the
+ * document around the error, and a configuration document holds secrets. "at position 51" or "at
+ * line 2 column 7" when V8 gave a location, otherwise "".
+ */
+export function jsonErrorLocation(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  const lineColumn = /line (\d+) column (\d+)/.exec(message);
+  if (lineColumn !== null) return ` at line ${lineColumn[1]} column ${lineColumn[2]}`;
+  const position = /position (\d+)/.exec(message);
+  return position === null ? '' : ` at position ${position[1]}`;
+}
+
+/** What kind of JSON value `value` is - "a string", "an array" - for messages that must not repeat the value itself. */
+export function jsonKind(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  switch (typeof value) {
+    case 'string': return 'a string';
+    case 'number': return Number.isInteger(value) ? 'an integer' : 'a number with a fraction';
+    case 'boolean': return 'a boolean';
+    case 'object': return 'an object';
+    default: return typeof value;
+  }
+}
+
 /** True if `buffer` is empty or every byte is zero, in time that depends only on its length. */
 export function isZero(buffer: Uint8Array): boolean {
   let accumulator = 0;

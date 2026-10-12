@@ -1,15 +1,15 @@
 import { strict as assert } from 'node:assert';
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { dirname, join } from 'node:path';
+import { describe, it, mock } from 'node:test';
 import {
-  AuthenticationFailedError, CACHE_AAD_PREFIX, ClosedError, configurationAad, configurationPurpose, HkdfGuardError, InvalidArgumentError,
+  AuthenticationFailedError, CACHE_AAD_PREFIX, ClosedError, configurationAad, configurationPurpose, EncryptionLimitReachedError, HkdfGuardError, InvalidArgumentError,
   InvalidServiceNameError, isZero, KeyNotFoundError, MAX_WRAPPED_KEY_BYTES, NoCurrentKeyError, RefreshFailurePolicy,
   type DataEncryptionKey as DataEncryptionKeyContract, type DataProtector,
 } from '@runsecure/hkdfguard-abstractions';
 import { capturingLogger, FakeKeyWrapper, RecordingFactory, TestProvider } from '@runsecure/hkdfguard-test-support';
-import { buildKeyRing, readKeyFile, type KeyRingConfig } from './build.js';
+import { buildKeyRing, readKeyFile, verifyKeyFileLocation, type KeyFileSystem, type KeyRingConfig } from './build.js';
 import { DefaultFormatProvider, InvalidFormatError } from './format.js';
 import { DataEncryptionKey } from './key.js';
 import { DuplicateVersionError, KeyRing } from './keyring.js';
@@ -38,11 +38,17 @@ function unprotect(p: DataProtector, formatted: string): string {
   return new TextDecoder().decode(result.subarray(0, p.decrypt(formatted, result)));
 }
 
-function keyFile(contents: Uint8Array | string): string {
+function keyFile(contents: Uint8Array | string, ageDays = 0): string {
   const path = join(mkdtempSync(join(tmpdir(), 'hkdfguard-dek-')), 'key.bin');
   writeFileSync(path, contents);
+  if (ageDays !== 0) {
+    const written = new Date(Date.now() - ageDays * DAY_MS);
+    utimesSync(path, written, written);
+  }
   return path;
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 describe('DataEncryptionKey', () => {
   it('round-trips with and without AAD, and rejects mismatched AAD', () => {
@@ -70,6 +76,52 @@ describe('DataEncryptionKey', () => {
     await key.close();
     await key.close();
     assert.equal(provider.closes, 1);
+  });
+
+  it('stops encrypting at its deadline, zeroing the plaintext, but keeps decrypting', () => {
+    const calls: string[] = [];
+    const now = Date.now();
+    const deadline = { warnAt: now + 1000, refuseAt: now + 2000, reason: 'rotate me', onWarning: () => calls.push('warn'), onExpired: () => calls.push('expired') };
+    const key = new DataEncryptionKey(new TestProvider(), deadline);
+    const ciphertext = key.encrypt(utf8('before'));
+    assert.equal(key.checkDeadline(now), false);
+    assert.deepEqual(calls, []);
+
+    mock.timers.enable({ apis: ['Date'], now: now + 1500 });
+    try {
+      key.encrypt(utf8('warned'));
+      key.encrypt(utf8('warned again'));
+      assert.deepEqual(calls, ['warn']);
+
+      mock.timers.setTime(now + 2000);
+      const plaintext = utf8('refused');
+      assert.throws(() => key.encrypt(plaintext), (e: unknown) => e instanceof EncryptionLimitReachedError && e.message === 'rotate me');
+      assert.ok(isZero(plaintext));
+      assert.throws(() => key.encrypt(utf8('refused again')), EncryptionLimitReachedError);
+      assert.deepEqual(calls, ['warn', 'expired']);
+
+      const result = new Uint8Array(6);
+      key.decrypt(ciphertext, result);
+      assert.equal(new TextDecoder().decode(result), 'before');
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it('announces expiry once even when the warning was skipped, and ignores a throwing callback', () => {
+    let expired = 0;
+    const key = new DataEncryptionKey(new TestProvider(), {
+      warnAt: 0, refuseAt: 1, reason: 'old', onWarning: () => { throw new Error('never called'); }, onExpired: () => { expired++; throw new Error('bad logger'); },
+    });
+    assert.throws(() => key.encrypt(utf8('x')), EncryptionLimitReachedError);
+    assert.throws(() => key.encrypt(utf8('x')), EncryptionLimitReachedError);
+    assert.equal(expired, 1);
+  });
+
+  it('encrypts without limit when it has no deadline', () => {
+    const { key } = newKey();
+    assert.equal(key.checkDeadline(Number.MAX_SAFE_INTEGER), false);
+    assert.equal(key.encrypt(utf8('hello')).length, 5 + 28);
   });
 });
 
@@ -229,6 +281,7 @@ describe('buildKeyRing', () => {
       { keyWrapper: undefined }, { cryptoProviderFactory: undefined }, { ephemeralKeys: [] }, { keyRefreshInterval: 0 },
       { keyRefreshInterval: 301 }, { ephemeralKeyRotationHours: 0 }, { ephemeralKeyRotationHours: 1194 },
       { ephemeralKeyRetentionMinutes: 0.5 }, { disableEphemeralKeyRotation: true, ephemeralKeyRotationHours: 6 }, { keyFiles: { 2: ' ' } },
+      { keyFileMaxAgeDays: 0 }, { keyFileMaxAgeDays: 3651 }, { keyFileMaxAgeDays: 1.5 },
     ];
     for (const change of cases) {
       await assert.rejects(buildKeyRing({ ...valid, ...change } as KeyRingConfig), (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_CONFIG', JSON.stringify(change));
@@ -254,6 +307,150 @@ describe('buildKeyRing', () => {
     } finally {
       await ring.close();
     }
+  });
+
+  it('limits each key file to its age from the time it was last written, 365 days by default', async () => {
+    const path = keyFile('wrapped');
+    const written = statSync(path).mtimeMs;
+    for (const [maxAge, days] of [[undefined, 365], [30, 30]] as const) {
+      const ring = await buildKeyRing({ ...base(new RecordingFactory()), keyFiles: { 1: path }, keyFileMaxAgeDays: maxAge });
+      try {
+        const deadline = (ring.get(1) as DataEncryptionKey).deadline!;
+        assert.equal(deadline.refuseAt, written + days * DAY_MS);
+        assert.equal(deadline.warnAt, written + days * DAY_MS * 0.9);
+        assert.match(deadline.reason, new RegExp(`more than ${days} days ago`));
+      } finally {
+        await ring.close();
+      }
+    }
+  });
+
+  it('reports a current key file nearing its age at startup, once, and keeps encrypting', async () => {
+    const { logger, withEventId } = capturingLogger();
+    const ring = await buildKeyRing({ ...base(new RecordingFactory()), keyFiles: { 1: keyFile('wrapped', 340) }, logger });
+    try {
+      assert.equal(withEventId(11).length, 1);
+      assert.equal(withEventId(11)[0]!.level, 'warn');
+      const protector = ring.createProtector('aging');
+      assert.equal(unprotect(protector, protector.encrypt('still fine')), 'still fine');
+      assert.equal(withEventId(11).length, 1);
+      assert.equal(withEventId(12).length, 0);
+    } finally {
+      await ring.close();
+    }
+  });
+
+  it('refuses to encrypt under a current key file past its age, reporting it at startup, but still decrypts', async () => {
+    const path = keyFile('wrapped', 20);
+    const factory = new RecordingFactory();
+    const before = await buildKeyRing({ ...base(factory), keyFiles: { 1: path }, keyFileMaxAgeDays: 30 });
+    const protector = before.createProtector('expiring');
+    const formatted = protector.encrypt('written in time');
+
+    const { logger, withEventId } = capturingLogger();
+    mock.timers.enable({ apis: ['Date'], now: Date.now() + 15 * DAY_MS }); // now 35 days old
+    try {
+      assert.throws(() => protector.encrypt('too late'), EncryptionLimitReachedError);
+      assert.equal(unprotect(protector, formatted), 'written in time');
+
+      const after = await buildKeyRing({ ...base(new RecordingFactory()), keyFiles: { 1: path }, keyFileMaxAgeDays: 30, logger });
+      try {
+        assert.equal(withEventId(12).length, 1);
+        assert.equal(withEventId(12)[0]!.attributes['log.level'], 'critical');
+        assert.throws(() => after.createProtector('expiring').encrypt('too late'), (e: unknown) => e instanceof EncryptionLimitReachedError && e.message.includes(path));
+        assert.equal(withEventId(12).length, 1);
+      } finally {
+        await after.close();
+      }
+    } finally {
+      mock.timers.reset();
+      await before.close();
+    }
+  });
+
+  it('never reports a superseded key file, which never encrypts', async () => {
+    const { logger, entries } = capturingLogger();
+    const ring = await buildKeyRing({
+      ...base(new RecordingFactory()), keyFiles: { 1: keyFile('old', 400), 2: keyFile('new') }, logger,
+    });
+    try {
+      assert.equal(ring.currentVersion, 2);
+      assert.deepEqual(entries, []);
+      const protector = ring.createProtector('rotated');
+      assert.equal(unprotect(protector, protector.encrypt('fine')), 'fine');
+    } finally {
+      await ring.close();
+    }
+  });
+
+  it('puts no age limit on ephemeral keys', async () => {
+    const ring = await buildKeyRing({ ...base(new RecordingFactory()), ephemeralKeys: [1], disableEphemeralKeyRotation: true, keyFileMaxAgeDays: 1 });
+    try {
+      assert.equal((ring.get(1) as DataEncryptionKey).deadline, undefined);
+    } finally {
+      await ring.close();
+    }
+  });
+
+  it('follows a symbolic link to a key file, as a Kubernetes secret mount uses', { skip: process.platform === 'win32' }, async () => {
+    const target = keyFile('wrapped');
+    const link = join(mkdtempSync(join(tmpdir(), 'hkdfguard-dek-')), 'key.link');
+    symlinkSync(target, link);
+    assert.equal(new TextDecoder().decode(await readKeyFile(link)), 'wrapped');
+  });
+
+  it('refuses a key file under a folder its group or others can write, unless the folder is sticky', { skip: process.platform === 'win32' }, async () => {
+    const invalid = (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE' && e.message.includes('could replace');
+    for (const mode of [0o770, 0o707, 0o777]) {
+      const path = keyFile('wrapped');
+      chmodSync(dirname(path), mode);
+      await assert.rejects(readKeyFile(path), invalid, mode.toString(8));
+    }
+    const path = keyFile('wrapped');
+    chmodSync(dirname(path), 0o1777);
+    assert.equal((await readKeyFile(path)).length, 7);
+  });
+
+  it('only reads a key file: its contents, mode and times are unchanged', { skip: process.platform === 'win32' }, async () => {
+    const path = keyFile('wrapped', 100);
+    chmodSync(path, 0o400);
+    const before = statSync(path);
+    await readKeyFile(path);
+    const ring = await buildKeyRing({ ...base(new RecordingFactory()), keyFiles: { 1: path } });
+    await ring.close();
+    const after = statSync(path);
+    assert.equal(readFileSync(path, 'utf8'), 'wrapped');
+    assert.equal(after.mode, before.mode);
+    assert.equal(after.mtimeMs, before.mtimeMs);
+    assert.equal(after.uid, before.uid);
+  });
+
+  it("checks the owner of the key file, every folder above it, and any link to it", async () => {
+    // A simulated filesystem: tests can't create files owned by another user.
+    const me = 501, other = 502;
+    const tree = (entries: Record<string, { uid?: number; mode?: number; type?: 'dir' | 'file' | 'link'; to?: string }>): KeyFileSystem => ({
+      lstat: async (p) => {
+        const e = entries[p];
+        if (e === undefined) throw Object.assign(new Error(`ENOENT ${p}`), { code: 'ENOENT' });
+        const type = e.type ?? 'dir';
+        return { uid: e.uid ?? 0, mode: e.mode ?? 0o755, isDirectory: () => type === 'dir', isFile: () => type === 'file', isSymbolicLink: () => type === 'link' };
+      },
+      realpath: async (p) => entries[p]?.to ?? p,
+    });
+    const base = { '/': {}, '/etc': {}, '/etc/app': {}, '/etc/app/key.v1': { type: 'file' as const, mode: 0o600 } };
+    const refused = (fragment: string) => (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE' && e.message.includes(fragment);
+
+    assert.equal(await verifyKeyFileLocation('/etc/app/key.v1', me, tree(base)), '/etc/app/key.v1');
+    assert.equal(await verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc/app': { uid: me, mode: 0o700 }, '/etc/app/key.v1': { type: 'file', uid: me } })), '/etc/app/key.v1');
+    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc/app/key.v1': { type: 'file', uid: other } })), refused('owned by uid 502'));
+    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc/app': { uid: other } })), refused("under '/etc/app', which is owned by uid 502"));
+    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc': { uid: other } })), refused("under '/etc', which is owned by uid 502"));
+    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/': { mode: 0o775 } })), refused("under '/'"));
+
+    const linked = { ...base, '/srv': {}, '/srv/key': { type: 'link' as const, to: '/etc/app/key.v1' } };
+    assert.equal(await verifyKeyFileLocation('/srv/key', me, tree(linked)), '/etc/app/key.v1');
+    await assert.rejects(verifyKeyFileLocation('/srv/key', me, tree({ ...linked, '/srv/key': { type: 'link', uid: other, to: '/etc/app/key.v1' } })), refused('symbolic link that is owned by uid 502'));
+    await assert.rejects(verifyKeyFileLocation('/srv/key', me, tree({ ...linked, '/srv': { mode: 0o777 } })), refused("under '/srv'"));
   });
 
   it('uses the configured format provider', async () => {

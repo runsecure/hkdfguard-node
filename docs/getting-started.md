@@ -303,6 +303,14 @@ The number you give `keyFiles` is the version that appears as `v1` in every valu
 rotate, add a `v2.key` as `keyFiles: { 1: v1Path, 2: v2Path }`. New values use the highest
 version, and older values still decrypt as long as their key file stays registered.
 
+Rotate at least yearly. AES-GCM is only safe for a limited number of encryptions under one key,
+and a key file outlives the process that counts them. So a key file stops encrypting 365 days
+after it was last written (`keyFileMaxAgeDays`, or `KeyFileMaxAgeDays` in `appsettings.json`, sets
+anywhere from 1 to 3650). A warning is logged at 90% of that age. After it, encrypting throws
+`EncryptionLimitReachedError`, and values under that key file still decrypt. The age is the file's
+modification time, so copy key files with their timestamps kept (`cp -p`, `rsync -t`). A plain
+copy resets the clock.
+
 The same settings can come from a file shared with the .NET port: `keyRingOptionsFromJson` reads the
 `HkdfGuard` section of an `appsettings.json`, with the same field names (`ServiceName`,
 `KeyRefreshInterval`, `KeyFiles`, `EphemeralKeys`, ...), and `keyRingConfigFromOptions` validates
@@ -325,8 +333,9 @@ its meaning.
 | `StatusError` `-11` (Windows), `-16` (macOS) | The key file was wrapped under a different service's KEK | Use the service name the file was created with |
 | `StatusError` `-5` (Windows), `-6` (macOS) | The key file was altered | Restore it from your deployment artifacts |
 | `InvalidServiceNameError` | The name breaks the rule in step 2 | Use letters, digits and dots only |
-| `InvalidKeyFileError` (`ERR_HKDFGUARD_INVALID_KEY_FILE`) | The key file is empty, too large, not a regular file, or writable by its group or others | Fix its permissions (`0600` or `0640`), or recreate it with `wrap` |
+| `InvalidKeyFileError` (`ERR_HKDFGUARD_INVALID_KEY_FILE`) | The key file is empty, too large, or not a regular file. Or someone other than the application could replace it: the file is writable by its group or others, it or a folder above it is owned by a user other than root or the application's own, or a folder above it is writable by its group or others without the sticky bit | Fix the permissions (`0600` or `0640` on the file, owned by root or the application's account, in folders only those can write), or recreate it with `wrap` |
 | `KeyAccessSuspendedError` | The KEK stopped answering for three refreshes in a row | Restore access to the KEK; operations resume on the next successful refresh |
+| `EncryptionLimitReachedError` (`ERR_HKDFGUARD_ENCRYPTION_LIMIT_REACHED`) naming a key file | The current key file is older than `keyFileMaxAgeDays` (365 by default) | Wrap a new key file and register it at a higher version (step 6); old values keep decrypting |
 
 ## Next steps
 

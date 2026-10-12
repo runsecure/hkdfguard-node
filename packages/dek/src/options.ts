@@ -1,7 +1,8 @@
 import {
-  HkdfGuardError, InvalidArgumentError, RefreshFailurePolicy, serviceNameProblem, type CryptoProviderFactory, type KeyWrapper,
+  HkdfGuardError, InvalidArgumentError, jsonErrorLocation, jsonKind, RefreshFailurePolicy, serviceNameProblem,
+  type CryptoProviderFactory, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
-import { MAX_EPHEMERAL_KEY_ROTATION_HOURS, type KeyRingConfig } from './build.js';
+import { MAX_EPHEMERAL_KEY_ROTATION_HOURS, MAX_KEY_FILE_MAX_AGE_DAYS, type KeyRingConfig } from './build.js';
 
 /** Options that break one or more rules; the message lists every rule broken. */
 export class InvalidOptionsError extends HkdfGuardError {
@@ -37,6 +38,8 @@ export interface KeyRingOptions {
   DisableEphemeralKeyRotation?: boolean;
   /** Hours (at least 1) a superseded ephemeral key stays registered for decryption. */
   EphemeralKeyRetentionHours?: number;
+  /** Days (1-3650) after a key file was last written that it stops encrypting; 365 when unset. Node port only so far. */
+  KeyFileMaxAgeDays?: number;
   /** Versions whose wrapped DEK is read from a file. */
   KeyFiles?: KeyFileOptions[];
   /** Versions whose DEK is generated at startup and never written to disk. */
@@ -45,7 +48,7 @@ export interface KeyRingOptions {
 
 const FIELDS: (keyof KeyRingOptions)[] = [
   'ServiceName', 'KeyRefreshInterval', 'MaxRefreshFailures', 'FailOpenOnRefreshFailure', 'EphemeralKeyRotationHours',
-  'DisableEphemeralKeyRotation', 'EphemeralKeyRetentionHours', 'KeyFiles', 'EphemeralKeys',
+  'DisableEphemeralKeyRotation', 'EphemeralKeyRetentionHours', 'KeyFileMaxAgeDays', 'KeyFiles', 'EphemeralKeys',
 ];
 
 /**
@@ -63,6 +66,7 @@ export function validateKeyRingOptions(options: KeyRingOptions): string[] {
   if (outside(options.MaxRefreshFailures, 1)) failures.push('MaxRefreshFailures must be at least 1.');
   if (outside(options.EphemeralKeyRotationHours, 1, MAX_EPHEMERAL_KEY_ROTATION_HOURS)) failures.push(`EphemeralKeyRotationHours must be between 1 and ${MAX_EPHEMERAL_KEY_ROTATION_HOURS}.`);
   if (outside(options.EphemeralKeyRetentionHours, 1)) failures.push('EphemeralKeyRetentionHours must be at least 1.');
+  if (outside(options.KeyFileMaxAgeDays, 1, MAX_KEY_FILE_MAX_AGE_DAYS)) failures.push(`KeyFileMaxAgeDays must be between 1 and ${MAX_KEY_FILE_MAX_AGE_DAYS}.`);
   if (options.DisableEphemeralKeyRotation && options.EphemeralKeyRotationHours !== undefined) {
     failures.push("DisableEphemeralKeyRotation and EphemeralKeyRotationHours can't both be set: one turns rotation off, the other schedules it.");
   }
@@ -109,6 +113,7 @@ export function keyRingConfigFromOptions(options: KeyRingOptions, keyWrapper: Ke
   if (options.DisableEphemeralKeyRotation) config.disableEphemeralKeyRotation = true;
   if (options.EphemeralKeyRotationHours !== undefined) config.ephemeralKeyRotationHours = options.EphemeralKeyRotationHours;
   if (options.EphemeralKeyRetentionHours !== undefined) config.ephemeralKeyRetentionMinutes = options.EphemeralKeyRetentionHours * 60;
+  if (options.KeyFileMaxAgeDays !== undefined) config.keyFileMaxAgeDays = options.KeyFileMaxAgeDays;
   return config;
 }
 
@@ -119,7 +124,8 @@ export function keyRingConfigFromOptions(options: KeyRingOptions, keyWrapper: Ke
  * ignored, and numbers and booleans may be given as strings ("60", "true") - which is how
  * environment-variable overrides arrive. The result is not validated; keyRingConfigFromOptions does that.
  *
- * @throws InvalidArgumentError bad JSON, a missing section, or a value of the wrong type.
+ * @throws InvalidArgumentError bad JSON, a missing section, or a value of the wrong type. Messages
+ * name the field and the kind of value found, never the value or any of the document.
  */
 export function keyRingOptionsFromJson(document: string, section = 'HkdfGuard'): KeyRingOptions {
   const fail = (message: string) => new InvalidArgumentError(message, 'ERR_HKDFGUARD_INVALID_OPTIONS_JSON');
@@ -127,7 +133,7 @@ export function keyRingOptionsFromJson(document: string, section = 'HkdfGuard'):
   try {
     node = JSON.parse(document);
   } catch (error) {
-    throw fail(`Reading options section '${section}': ${(error as Error).message}`);
+    throw fail(`Reading options section '${section}': invalid JSON${jsonErrorLocation(error)}.`);
   }
   for (const name of section === '' ? [] : section.split(':')) {
     const child = isObject(node) ? memberIgnoringCase(node, name) : undefined;
@@ -139,13 +145,13 @@ export function keyRingOptionsFromJson(document: string, section = 'HkdfGuard'):
   const at = (field: string) => `${section === '' ? '' : `${section}:`}${field}`;
   const integer = (value: unknown, field: string): number => {
     const n = typeof value === 'string' && /^\s*-?\d+\s*$/.test(value) ? Number(value) : value;
-    if (typeof n !== 'number' || !Number.isInteger(n)) throw fail(`'${at(field)}' must be an integer, got ${JSON.stringify(value)}.`);
+    if (typeof n !== 'number' || !Number.isInteger(n)) throw fail(`'${at(field)}' must be an integer, got ${jsonKind(value)}.`);
     return n;
   };
   const boolean = (value: unknown, field: string): boolean => {
     if (typeof value === 'boolean') return value;
     if (typeof value === 'string' && /^(true|false)$/i.test(value.trim())) return value.trim().toLowerCase() === 'true';
-    throw fail(`'${at(field)}' must be true or false, got ${JSON.stringify(value)}.`);
+    throw fail(`'${at(field)}' must be true or false, got ${jsonKind(value)}.`);
   };
   const array = (value: unknown, field: string): unknown[] => {
     if (Array.isArray(value)) return value;

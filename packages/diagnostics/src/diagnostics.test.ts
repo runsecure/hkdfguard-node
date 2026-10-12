@@ -135,6 +135,8 @@ describe('HkdfGuardLog', () => {
     ['ephemeralKeyRetired', (l) => HkdfGuardLog.ephemeralKeyRetired(l, 5), 'info', 8, 'Ephemeral key retired: version 5 has been removed and its key zeroed; values encrypted under it no longer decrypt.', false],
     ['ephemeralKeyRetirementFailed', (l) => HkdfGuardLog.ephemeralKeyRetirementFailed(l, 5, new Error('x')), 'error', 9, 'Ephemeral key version 5 was removed from the ring, but disposing it failed.', true],
     ['encryptionBudgetWarning', (l) => HkdfGuardLog.encryptionBudgetWarning(l, 100, 200), 'warn', 10, 'This key has performed 100 encryptions of its 200 AES-GCM limit; rotate it before the limit, when it stops encrypting.', false],
+    ['keyFileAgeWarning', (l) => HkdfGuardLog.keyFileAgeWarning(l, 3, '/etc/app/key.v3', new Date(Date.UTC(2027, 0, 2))), 'warn', 11, "Key file '/etc/app/key.v3' (version 3) stops encrypting at 2027-01-02T00:00:00.000Z, when it reaches its maximum age; deploy a new key file at a higher version before then.", false],
+    ['keyFileExpired', (l) => HkdfGuardLog.keyFileExpired(l, 3, '/etc/app/key.v3'), 'error', 12, "Key file '/etc/app/key.v3' (version 3) has passed its maximum age and no longer encrypts; values under it still decrypt. Deploy a new key file at a higher version.", false],
   ];
 
   for (const [name, call, level, eventId, message, carriesError] of cases) {

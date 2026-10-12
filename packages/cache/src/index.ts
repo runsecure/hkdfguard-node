@@ -8,8 +8,10 @@
  *  - ProtectedCacheCollection: several read-only caches behind one lookup, checked in order.
  *
  * Every value is encrypted under its key ring's current key when stored, and records that key's
- * version, so a cache follows key rotation while earlier values stay readable. Every value is bound
- * to its name (see cacheAad); names match ignoring ASCII case only. Only ciphertext is retained.
+ * version, so a cache follows key rotation while earlier values stay readable. A value expires with
+ * its key: once the ring retires that version, the name is a miss - a pull-through cache fetches it
+ * again under the current key, and a read/write cache accepts a new add. Every value is bound to its
+ * name (see cacheAad); names match ignoring ASCII case only. Only ciphertext is retained.
  */
 export { EmptyValueError, type CacheSource } from './store.js';
 export { ProtectedCache, ReadOnlyProtectedCache, type ProtectedCacheOptions } from './cache.js';
