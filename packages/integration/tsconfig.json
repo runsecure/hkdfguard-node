@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
+  "include": ["src"],
+  "references": [
+    { "path": "../abstractions" },
+    { "path": "../cache" },
+    { "path": "../cryptoprovider-aesgcm256" },
+    { "path": "../dek" },
+    { "path": "../encryptedconfig" },
+    { "path": "../keywrapping-native-v1" }
+  ]
+}

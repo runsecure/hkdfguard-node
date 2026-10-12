@@ -1,0 +1,27 @@
+{
+  "name": "@runsecure/hkdfguard-cache",
+  "version": "0.1.0",
+  "description": "HkdfGuard protected caches: values encrypted under a key ring and bound to their names, with pull-through sources and collections.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/**/*.test*"
+  ],
+  "scripts": {
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@runsecure/hkdfguard-abstractions": "0.1.0",
+    "@runsecure/hkdfguard-diagnostics": "0.1.0"
+  },
+  "devDependencies": {
+    "@runsecure/hkdfguard-dek": "0.1.0",
+    "@runsecure/hkdfguard-test-support": "0.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
