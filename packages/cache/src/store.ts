@@ -27,6 +27,11 @@ export interface CacheSource {
  * Entries are keyed by the name's ASCII-upper-cased form - exactly the rule cacheAad applies - so
  * every spelling that reaches an entry also authenticates against it. Each is encrypted under the
  * ring's current key and records that version, so the cache follows rotation.
+ *
+ * An entry expires with its key: once the ring has retired the version it was encrypted under, the
+ * entry is dropped and the name is a miss - fetched again from the source, if there is one, under
+ * the current key. A version the ring never had (one above the current version) is not expired but
+ * reported as KeyNotFoundError, since retirement only ever removes superseded versions.
  */
 export class Store {
   readonly entries = new Map<string, KeyTrackingValue>();
@@ -52,7 +57,7 @@ export class Store {
   /** The entry for `name`, fetching it from the source on a miss; undefined when neither has it. */
   async lookup(name: string, signal?: AbortSignal): Promise<KeyTrackingValue | undefined> {
     const key = cacheMatchKey(name);
-    const cached = this.entries.get(key);
+    const cached = this.cached(key);
     if (cached !== undefined || this.source === undefined) return cached;
 
     signal?.throwIfAborted();
@@ -61,7 +66,7 @@ export class Store {
     const fresh = this.encrypt(name, plaintext);
     // Another caller may have stored this name while the fetch was in flight; theirs wins, so every
     // reader sees one value.
-    const existing = this.entries.get(key);
+    const existing = this.cached(key);
     if (existing !== undefined) return existing;
     this.entries.set(key, fresh);
     return fresh;
@@ -76,10 +81,36 @@ export class Store {
     const telemetry = HkdfGuardTelemetry.root;
     return telemetry.withSpan(SpanNames.cache.decrypt, async (span) => {
       telemetry.logSensitiveOperation(span, SpanNames.cache.decrypt, { [AttributeNames.name]: name });
-      const entry = await this.lookup(name, signal);
-      if (entry === undefined) return 0;
-      return this.ring.get(entry.keyVersion).decrypt(entry.value, result, cacheAad(name));
+      // A retirement can land while a fetch is awaited, so the entry's key is resolved after the
+      // last await; an entry that expired in between is looked up once more (a fresh one is under
+      // the current key, which is never retired).
+      for (let attempt = 0; ; attempt++) {
+        const entry = await this.lookup(name, signal);
+        if (entry === undefined) return 0;
+        if (attempt === 0 && this.#expire(cacheMatchKey(name), entry)) continue;
+        return this.ring.get(entry.keyVersion).decrypt(entry.value, result, cacheAad(name));
+      }
     });
+  }
+
+  /** The entry stored under match key `key`, or undefined - dropping it first if its key has been retired. */
+  cached(key: string): KeyTrackingValue | undefined {
+    const entry = this.entries.get(key);
+    return entry === undefined || this.#expire(key, entry) ? undefined : entry;
+  }
+
+  /** Drops `entry` from `key` if the ring has retired its version, reporting whether it did. */
+  #expire(key: string, entry: KeyTrackingValue): boolean {
+    if (this.ring.tryGet(entry.keyVersion) !== undefined) return false;
+    let current: number;
+    try {
+      current = this.ring.currentVersion;
+    } catch {
+      return false; // no key at all: let decrypt report it
+    }
+    if (entry.keyVersion >= current) return false; // never retired, so never registered: let decrypt report it
+    if (this.entries.get(key) === entry) this.entries.delete(key);
+    return true;
   }
 
   /** The stored ciphertext's length - an upper bound on the plaintext - or undefined when nothing is stored. */

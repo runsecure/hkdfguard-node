@@ -1,7 +1,7 @@
 import {
   HkdfGuardError, InvalidArgumentError, RefreshFailurePolicy, serviceNameProblem, type CryptoProviderFactory, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
-import { MAX_EPHEMERAL_KEY_ROTATION_HOURS, type KeyRingConfig } from './build.js';
+import { MAX_EPHEMERAL_KEY_ROTATION_HOURS, MAX_KEY_FILE_MAX_AGE_DAYS, type KeyRingConfig } from './build.js';
 
 /** Options that break one or more rules; the message lists every rule broken. */
 export class InvalidOptionsError extends HkdfGuardError {
@@ -37,6 +37,8 @@ export interface KeyRingOptions {
   DisableEphemeralKeyRotation?: boolean;
   /** Hours (at least 1) a superseded ephemeral key stays registered for decryption. */
   EphemeralKeyRetentionHours?: number;
+  /** Days (1-3650) after a key file was last written that it stops encrypting; 365 when unset. Node port only so far. */
+  KeyFileMaxAgeDays?: number;
   /** Versions whose wrapped DEK is read from a file. */
   KeyFiles?: KeyFileOptions[];
   /** Versions whose DEK is generated at startup and never written to disk. */
@@ -45,7 +47,7 @@ export interface KeyRingOptions {
 
 const FIELDS: (keyof KeyRingOptions)[] = [
   'ServiceName', 'KeyRefreshInterval', 'MaxRefreshFailures', 'FailOpenOnRefreshFailure', 'EphemeralKeyRotationHours',
-  'DisableEphemeralKeyRotation', 'EphemeralKeyRetentionHours', 'KeyFiles', 'EphemeralKeys',
+  'DisableEphemeralKeyRotation', 'EphemeralKeyRetentionHours', 'KeyFileMaxAgeDays', 'KeyFiles', 'EphemeralKeys',
 ];
 
 /**
@@ -63,6 +65,7 @@ export function validateKeyRingOptions(options: KeyRingOptions): string[] {
   if (outside(options.MaxRefreshFailures, 1)) failures.push('MaxRefreshFailures must be at least 1.');
   if (outside(options.EphemeralKeyRotationHours, 1, MAX_EPHEMERAL_KEY_ROTATION_HOURS)) failures.push(`EphemeralKeyRotationHours must be between 1 and ${MAX_EPHEMERAL_KEY_ROTATION_HOURS}.`);
   if (outside(options.EphemeralKeyRetentionHours, 1)) failures.push('EphemeralKeyRetentionHours must be at least 1.');
+  if (outside(options.KeyFileMaxAgeDays, 1, MAX_KEY_FILE_MAX_AGE_DAYS)) failures.push(`KeyFileMaxAgeDays must be between 1 and ${MAX_KEY_FILE_MAX_AGE_DAYS}.`);
   if (options.DisableEphemeralKeyRotation && options.EphemeralKeyRotationHours !== undefined) {
     failures.push("DisableEphemeralKeyRotation and EphemeralKeyRotationHours can't both be set: one turns rotation off, the other schedules it.");
   }
@@ -109,6 +112,7 @@ export function keyRingConfigFromOptions(options: KeyRingOptions, keyWrapper: Ke
   if (options.DisableEphemeralKeyRotation) config.disableEphemeralKeyRotation = true;
   if (options.EphemeralKeyRotationHours !== undefined) config.ephemeralKeyRotationHours = options.EphemeralKeyRotationHours;
   if (options.EphemeralKeyRetentionHours !== undefined) config.ephemeralKeyRetentionMinutes = options.EphemeralKeyRetentionHours * 60;
+  if (options.KeyFileMaxAgeDays !== undefined) config.keyFileMaxAgeDays = options.KeyFileMaxAgeDays;
   return config;
 }
 

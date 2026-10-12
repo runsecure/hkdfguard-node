@@ -42,6 +42,7 @@ describe('validateKeyRingOptions', () => {
       [{ MaxRefreshFailures: 0 }, 'MaxRefreshFailures must be at least 1'],
       [{ EphemeralKeyRotationHours: 0 }, 'EphemeralKeyRotationHours must be between 1 and 1193'], [{ EphemeralKeyRotationHours: 1194 }, 'EphemeralKeyRotationHours must be between 1 and 1193'],
       [{ EphemeralKeyRetentionHours: -1 }, 'EphemeralKeyRetentionHours must be at least 1'],
+      [{ KeyFileMaxAgeDays: 0 }, 'KeyFileMaxAgeDays must be between 1 and 3650'], [{ KeyFileMaxAgeDays: 3651 }, 'KeyFileMaxAgeDays must be between 1 and 3650'],
     ];
     for (const [change, reason] of cases) assert.ok(includesAll(failures(change), reason), reason);
   });
@@ -58,6 +59,11 @@ describe('validateKeyRingOptions', () => {
       'Version 1 is registered more than once', 'Version 2 is registered more than once'));
   });
 
+  it('accepts a key-file age at both limits, also from appsettings.json', () => {
+    for (const days of [1, 3650]) assert.deepEqual(failures({ KeyFileMaxAgeDays: days }), []);
+    assert.equal(keyRingOptionsFromJson('{"HkdfGuard":{"keyFileMaxAgeDays":"180"}}').KeyFileMaxAgeDays, 180);
+  });
+
   it('reports every failure at once', () => {
     assert.ok(includesAll(validateKeyRingOptions({ KeyRefreshInterval: 0 }), 'ServiceName is invalid', 'KeyRefreshInterval must be', 'At least one key file'));
   });
@@ -68,8 +74,9 @@ describe('keyRingConfigFromOptions', () => {
     const wrapper = new FakeKeyWrapper(), factory = new RecordingFactory();
     const config = keyRingConfigFromOptions({
       ServiceName: 'com.example.orders', KeyRefreshInterval: 30, MaxRefreshFailures: 5, EphemeralKeyRotationHours: 6,
-      EphemeralKeyRetentionHours: 48, KeyFiles: [{ Version: 1, Path: '/etc/app/key.v1' }], EphemeralKeys: [2],
+      EphemeralKeyRetentionHours: 48, KeyFileMaxAgeDays: 90, KeyFiles: [{ Version: 1, Path: '/etc/app/key.v1' }], EphemeralKeys: [2],
     }, wrapper, factory);
+    assert.equal(config.keyFileMaxAgeDays, 90);
     assert.equal(config.keyWrapper, wrapper);
     assert.equal(config.cryptoProviderFactory, factory);
     assert.equal(config.serviceName, 'com.example.orders');
@@ -86,6 +93,7 @@ describe('keyRingConfigFromOptions', () => {
     assert.equal(plain.refreshFailurePolicy, undefined);
     assert.equal(plain.ephemeralKeyRotationHours, undefined);
     assert.equal(plain.ephemeralKeyRetentionMinutes, undefined);
+    assert.equal(plain.keyFileMaxAgeDays, undefined);
     const open = keyRingConfigFromOptions({ ServiceName: 'svc', EphemeralKeys: [1], FailOpenOnRefreshFailure: true, DisableEphemeralKeyRotation: true }, new FakeKeyWrapper(), new RecordingFactory());
     assert.ok(!open.refreshFailurePolicy?.failsClosed);
     assert.ok(open.disableEphemeralKeyRotation);

@@ -19,6 +19,7 @@ export const LogKeys = {
   error: 'error',
   level: 'log.level',
   refreshFailurePolicy: 'hkdfguard.refresh_failure_policy',
+  keyFilePath: 'hkdfguard.key_file.path',
 } as const;
 
 type Level = 'debug' | 'info' | 'warn' | 'error' | 'critical';
@@ -131,5 +132,25 @@ export const HkdfGuardLog = {
     logEvent(logger, 'warn', 10, 'EncryptionBudgetWarning',
       () => `This key has performed ${encryptionCount} encryptions of its ${encryptionLimit} AES-GCM limit; rotate it before the limit, when it stops encrypting.`,
       { [AttributeNames.encryptionCount]: encryptionCount, [AttributeNames.encryptionLimit]: encryptionLimit });
+  },
+
+  /**
+   * Warning: the current key file is nearing its maximum age, after which it stops encrypting.
+   * Logged once per key. A Node-port event: the other ports have no key-file age limit yet.
+   */
+  keyFileAgeWarning(logger: Logger | undefined, keyVersion: number, path: string, refuseAt: Date): void {
+    logEvent(logger, 'warn', 11, 'KeyFileAgeWarning',
+      () => `Key file '${path}' (version ${keyVersion}) stops encrypting at ${refuseAt.toISOString()}, when it reaches its maximum age; deploy a new key file at a higher version before then.`,
+      { [AttributeNames.keyVersion]: keyVersion, [LogKeys.keyFilePath]: path });
+  },
+
+  /**
+   * Critical: the current key file has passed its maximum age and no longer encrypts; decryption
+   * still works. Logged once per key. A Node-port event, like {@link keyFileAgeWarning}.
+   */
+  keyFileExpired(logger: Logger | undefined, keyVersion: number, path: string): void {
+    logEvent(logger, 'critical', 12, 'KeyFileExpired',
+      () => `Key file '${path}' (version ${keyVersion}) has passed its maximum age and no longer encrypts; values under it still decrypt. Deploy a new key file at a higher version.`,
+      { [AttributeNames.keyVersion]: keyVersion, [LogKeys.keyFilePath]: path });
   },
 };

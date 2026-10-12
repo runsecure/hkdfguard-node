@@ -16,7 +16,9 @@ export const OVERHEAD = NONCE_SIZE + TAG_SIZE;
 /**
  * Encryptions after which a key refuses to encrypt (decryption keeps working): half of NIST SP
  * 800-38D's 2^32 random-nonce limit, since a per-process counter can't see the other processes
- * sharing the same key file. Counted per key, across every provider in the process.
+ * sharing the same key file. Counted per key, across every provider in the process, and only for
+ * this process's life: a key that outlives it (a key file) needs a bound of its own, which the dek
+ * package's buildKeyRing applies as a maximum key-file age (keyFileMaxAgeDays).
  */
 export const MAX_ENCRYPTIONS_PER_KEY = 2 ** 31;
 /** Encryptions after which a warning is raised, once - one eighth of the limit. */

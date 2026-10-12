@@ -3,11 +3,12 @@ import {
   HkdfGuardError, InvalidArgumentError, MAX_WRAPPED_KEY_BYTES, RefreshFailurePolicy, validateServiceName,
   type CryptoProvider, type CryptoProviderFactory, type EncryptedFormatProvider, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
-import type { Logger } from '@runsecure/hkdfguard-diagnostics';
-import { DataEncryptionKey } from './key.js';
+import { HkdfGuardLog, type Logger } from '@runsecure/hkdfguard-diagnostics';
+import { DataEncryptionKey, type EncryptionDeadline } from './key.js';
 import { KeyRing, Rotation } from './keyring.js';
 
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 // Group- and other-write: anyone with either could choose the key new data is encrypted under.
 const KEY_FILE_FORBIDDEN_MODE = 0o022;
@@ -22,6 +23,17 @@ export const MAX_EPHEMERAL_KEY_ROTATION_HOURS = 1193;
 export const DEFAULT_EPHEMERAL_KEY_RETENTION_HOURS = 24;
 /** The shortest retention accepted, in minutes. */
 export const MIN_EPHEMERAL_KEY_RETENTION_MINUTES = 1;
+/**
+ * How many days after it was last written a key file stops encrypting, unless configured otherwise.
+ * AES-GCM with random nonces is safe for about 2^32 encryptions under one key in total, and a key
+ * file outlives the process that counts them, so it is bounded by age instead: rotate key files by
+ * deploying a new one at a higher version. Decryption under an old key file never stops.
+ */
+export const DEFAULT_KEY_FILE_MAX_AGE_DAYS = 365;
+/** The longest key-file age accepted, in days. */
+export const MAX_KEY_FILE_MAX_AGE_DAYS = 3650;
+/** The fraction of the maximum age after which a warning is logged: 90%, about five weeks of a year. */
+export const KEY_FILE_AGE_WARNING_FRACTION = 0.9;
 
 /** A key file that is empty, or larger than MAX_WRAPPED_KEY_BYTES. */
 export class InvalidKeyFileError extends HkdfGuardError {
@@ -65,7 +77,14 @@ export interface KeyRingConfig {
   disableEphemeralKeyRotation?: boolean;
   /** Minutes (at least 1) a superseded ephemeral key stays registered for decryption; 24 hours when omitted. */
   ephemeralKeyRetentionMinutes?: number;
-  /** Receives an entry for every rotation, failed rotation and retirement. */
+  /**
+   * Days (1-3650) after a key file was last written that it stops encrypting; 365 when omitted. Its
+   * age is its modification time, so copy key files with their timestamps preserved (cp -p, rsync
+   * -t). A warning is logged at 90% of the age; past it, encrypt throws EncryptionLimitReachedError
+   * and decryption still works. Only the current version ever encrypts, so only it is reported.
+   */
+  keyFileMaxAgeDays?: number;
+  /** Receives an entry for every rotation, failed rotation and retirement, and for a current key file nearing or past its age. */
   logger?: Logger;
   /** Cancels reading key files and revealing keys; anything already created is closed. */
   signal?: AbortSignal;
@@ -95,6 +114,10 @@ function validate(config: KeyRingConfig): void {
   if (hours !== undefined && config.disableEphemeralKeyRotation) {
     throw invalid("disableEphemeralKeyRotation and ephemeralKeyRotationHours can't both be set: one turns rotation off, the other schedules it.");
   }
+  const days = config.keyFileMaxAgeDays;
+  if (days !== undefined && !(Number.isInteger(days) && days >= 1 && days <= MAX_KEY_FILE_MAX_AGE_DAYS)) {
+    throw invalid(`keyFileMaxAgeDays must be between 1 and ${MAX_KEY_FILE_MAX_AGE_DAYS}.`);
+  }
   const minutes = config.ephemeralKeyRetentionMinutes;
   if (minutes !== undefined && !(Number.isFinite(minutes) && minutes >= MIN_EPHEMERAL_KEY_RETENTION_MINUTES)) {
     throw invalid(`ephemeralKeyRetentionMinutes must be at least ${MIN_EPHEMERAL_KEY_RETENTION_MINUTES}.`);
@@ -119,6 +142,11 @@ function entries(keyFiles: KeyRingConfig['keyFiles']): [number, string][] {
  * describe what is read, not a path that may have changed in between.
  */
 export async function readKeyFile(path: string): Promise<Uint8Array> {
+  return (await readKeyFileWithTime(path)).wrapped;
+}
+
+/** {@link readKeyFile}, with the opened file's modification time - the key file's age. */
+async function readKeyFileWithTime(path: string): Promise<{ wrapped: Uint8Array; modifiedMs: number }> {
   const file = await open(path, 'r');
   try {
     const stats = await file.stat();
@@ -139,20 +167,32 @@ export async function readKeyFile(path: string): Promise<Uint8Array> {
     if (total > MAX_WRAPPED_KEY_BYTES) {
       throw new InvalidKeyFileError(`Key file '${path}' is larger than ${MAX_WRAPPED_KEY_BYTES} bytes (MAX_WRAPPED_KEY_BYTES); a wrapped key never is.`);
     }
-    return buffer.slice(0, total);
+    return { wrapped: buffer.slice(0, total), modifiedMs: stats.mtimeMs };
   } finally {
     await file.close();
   }
 }
 
-async function addOwned(ring: KeyRing, version: number, provider: CryptoProvider): Promise<void> {
-  const key = new DataEncryptionKey(provider);
+async function addOwned(ring: KeyRing, version: number, provider: CryptoProvider, deadline?: EncryptionDeadline): Promise<void> {
+  const key = new DataEncryptionKey(provider, deadline);
   try {
     ring.add(version, key);
   } catch (error) {
     await key.close();
     throw error;
   }
+}
+
+/** When the key file at `path`, last written at `modifiedMs`, stops encrypting, and who hears about it. */
+function keyFileDeadline(version: number, path: string, modifiedMs: number, maxAgeDays: number, logger: Logger | undefined): EncryptionDeadline {
+  const refuseAt = modifiedMs + maxAgeDays * DAY_MS;
+  return {
+    warnAt: modifiedMs + maxAgeDays * DAY_MS * KEY_FILE_AGE_WARNING_FRACTION,
+    refuseAt,
+    reason: `Key file '${path}' (version ${version}) was last written ${new Date(modifiedMs).toISOString()}, more than ${maxAgeDays} days ago (keyFileMaxAgeDays), so it no longer encrypts: AES-GCM is only safe for a bounded number of encryptions under one key. Deploy a new key file at a higher version; values under this one still decrypt.`,
+    onWarning: () => HkdfGuardLog.keyFileAgeWarning(logger, version, path, new Date(refuseAt)),
+    onExpired: () => HkdfGuardLog.keyFileExpired(logger, version, path),
+  };
 }
 
 /**
@@ -167,10 +207,12 @@ export async function buildKeyRing(config: KeyRingConfig, internals: BuildIntern
   const ring = new KeyRing(config.formatProvider);
 
   try {
+    const maxAgeDays = config.keyFileMaxAgeDays ?? DEFAULT_KEY_FILE_MAX_AGE_DAYS;
     for (const [version, path] of entries(config.keyFiles)) {
       signal?.throwIfAborted();
-      const wrapped = await readKeyFile(path);
-      await addOwned(ring, version, await factory.create(keyWrapper, wrapped, providerOptions));
+      const { wrapped, modifiedMs } = await readKeyFileWithTime(path);
+      await addOwned(ring, version, await factory.create(keyWrapper, wrapped, providerOptions),
+        keyFileDeadline(version, path, modifiedMs, maxAgeDays, config.logger));
     }
     for (const version of config.ephemeralKeys ?? []) {
       signal?.throwIfAborted();
@@ -180,6 +222,10 @@ export async function buildKeyRing(config: KeyRingConfig, internals: BuildIntern
     await ring.close().catch(() => undefined);
     throw error;
   }
+
+  // Report a current key file already nearing or past its age now, not at its first encrypt.
+  const current = ring.tryGet(ring.currentVersion);
+  if (current instanceof DataEncryptionKey) current.checkDeadline();
 
   const ephemeral = config.ephemeralKeys ?? [];
   if (ephemeral.length > 0 && !config.disableEphemeralKeyRotation) {

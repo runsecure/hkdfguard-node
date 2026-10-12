@@ -5,8 +5,8 @@ import {
   type ProtectedCache as ProtectedCacheContract, type ProtectedReadOnlyCache,
 } from '@runsecure/hkdfguard-abstractions';
 import { HkdfGuardTelemetry, MetricNames } from '@runsecure/hkdfguard-diagnostics';
-import { KeyRing } from '@runsecure/hkdfguard-dek';
-import { capturingLogger, RecordingKey, useMetricRecorder } from '@runsecure/hkdfguard-test-support';
+import { buildKeyRing, KeyRing } from '@runsecure/hkdfguard-dek';
+import { capturingLogger, FakeKeyWrapper, RecordingFactory, RecordingKey, useMetricRecorder } from '@runsecure/hkdfguard-test-support';
 import { ProtectedCache, ReadOnlyProtectedCache } from './cache.js';
 import { ProtectedCacheCollection } from './collection.js';
 import { EmptyValueError, type CacheSource } from './store.js';
@@ -170,6 +170,84 @@ describe('name binding and rotation', () => {
     await assert.rejects(cache.decrypt('item', new Uint8Array(64)), AuthenticationFailedError);
     cache.entriesForTesting.set('ITEM', { ...entry, keyVersion: 9 });
     await assert.rejects(cache.decrypt('item', new Uint8Array(64)), KeyNotFoundError);
+  });
+});
+
+describe('expiry with key retirement', () => {
+  /** A ring at version 2 whose version 1 has just been retired, as a scheduled rotation retires it. */
+  async function rotateAndRetire(ring: KeyRing): Promise<void> {
+    ring.add(2, new RecordingKey());
+    assert.equal(await ring.remove(1), true);
+  }
+
+  it('treats a value under a retired key as missing, and lets add store the name again', async () => {
+    const { ring } = ringWith(1);
+    const cache = new ProtectedCache(ring);
+    cache.add('item', utf8('old'));
+    await rotateAndRetire(ring);
+
+    assert.equal(await cache.maxDecryptedLength('item'), undefined);
+    assert.equal(await cache.decrypt('item', new Uint8Array(64)), 0);
+    assert.equal(cache.entriesForTesting.has('ITEM'), false);
+
+    cache.add('ITEM', utf8('new'));
+    assert.equal(cache.entriesForTesting.get('ITEM')!.keyVersion, 2);
+    assert.equal(await get(cache, 'item'), 'new');
+  });
+
+  it('lets add replace an expired value without first reading it', async () => {
+    const { ring } = ringWith(1);
+    const cache = new ProtectedCache(ring);
+    cache.add('item', utf8('old'));
+    await rotateAndRetire(ring);
+    cache.add('item', utf8('new'));
+    assert.equal(await get(cache, 'item'), 'new');
+  });
+
+  it('fetches a value under a retired key again, under the current key', async () => {
+    const { ring } = ringWith(1);
+    const source = new FakeSource({ db: 'secret' });
+    const cache = new ProtectedCache(ring, { source });
+    assert.equal(await get(cache, 'db'), 'secret');
+    assert.equal(source.fetches, 1);
+
+    await rotateAndRetire(ring);
+    assert.equal(await get(cache, 'db'), 'secret');
+    assert.equal(source.fetches, 2);
+    assert.equal(cache.entriesForTesting.get('DB')!.keyVersion, 2);
+    assert.equal(await get(cache, 'db'), 'secret');
+    assert.equal(source.fetches, 2, 'the refetched value is served from the cache');
+  });
+
+  it('keeps serving values under a superseded key until it is retired', async () => {
+    const { ring } = ringWith(1);
+    const source = new FakeSource({ db: 'secret' });
+    const cache = new ReadOnlyProtectedCache(ring, source);
+    assert.equal(await get(cache, 'db'), 'secret');
+    ring.add(2, new RecordingKey());
+    assert.equal(await get(cache, 'db'), 'secret');
+    assert.equal(source.fetches, 1);
+  });
+
+  it("refetches after a built ring's scheduled rotation retires the key", async () => {
+    const ring = await buildKeyRing({
+      keyWrapper: new FakeKeyWrapper(), cryptoProviderFactory: new RecordingFactory(),
+      keyRefreshInterval: 60, ephemeralKeys: [1], ephemeralKeyRetentionMinutes: 1,
+    }, { manualRotation: true });
+    try {
+      const source = new FakeSource({ db: 'secret' });
+      const cache = new ReadOnlyProtectedCache(ring, source);
+      assert.equal(await get(cache, 'db'), 'secret');
+
+      assert.equal(await ring.rotation!.rotate(), true);
+      await ring.rotation!.retire(performance.now() + 2 * 60 * 1000); // past the one-minute retention
+      assert.equal(ring.tryGet(1), undefined);
+
+      assert.equal(await get(cache, 'db'), 'secret');
+      assert.equal(source.fetches, 2);
+    } finally {
+      await ring.close();
+    }
   });
 });
 
