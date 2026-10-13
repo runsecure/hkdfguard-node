@@ -1,0 +1,18 @@
+{
+  "name": "@runsecure/hkdfguard-abstractions",
+  "version": "0.1.0",
+  "description": "The interfaces, shared rules, errors and limits every HkdfGuard package is built against.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/**/*.test*"
+  ],
+  "scripts": {
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

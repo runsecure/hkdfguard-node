@@ -1,0 +1,280 @@
+# Checks, packs, signs and publishes every HkdfGuard npm package at one version, and creates the
+# GitHub Release that carries the same tarballs.
+#
+# Triggered by pushing a version tag. Every package is released together, at one version:
+#
+#   node scripts/set-version.mjs 0.2.0 && npm install   # then commit
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# Any v0.x.y tag, and any tag with a pre-release suffix (v1.2.0-rc.1), is published as a GitHub
+# pre-release; a pre-release suffix is also published to npm under the "next" dist-tag rather than
+# "latest", so `npm install` never picks it up by default. Five jobs:
+#
+#   version         turns the tag into the version it releases (scripts/release-tag.sh); fails on a
+#                   malformed tag, or unless every package and every reference between them is
+#                   already at that version.
+#   build           build.yml, the same reusable workflow ci.yml runs, on every supported OS.
+#   pack            packs every published package from the tagged commit, once, and attests the
+#                   provenance of those exact tarballs. They are what both publish jobs ship.
+#   publish-npm     publishes those tarballs to npm with provenance, in the "release" environment.
+#                   Off until the repository variable HKDFGUARD_PUBLISH_NPM is "true".
+#   github-release  creates the GitHub Release with the tarballs and their SHA-256s.
+#
+# How the packages are signed. npm has no Authenticode-style signing of a package by its author;
+# what proves a package's origin is:
+#
+#   - npm provenance: `npm publish --provenance` has GitHub's OIDC token signed by Sigstore into a
+#     SLSA provenance statement - this repository, this workflow, this commit, this tarball's
+#     SHA-512 - published beside the package and recorded in Sigstore's public transparency log.
+#     npmjs.com shows it on the package page; consumers verify every installed package with
+#     `npm audit signatures`. Needs a public repository and a GitHub-hosted runner.
+#   - the registry's own ECDSA signature on every published tarball, which npm adds and
+#     `npm audit signatures` also checks.
+#   - a GitHub build-provenance attestation (Sigstore again) of each tarball attached to the
+#     GitHub Release: `gh attestation verify <file> --repo runsecure/hkdfguard-node`.
+#
+# Nothing here is Authenticode- or codesign-signed, because nothing shipped is a binary: the
+# native add-on is compiled from its C source on each consumer's machine at install, and the
+# native KMS library it loads is installed, signed and verified separately. If prebuilt add-on
+# binaries (prebuildify and the like) are ever shipped, they need a sign job between build and
+# pack, like the .NET release's: Authenticode for the Windows .node files (Artifact Signing, with
+# an Azure federated credential for the "release" environment), and codesign plus notarization for
+# the macOS ones - and the add-on's loader would need to verify them.
+#
+# Publishing setup this workflow depends on (npm and GitHub, not code):
+#   - Trusted publishing (no stored npm token): on npmjs.com, each package's Settings > Trusted
+#     publishing names GitHub Actions, the repository runsecure/hkdfguard-node, the workflow file
+#     release.yml and the environment "release". npm then accepts only this workflow's OIDC token
+#     for that package, and provenance is attached automatically. Needs npm 11.5.1 or later, which
+#     the publish job installs.
+#   - Trusted publishing can only be configured on a package that already exists. For the very
+#     first release, store a granular npm access token (publish rights on the @runsecure scope, a
+#     short expiry) as the "release" environment's NPM_TOKEN secret; once every package exists and
+#     has its trusted publisher, delete the secret and the token. While it is unset, the token is
+#     empty and only trusted publishing can succeed.
+#   - The "release" environment (Settings > Environments), restricted to tags matching v*, ideally
+#     with required reviewers: a publish to npm can be deprecated but never truly undone.
+#   - The repository variable HKDFGUARD_PUBLISH_NPM set to "true". Until then, releases go to
+#     GitHub only.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# Least privilege by default; each job asks for exactly what it needs below.
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs, not tags: a tag can be moved to different
+# code after the fact, a commit SHA cannot. The trailing comment names the release each SHA
+# corresponds to. To update one, look up the new tag's commit
+# (git ls-remote https://github.com/<action> refs/tags/<tag>; for an annotated tag use the ^{}
+# line) and replace both.
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # Trusted publishing needs npm 11.5.1 or later; Node.js 22 ships npm 10.
+  NPM_VERSION: "11.20.0"
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      dist_tag: ${{ steps.version.outputs.dist_tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          check-latest: false
+          package-manager-cache: false
+
+      - name: Determine the release version
+        id: version
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          scripts/release-tag.sh "$TAG" | tee -a "$GITHUB_OUTPUT"
+
+  # Every check, on every OS - the same workflow ci.yml runs on every push.
+  build:
+    needs: version
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+
+  pack:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write     # build provenance attestation (signing)
+      attestations: write # build provenance attestation (storage)
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # No dependency cache for a release: everything comes from the lockfile and the registry.
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          check-latest: false
+          package-manager-cache: false
+
+      - name: Install (locked) and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          node_modules/.bin/tsc --build --force
+
+      # Every published package, in the workspace order - which is dependency order - into
+      # artifacts/packages, with publish-order.txt naming each tarball and its package for
+      # publish-npm. Each tarball must carry the released version.
+      - name: Pack every published package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/packages
+          : > artifacts/publish-order.txt
+          for workspace in $(node -p 'require("./package.json").workspaces.filter((w) => !require(`./${w}/package.json`).private).join(" ")'); do
+            npm pack --workspace "$workspace" --pack-destination artifacts/packages --json \
+              | node -e '
+                  const [{ name, version, filename }] = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+                  if (version !== process.env.VERSION) { console.error(`${name} packed at ${version}, not ${process.env.VERSION}`); process.exit(1); }
+                  console.log(`${filename} ${name}`);
+                ' >> artifacts/publish-order.txt
+          done
+          (cd artifacts/packages && for file in *.tgz; do sha256sum "$file" > "$file.sha256"; done)
+          cat artifacts/publish-order.txt
+          ls -l artifacts/packages
+
+      # Signed, verifiable statement that these exact tarballs (by SHA-256) were built by this
+      # workflow, from this commit, in this repository. Verify one with:
+      #   gh attestation verify <file> --repo runsecure/hkdfguard-node
+      # Attestations need a public repository, or GitHub Enterprise Cloud for a private one.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: artifacts/packages/*.tgz
+
+      - name: Upload the release packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-packages
+          path: artifacts/
+          if-no-files-found: error
+
+  publish-npm:
+    needs: [version, pack]
+    if: vars.HKDFGUARD_PUBLISH_NPM == 'true'
+    runs-on: ubuntu-24.04 # provenance needs a GitHub-hosted runner
+    # npm's trusted publisher for each package names this environment (see the header). Restrict
+    # it to v* tags, and give it required reviewers, in the repository settings.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # trusted publishing and npm provenance (OIDC, signed by Sigstore)
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      DIST_TAG: ${{ needs.version.outputs.dist_tag }}
+    steps:
+      - name: Download the release packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-packages
+          path: release
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+          check-latest: false
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+
+      - name: Install npm ${{ env.NPM_VERSION }}
+        shell: bash
+        run: |
+          npm install --global "npm@$NPM_VERSION"
+          npm --version
+
+      # Publishes the attested tarballs themselves - the same bytes the GitHub Release carries -
+      # in dependency order. A version already on the registry is skipped, so a run that failed
+      # part-way can be re-run. NODE_AUTH_TOKEN is only for the first release (see the header);
+      # unset, npm authenticates with this job's OIDC token through trusted publishing.
+      - name: Publish to npm with provenance
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          while read -r tarball name; do
+            if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+              echo "$name@$VERSION is already published; skipping"
+              continue
+            fi
+            npm publish "release/packages/$tarball" --provenance --access public --tag "$DIST_TAG"
+          done < release/publish-order.txt
+
+  github-release:
+    needs: [version, pack, publish-npm]
+    # After npm, so the release never announces packages npm refused; still runs when npm
+    # publishing is switched off.
+    if: ${{ !cancelled() && needs.pack.result == 'success' && (needs.publish-npm.result == 'success' || needs.publish-npm.result == 'skipped') }}
+    runs-on: ubuntu-24.04 # only needs the gh CLI (preinstalled)
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - name: Download the release packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-packages
+          path: release
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          PUBLISHED: ${{ needs.publish-npm.result }}
+          DIST_TAG: ${{ needs.version.outputs.dist_tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            extra+=(--prerelease)
+            echo "Publishing as a pre-release"
+          fi
+          if [[ "$PUBLISHED" == "success" ]]; then
+            where="Published to npm under the \`$DIST_TAG\` dist-tag, with provenance (\`npm audit signatures\`)."
+          else
+            where="Not published to npm by this release; install a tarball below with \`npm install <file>\`."
+          fi
+          gh release create "$TAG" release/packages/* \
+            --title "hkdfguard-node $VERSION" \
+            --notes "Every @runsecure/hkdfguard-* package at \`$VERSION\`. $where The attached tarballs are exactly what was published, with their SHA-256s and build-provenance attestations (\`gh attestation verify <file> --repo $REPOSITORY\`)." \
+            --generate-notes "${extra[@]}" --repo "$REPOSITORY"

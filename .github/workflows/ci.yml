@@ -1,0 +1,26 @@
+# Continuous integration: every push to main or develop, every pull request, and on demand. Runs
+# the same build.yml that release.yml runs - so a green CI commit is one a tag will check
+# identically.
+#
+# No secrets, no "release" environment, no id-token: pull requests from forks run this too.
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR supersedes the run in progress.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read

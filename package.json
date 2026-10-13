@@ -1,0 +1,29 @@
+{
+  "name": "hkdfguard-node",
+  "private": true,
+  "description": "HkdfGuard key wrapping and secrets protection libraries for Node.js",
+  "license": "SEE LICENSE IN LICENSE",
+  "workspaces": [
+    "packages/test-support",
+    "packages/diagnostics",
+    "packages/abstractions",
+    "packages/cryptoprovider-aesgcm256",
+    "packages/keywrapping-native-v1",
+    "packages/dek",
+    "packages/cache",
+    "packages/encryptedconfig",
+    "packages/integration"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "test": "npm run build && npm test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}
