@@ -425,7 +425,7 @@ describe('buildKeyRing', () => {
     assert.equal(after.uid, before.uid);
   });
 
-  it("checks the owner of the key file, every folder above it, and any link to it", async () => {
+  it("checks the owner of the key file, every folder above it, and any link to it", { skip: process.platform === 'win32' }, async () => {
     // A simulated filesystem: tests can't create files owned by another user.
     const me = 501, other = 502;
     const tree = (entries: Record<string, { uid?: number; mode?: number; type?: 'dir' | 'file' | 'link'; to?: string }>): KeyFileSystem => ({

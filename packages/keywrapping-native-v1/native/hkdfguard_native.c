@@ -789,7 +789,7 @@ static napi_value verified_signer(napi_env env, napi_callback_info info) {
       problem = "the signer's extended key usage could not be decoded";
       goto close;
     }
-    CERT_ENHANCED_KEY_USAGE* usage = malloc(size);
+    CERT_ENHKEY_USAGE* usage = malloc(size);
     if (usage == NULL
         || !CryptDecodeObject(X509_ASN_ENCODING, X509_ENHANCED_KEY_USAGE, extension->Value.pbData, extension->Value.cbData, 0, usage, &size)) {
       free(usage);
