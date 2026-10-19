@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { isValidServiceName } from '@runsecure/hkdfguard-abstractions';
 import { MAC_CODE_REQUIREMENT, MAC_TEAM_ID } from './macpolicy.js';
 import { DEFAULT_TEST_SERVICES, UNPROVISIONED_SERVICE_NAME } from './testservices.test-support.js';
-import { WIN_CODE_SIGNING_EKU, WIN_EXPECTED_PROFILE_EKU, WIN_EXPECTED_PUBLISHER, WIN_EXPECTED_ROOT_SHA256 } from './windowspolicy.js';
+import { WIN_CODE_SIGNING_EKU, WIN_EXPECTED_PROFILE_EKU, WIN_EXPECTED_PUBLISHER, WIN_EXPECTED_ROOT_SHA256, WIN_FILE_NAME } from './windowspolicy.js';
 
 // The provisioning scripts vet the native tool against the same pins the loader vets the library
 // against, and provision the services the tests look for; this keeps them from drifting apart.
@@ -24,6 +24,13 @@ describe('provisioning scripts', () => {
     for (const [variable, want] of Object.entries(pins)) {
       assert.equal(new RegExp(`^\\$${variable} = '([^']*)'$`, 'm').exec(text)?.[1], want, variable);
     }
+  });
+
+  it('the Windows and Linux scripts run the installed hkdfguard tool', () => {
+    assert.match(script('provision-windows-test-key.ps1'), /^\$tool = Join-Path \$programFiles 'HkdfGuard\\v1\\hkdfguard\.exe'$/m);
+    assert.equal(WIN_FILE_NAME, 'HkdfGuard.dll');
+    assert.match(script('provision-linux-test-key.sh'), /^readonly TOOL="\/usr\/bin\/hkdfguard"$/m);
+    for (const name of ['provision-windows-test-key.ps1', 'provision-linux-test-key.sh']) assert.doesNotMatch(script(name), /v1-initialize|HkdfGuardV1/, name);
   });
 
   it("the macOS script pins the loader's team and requirement, naming the tool", () => {

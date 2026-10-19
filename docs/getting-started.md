@@ -35,7 +35,7 @@ Two separate things are installed:
 | Part | Where it comes from | What it does |
 |---|---|---|
 | The npm packages | `@runsecure/hkdfguard-dek`, `-cryptoprovider-aesgcm256`, `-keywrapping-native-v1` and their dependencies | Everything your code calls |
-| The native library and `hkdfguard-v1-initialize` | The HkdfGuard native package: `%ProgramFiles%\HkdfGuard\v1` on Windows, `/Library/Application Support/HkdfGuard/v1` (or `~/.hkdfguard/v1`) on macOS | Hold and use the KEK |
+| The native library and its `hkdfguard` tool (`hkdfguard-v1-initialize` on macOS) | The HkdfGuard native package: `%ProgramFiles%\HkdfGuard\v1` on Windows, `/Library/Application Support/HkdfGuard/v1` (or `~/.hkdfguard/v1`) on macOS | Hold and use the KEK |
 
 `@runsecure/hkdfguard-keywrapping-native-v1` contains a small C add-on, compiled when the package is
 installed, that does nothing but load the native library and call it. It loads the library only
@@ -53,7 +53,7 @@ permissions and the library's code signature. It never searches `PATH`, `LD_LIBR
 Check that it installed:
 
 ```powershell
-Get-AuthenticodeSignature "$env:ProgramFiles\HkdfGuard\v1\HkdfGuardV1.dll" | Select-Object Status, SignerCertificate
+Get-AuthenticodeSignature "$env:ProgramFiles\HkdfGuard\v1\HkdfGuard.dll" | Select-Object Status, SignerCertificate
 ```
 
 `Status` must be `Valid`.
@@ -81,7 +81,7 @@ allowed.
 **Windows:** open PowerShell **as administrator** and run:
 
 ```powershell
-& "$env:ProgramFiles\HkdfGuard\v1\hkdfguard-v1-initialize.exe" provision --service-name com.example.myapp
+& "$env:ProgramFiles\HkdfGuard\v1\hkdfguard.exe" provision --service-name com.example.myapp
 ```
 
 This creates the KEK in the TPM. Running it again is safe: if the KEK already exists, the command
@@ -114,7 +114,7 @@ in that account's login keychain, so provision as the account that will use it.
 > given `node` executable uses the KEK in a logged-in session - including after every Node.js
 > upgrade, or with each version a version manager such as nvm installs - macOS asks whether to
 > allow it; choose **Always Allow**. In a session with no UI (ssh, a launch daemon outside a login
-> session), the library reports status -17 instead. Run unattended consumers as a LaunchAgent
+> session), the library reports status -18 instead. Run unattended consumers as a LaunchAgent
 > inside a logged-in session, with a fixed `node`.
 
 ## 3. Encrypt and decrypt with an in-memory key
@@ -199,10 +199,16 @@ session tokens. Data you store needs a key file.
 
 A **key file** holds one wrapped DEK. It is useless without the KEK, so it is not a secret in the
 usual sense, but its permissions still matter. Anyone who can replace it controls the key your
-application encrypts new data with. The Node library refuses a key file that isn't a regular file,
-or (outside Windows) that its group or other users can write.
+application encrypts new data with. So `NativeKeyWrapperV1` reads every key file through the native
+library, which checks it before returning a byte: it refuses a file another account could write or
+replace (the file or a folder above it), one reached through a symbolic link, junction or other
+reparse point, an 8.3 short name or a network, mapped or SUBST drive, one that isn't a regular file
+or is the wrong size, and one that holds what looks like an *unwrapped* key - 32 raw bytes, or their
+hex or base64. Treat that last one as a key exposure. The file comes back still wrapped; reading it
+never touches the KEK.
 
-You create a key file once per release, or per key rotation, with `hkdfguard-v1-initialize wrap`.
+You create a key file once per release, or per key rotation, with `hkdfguard wrap`
+(`hkdfguard-v1-initialize wrap` on macOS).
 The tool reads the DEK on standard input, wraps it under the service's KEK, and writes the file
 with restricted permissions. On Windows its `--group` option names the local group whose members
 can read the file.
@@ -227,7 +233,7 @@ import { AesGcmPipelineDataProtector } from '@runsecure/hkdfguard-cryptoprovider
 import { DefaultFormatProvider } from '@runsecure/hkdfguard-dek';
 
 /**
- * Generates a DEK, passes it to hkdfguard-v1-initialize wrap on standard input, and zeroes every copy
+ * Generates a DEK, passes it to the hkdfguard tool's wrap on standard input, and zeroes every copy
  * it controls. group is the local group allowed to read the key file (Windows requires it; omit it
  * elsewhere).
  */
@@ -246,7 +252,7 @@ export async function createKeyFile(toolPath: string, serviceName: string, keyFi
     // The key crosses to the tool as bytes from the protector's own buffer, never through a string.
     tool.stdin.end(protector.keyBase64());
     const [code] = await exited;
-    if (code !== 0) throw new Error(`hkdfguard-v1-initialize wrap exited with code ${code}`);
+    if (code !== 0) throw new Error(`hkdfguard wrap exited with code ${code}`);
     if (writeError !== undefined) throw writeError;
   } finally {
     protector.close();
@@ -261,7 +267,7 @@ import { join } from 'node:path';
 import { createKeyFile } from './keyfile.ts';
 
 await createKeyFile(
-  join(process.env.ProgramFiles!, 'HkdfGuard', 'v1', 'hkdfguard-v1-initialize.exe'),
+  join(process.env.ProgramFiles!, 'HkdfGuard', 'v1', 'hkdfguard.exe'),
   'com.example.myapp',
   'C:\\ProgramData\\MyApp\\keys\\v1.key',
   'HkdfGuardUsers');
@@ -320,25 +326,31 @@ it and turns it into the configuration above.
 
 Every error is an `HkdfGuardError` with a stable `code`; test with `instanceof` or on `code`. A
 failed native call is a `StatusError` whose `status` is the native code and whose message includes
-its meaning.
+its meaning. The codes are the same on every platform (`Status` in
+`@runsecure/hkdfguard-keywrapping-native-v1`). A key file the native library refused is a
+`KeyFileRefusedError`, whose message names the file, the status and its meaning.
 
 | You see | Cause | Fix |
 |---|---|---|
 | `NotInstalledError` (`ERR_HKDFGUARD_NATIVE_NOT_INSTALLED`) | The native package isn't installed at its fixed location | Step 1 |
 | `UntrustedError` (`ERR_HKDFGUARD_NATIVE_UNTRUSTED`) | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
 | `UnsupportedPlatformError` (`ERR_HKDFGUARD_NATIVE_UNSUPPORTED_PLATFORM`) | An Intel Mac or an x64 `node` under Rosetta, an unsupported OS, or the add-on was never compiled | Use an arm64 `node` on Apple silicon; install Python 3 and a C compiler, then `npm rebuild @runsecure/hkdfguard-keywrapping-native-v1` |
-| `StatusError` `-12` (Windows), `-10` (macOS) | No KEK is provisioned for this service name | Step 2, with the same service name |
-| `StatusError` `-13` (Windows) | The KEK exists, but this account may not use it | Add the account to `HkdfGuardUsers`, then sign out and in |
-| `StatusError` `-17` (macOS) | The keychain would not answer: locked, no UI session for the access prompt, or the prompt was declined | Run from a logged-in session and choose Always Allow |
-| `StatusError` `-11` (Windows), `-16` (macOS) | The key file was wrapped under a different service's KEK | Use the service name the file was created with |
-| `StatusError` `-5` (Windows), `-6` (macOS) | The key file was altered | Restore it from your deployment artifacts |
+| `StatusError` `-17` | No KEK is provisioned for this service name | Step 2, with the same service name |
+| `StatusError` `-18` (Windows) | The KEK exists, but this account may not use it | Add the account to `HkdfGuardUsers`, then sign out and in |
+| `StatusError` `-18` (macOS) | The keychain would not answer: locked, no UI session for the access prompt, or the prompt was declined | Run from a logged-in session and choose Always Allow |
+| `StatusError` `-16` | The key file was wrapped under a different service's KEK | Use the service name the file was created with |
+| `StatusError` `-10`, `-11` or `-12` | The key file was altered | Restore it from your deployment artifacts |
+| `KeyFileRefusedError` `-32` (`ENOENT`) or `-33` (`EACCES`) | The key file, or a folder in its path, doesn't exist; or this account may not read it | Check the path, and the `--group` it was wrapped for |
+| `KeyFileRefusedError` `-39` (`EACCES`) | The key file's path isn't trusted: another account could write or replace the file or a folder above it, or it is reached through a link, junction, short name or network drive | Keep key files in a folder only administrators (or root) and the application's account can write, by a real local path |
+| `KeyFileRefusedError` `-37` (`ERR_HKDFGUARD_INVALID_KEY_FILE`) | The file holds what looks like an **unwrapped** key | Treat the key as exposed: delete the file, rotate, and wrap a new key file |
+| `KeyFileRefusedError` `-35`, `-36` or `-38` (`ERR_HKDFGUARD_INVALID_KEY_FILE`) | The file is the wrong size, or isn't a wrapped key | Recreate it with `wrap` |
 | `InvalidServiceNameError` | The name breaks the rule in step 2 | Use letters, digits and dots only |
-| `InvalidKeyFileError` (`ERR_HKDFGUARD_INVALID_KEY_FILE`) | The key file is empty, too large, or not a regular file. Or someone other than the application could replace it: the file is writable by its group or others, it or a folder above it is owned by a user other than root or the application's own, or a folder above it is writable by its group or others without the sticky bit | Fix the permissions (`0600` or `0640` on the file, owned by root or the application's account, in folders only those can write), or recreate it with `wrap` |
+| `InvalidKeyFileError` (`ERR_HKDFGUARD_INVALID_KEY_FILE`), from a key wrapper that doesn't read key files itself | The key file is empty, too large, or not a regular file. Or someone other than the application could replace it: the file is writable by its group or others, it or a folder above it is owned by a user other than root or the application's own, or a folder above it is writable by its group or others without the sticky bit | Fix the permissions (`0600` or `0640` on the file, owned by root or the application's account, in folders only those can write), or recreate it with `wrap` |
 | `KeyAccessSuspendedError` | The KEK stopped answering for three refreshes in a row | Restore access to the KEK; operations resume on the next successful refresh |
 | `EncryptionLimitReachedError` (`ERR_HKDFGUARD_ENCRYPTION_LIMIT_REACHED`) naming a key file | The current key file is older than `keyFileMaxAgeDays` (365 by default) | Wrap a new key file and register it at a higher version (step 6); old values keep decrypting |
 
 ## Next steps
 
-- [`hkdfguard-v1-initialize` reference](reference/cli.md): every command and option.
+- [`hkdfguard` CLI reference](reference/cli.md): every command and option.
 - The README's package table and examples for `@runsecure/hkdfguard-cache` and
   `@runsecure/hkdfguard-encryptedconfig`, until their how-to pages are written.

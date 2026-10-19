@@ -7,8 +7,8 @@ Go ports, so values written by one port are read by the others.
 
 **Documentation:** start with [Getting started](docs/getting-started.md), which takes one Windows PC
 or Apple-silicon Mac from nothing to a TPM- or Secure-Enclave-protected key file. Key setup -
-installing the native package and provisioning, wrapping and retiring KEKs with
-`hkdfguard-v1-initialize` - is in the [CLI reference](docs/reference/cli.md). The [docs index](docs/README.md)
+installing the native package and provisioning, wrapping and retiring KEKs with the `hkdfguard`
+tool (`hkdfguard-v1-initialize` on macOS) - is in the [CLI reference](docs/reference/cli.md). The [docs index](docs/README.md)
 lists every page.
 
 ## Packages
@@ -62,6 +62,24 @@ loads and calls the library; every verification rule (path ownership, code signa
 SHA-256, the dynamic linker's environment, what was actually loaded) is TypeScript, and is tested on
 every platform. KMS calls run on libuv's thread pool, so a TPM operation never blocks the event loop.
 
+The Windows library is `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll`, beside the `hkdfguard.exe`
+tool; on Linux the tool is `/usr/bin/hkdfguard`. Every platform's library returns the same status
+codes, number for number (`Status` in `packages/keywrapping-native-v1/src/status.ts`): a failed
+call throws `StatusError`, whose message says what its status means - adding, on each platform,
+what to do about it there.
+
+**Key files are read through the native library.** `NativeKeyWrapperV1.readKeyFile`, which
+`buildKeyRing` uses for every key file whenever the key wrapper has one, reads the file with the
+library's `hkdfguard_open_file`. It returns the bytes still wrapped and never touches a KEK, but
+first refuses a file that is missing, unreadable, the wrong size, not a wrapped DEK, or that holds
+what looks like an unwrapped key (32 raw bytes, or their hex or base64: treat that as a key
+exposure) - and one whose path isn't trusted: a link, junction or other reparse point, an 8.3 short
+name, a network, mapped or SUBST drive, or a file or folder another account could write or replace.
+A refusal throws `KeyFileRefusedError`, with `status` and an fs-style `code`: `ENOENT`, `EACCES`
+(unreadable or untrusted), `ERR_HKDFGUARD_INVALID_KEY_FILE` (size or contents) or `EIO`. A key
+wrapper without `readKeyFile` has its key files read by `readKeyFile` in
+`@runsecure/hkdfguard-dek`, with Node's own file I/O.
+
 ## Development
 
 Node.js 22 or later (see `.nvmrc`), with Python 3 and a C compiler for the add-on.
@@ -95,7 +113,8 @@ tests. To provision a test host, run from `packages/keywrapping-native-v1`:
 - macOS: `scripts/provision-macos-test-key.sh` as the account that runs the tests (`--remove` retires the KEK)
 - Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell
 
-Each checks the installed `hkdfguard-v1-initialize` against the same pins the loader applies before
+Each checks the installed tool (`hkdfguard.exe`, `/usr/bin/hkdfguard`, or `hkdfguard-v1-initialize`
+on macOS) against the same pins the loader applies before
 running it, and prints the `npm test` command to run next. They provision the same KEKs as the .NET
 and Go ports' copies, so one host serves all three ports' tests.
 
@@ -107,7 +126,7 @@ test service and is skipped the same way.
 
 **macOS:** in the native library's legacy keychain mode the KEK's access list names the binary
 that created it, so the first native call from each `node` executable is answered with a keychain
-dialog in a logged-in session - click "Always Allow" - and with status -17 where there is no UI.
+dialog in a logged-in session - click "Always Allow" - and with status -18 where there is no UI.
 The tests fail with a message saying so after 60 seconds rather than hang.
 
 ## Continuous integration and releases

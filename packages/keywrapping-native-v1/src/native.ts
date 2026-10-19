@@ -12,6 +12,7 @@ export interface NativeAddon {
   wrapDek(library: LibraryHandle, service: string, input: Uint8Array, output: Uint8Array): Promise<[number, number]>;
   unwrapDek(library: LibraryHandle, service: string, input: Uint8Array, output: Uint8Array): Promise<[number, number]>;
   generateAndWrapDek(library: LibraryHandle, service: string, output: Uint8Array): Promise<[number, number]>;
+  openFile(library: LibraryHandle, path: string, output: Uint8Array): Promise<[number, number]>;
   hardenProcess(library: LibraryHandle): number | null;
   kekExists(library: LibraryHandle, service: string): [number, boolean] | null;
   symbolImagePath?(library: LibraryHandle, symbol: string): string | null;

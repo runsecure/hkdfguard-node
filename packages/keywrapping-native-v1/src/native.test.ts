@@ -1,17 +1,17 @@
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { randomFillSync } from 'node:crypto';
-import { existsSync, lstatSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { randomBytes, randomFillSync } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it, type TestContext } from 'node:test';
+import { after, describe, it, type TestContext } from 'node:test';
 import { isZero, MAX_WRAPPED_KEY_BYTES } from '@runsecure/hkdfguard-abstractions';
-import { NotInstalledError, StatusError, UnsupportedPlatformError, UntrustedError } from './errors.js';
+import { KeyFileRefusedError, NotInstalledError, StatusError, UnsupportedPlatformError, UntrustedError } from './errors.js';
 import { hostLibrary } from './host.js';
 import { NativeKmsLibrary, type KmsLibrary } from './library.js';
 import { MAC_SYSTEM_DIRECTORY, MAC_TEAM_ID, macChoosePath, macVerifyLocation, macVerifySignature } from './macpolicy.js';
 import { nativeAddon } from './native.js';
-import { Status } from './status.js';
+import { Status, WRAPPED_DEK_LENGTHS } from './status.js';
 import { statusFromMode } from './unixpath.js';
 import { DEK_LENGTH, NativeKeyWrapperV1 } from './wrapper.js';
 import { DEFAULT_TEST_SERVICES, TEST_OTHER_SERVICE_VARIABLE, TEST_SERVICE_VARIABLE, UNPROVISIONED_SERVICE_NAME } from './testservices.test-support.js';
@@ -27,7 +27,7 @@ import { DEFAULT_TEST_SERVICES, TEST_OTHER_SERVICE_VARIABLE, TEST_SERVICE_VARIAB
  *
  * macOS: in the library's legacy keychain mode the KEK's access list names the binary that created
  * it, so the first call from another binary - node - is answered with a keychain dialog in a
- * logged-in session (click "Always Allow"), or keychainAccessDenied (-17) without one.
+ * logged-in session (click "Always Allow"), or KEK access denied (-18) without one.
  */
 
 const NATIVE_CALL_TIMEOUT_MS = 60_000;
@@ -75,8 +75,8 @@ function defaultServiceProvisioned(library: KmsLibrary, service: string): { prov
     if (answer === undefined) return undefined;
     const [status, exists] = answer;
     if (status === Status.ok) return exists ? { provisioned: true } : { provisioned: false, reason: `The test KEK '${service}' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set ${TEST_SERVICE_VARIABLE} to a provisioned service.` };
-    if (status === Status.windowsKekNotFound) return { provisioned: false, reason: `The test KEK '${service}' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell.` };
-    if (status === Status.windowsAccessDenied) return { provisioned: false, reason: `The test KEK '${service}' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.` };
+    if (status === Status.kekNotFound) return { provisioned: false, reason: `The test KEK '${service}' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell.` };
+    if (status === Status.kekAccessDenied) return { provisioned: false, reason: `The test KEK '${service}' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.` };
     return undefined;
   }
   return { provisioned: false, reason: `Set ${TEST_SERVICE_VARIABLE} (scripts/provision-linux-test-key.sh prints the command) to run the native round trips.` };
@@ -106,7 +106,7 @@ async function provisionedWrapper(t: TestContext): Promise<NativeKeyWrapperV1 | 
   // The first call under the service, with a deadline, so a keychain dialog nobody answers fails
   // the run with a message saying what to do rather than hanging it.
   accessChecked ??= new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`The first native call under service '${resolved!.service}' has not returned after ${NATIVE_CALL_TIMEOUT_MS / 1000}s. On macOS the KEK's keychain item is asking for access in a dialog: click "Always Allow". Without a UI session the library reports keychainAccessDenied (-17); run the tests from a logged-in session.`)), NATIVE_CALL_TIMEOUT_MS);
+    const timer = setTimeout(() => reject(new Error(`The first native call under service '${resolved!.service}' has not returned after ${NATIVE_CALL_TIMEOUT_MS / 1000}s. On macOS the KEK's keychain item is asking for access in a dialog: click "Always Allow". Without a UI session the library reports KEK access denied (-18); run the tests from a logged-in session.`)), NATIVE_CALL_TIMEOUT_MS);
     wrapper.generateAndWrap(new Uint8Array(MAX_WRAPPED_KEY_BYTES)).then(() => resolve(), () => resolve()).finally(() => clearTimeout(timer));
   });
   await accessChecked;
@@ -165,22 +165,34 @@ describe('the installed native library', () => {
     const wrapped = new Uint8Array(MAX_WRAPPED_KEY_BYTES);
     const n = await w.wrap(randomDek(), wrapped);
     const destination = new Uint8Array(DEK_LENGTH);
-    await assert.rejects(NativeKeyWrapperV1.create(otherServiceName()).unwrap(wrapped.subarray(0, n), destination), StatusError);
+    // Another provisioned KEK: a fingerprint mismatch (or, on macOS, an authentication failure); none at all: KEK not found.
+    const refusals: number[] = [Status.kekFingerprintMismatch, Status.payloadAuthFailed, Status.kekNotFound];
+    await assert.rejects(NativeKeyWrapperV1.create(otherServiceName()).unwrap(wrapped.subarray(0, n), destination),
+      (e: unknown) => e instanceof StatusError && refusals.includes(e.status));
     assert.ok(isZero(destination));
   });
 
   it('fails on too-small buffers and corrupt payloads', async (t) => {
     const w = await provisionedWrapper(t);
     if (w === undefined) return;
-    await assert.rejects(w.wrap(randomDek(), new Uint8Array(8)), StatusError);
-    await assert.rejects(w.generateAndWrap(new Uint8Array(8)), StatusError);
+    const failsWith = (...statuses: number[]) => (e: unknown) => e instanceof StatusError && statuses.includes(e.status);
+    await assert.rejects(w.wrap(randomDek(), new Uint8Array(8)), failsWith(Status.bufferTooSmall));
+    await assert.rejects(w.generateAndWrap(new Uint8Array(8)), failsWith(Status.bufferTooSmall));
     const wrapped = new Uint8Array(MAX_WRAPPED_KEY_BYTES);
     const n = await w.generateAndWrap(wrapped);
-    await assert.rejects(w.unwrap(wrapped.subarray(0, n), new Uint8Array(8)), StatusError);
-    wrapped[Math.floor(n / 2)]! ^= 0xff;
+    await assert.rejects(w.unwrap(wrapped.subarray(0, n), new Uint8Array(8)), failsWith(Status.bufferTooSmall, Status.invalidArgument));
+    // A truncated payload is malformed; an altered one fails as malformed, unauthenticated,
+    // unsupported or under another KEK, depending on which field the change lands in.
     const destination = new Uint8Array(DEK_LENGTH);
-    await assert.rejects(w.unwrap(wrapped.subarray(0, n), destination), StatusError);
+    await assert.rejects(w.unwrap(wrapped.subarray(0, n - 1), destination), failsWith(Status.payloadMalformed));
     assert.ok(isZero(destination));
+    const tampered = (e: unknown) => failsWith(Status.payloadMalformed, Status.payloadAuthFailed, Status.payloadUnsupported, Status.kekFingerprintMismatch)(e);
+    for (const at of [0, Math.floor(n / 2), n - 1]) {
+      const altered = Uint8Array.from(wrapped.subarray(0, n));
+      altered[at]! ^= 0xff;
+      await assert.rejects(w.unwrap(altered, destination), tampered, `byte ${at}`);
+      assert.ok(isZero(destination));
+    }
   });
 });
 
@@ -214,5 +226,142 @@ describe('the macOS loader against the real system', { skip: process.platform !=
     const tool = macProvisioningTool();
     if (tool === undefined) { t.skip('the provisioning tool is not installed'); return; }
     assert.ok(execFileSync(tool, ['status', '--service-name', UNPROVISIONED_SERVICE_NAME], { encoding: 'utf8' }).includes('kek: absent'));
+  });
+});
+
+/*
+ * Key files read through the real library's hkdfguard_open_file. Refusals of a file's size,
+ * contents or location need no KEK, so they run wherever the Windows library is installed; reading
+ * back a real wrapped key needs the provisioned test service. Windows only: elsewhere the library
+ * refuses a key file under the sticky, world-writable /tmp, so these temporary files would only
+ * ever be untrusted. (The key-ring halves of these tests are in packages/integration.)
+ */
+describe('key files read through the installed native library', { skip: process.platform !== 'win32' }, () => {
+  const directories: string[] = [];
+  after(() => {
+    for (const directory of directories) rmSync(directory, { recursive: true, force: true });
+  });
+
+  /**
+   * A fresh folder under the temp folder, by its long path: hkdfguard_open_file refuses an 8.3 short
+   * name anywhere in a path, and Windows can hand out %TEMP% in short form (C:\Users\RUNNER~1\...
+   * on GitHub-hosted runners). realpathSync.native expands it; realpathSync would not.
+   */
+  function temporaryFolder(): string {
+    const directory = realpathSync.native(mkdtempSync(join(tmpdir(), 'hkdfguard-keyfile-')));
+    directories.push(directory);
+    return directory;
+  }
+
+  function write(contents: Uint8Array, name = 'key.bin'): string {
+    const path = join(temporaryFolder(), name);
+    writeFileSync(path, contents);
+    return path;
+  }
+
+  /** A wrapper only for reading: any valid name, since reading a file never touches a KEK. */
+  function reader(t: TestContext): NativeKeyWrapperV1 | undefined {
+    return installedLibrary(t) === undefined ? undefined : NativeKeyWrapperV1.create('hkdfguard.keyfile.reader');
+  }
+
+  const refused = (status: number, code: string, path?: string) => (e: unknown) =>
+    e instanceof KeyFileRefusedError && e.status === status && e.code === code
+    && (path === undefined || (e.path === path && e.message.startsWith(`Key file '${path}' was refused by the native library with status ${status} (`)));
+
+  it('expands a short temp folder name to its long form', (t) => {
+    if (installedLibrary(t) === undefined) return;
+    const directory = temporaryFolder();
+    assert.ok(!/~\d/.test(directory), directory);
+  });
+
+  it('refuses a missing file, and a file in a missing folder', async (t) => {
+    const r = reader(t);
+    if (r === undefined) return;
+    const missing = join(temporaryFolder(), 'missing.bin');
+    await assert.rejects(r.readKeyFile(missing), refused(Status.fileNotFound, 'ENOENT', missing));
+    await assert.rejects(r.readKeyFile(join(temporaryFolder(), 'no-such-folder', 'dek.bin')), refused(Status.fileNotFound, 'ENOENT'));
+  });
+
+  it('refuses what looks like an unwrapped key as a key exposure', async (t) => {
+    const r = reader(t);
+    if (r === undefined) return;
+    const dek = randomBytes(32);
+    const forms: Record<string, Uint8Array> = {
+      raw: dek,
+      hex: Buffer.from(dek.toString('hex').toUpperCase(), 'ascii'),
+      'lower-hex': Buffer.from(dek.toString('hex'), 'ascii'),
+      base64: Buffer.from(dek.toString('base64'), 'ascii'),
+      'base64-with-newline': Buffer.from(`${dek.toString('base64')}\n`, 'ascii'),
+    };
+    for (const [form, contents] of Object.entries(forms)) {
+      const path = write(contents, `plaintext-${form}.bin`);
+      await assert.rejects(r.readKeyFile(path), (e: unknown) =>
+        refused(Status.filePlaintextKey, 'ERR_HKDFGUARD_INVALID_KEY_FILE', path)(e) && (e as Error).message.includes('key exposure'), form);
+    }
+  });
+
+  it('refuses a file of the wrong size', async (t) => {
+    const r = reader(t);
+    if (r === undefined) return;
+    const length = WRAPPED_DEK_LENGTHS.win32;
+    for (const [size, status] of [[0, Status.fileTooShort], [100, Status.fileTooShort], [length - 1, Status.fileTooShort],
+      [length + 1, Status.fileTooLong], [4096, Status.fileTooLong]] as const) {
+      const contents = new Uint8Array(size);
+      if (size > 0) contents[0] = 0x7f; // never mistaken for text
+      const path = write(contents, `size-${size}.bin`);
+      await assert.rejects(r.readKeyFile(path), refused(status, 'ERR_HKDFGUARD_INVALID_KEY_FILE', path), String(size));
+    }
+  });
+
+  it('refuses a folder', async (t) => {
+    const r = reader(t);
+    if (r === undefined) return;
+    const directory = temporaryFolder();
+    await assert.rejects(r.readKeyFile(directory), (e: unknown) => e instanceof KeyFileRefusedError
+      && (e.status === Status.fileIo || e.status === Status.fileAccessDenied) && (e.code === 'EIO' || e.code === 'EACCES'));
+  });
+
+  it('refuses a file reached through a junction as untrusted', async (t) => {
+    const r = reader(t);
+    if (r === undefined) return;
+    const directory = temporaryFolder();
+    const target = join(directory, 'real');
+    mkdirSync(target);
+    writeFileSync(join(target, 'dek.bin'), new Uint8Array(WRAPPED_DEK_LENGTHS.win32));
+    const junction = join(directory, 'junction');
+    symlinkSync(target, junction, 'junction'); // a junction needs no elevation, unlike a symbolic link
+    try {
+      const path = join(junction, 'dek.bin');
+      await assert.rejects(r.readKeyFile(path), refused(Status.fileUntrusted, 'EACCES', path));
+    } finally {
+      rmSync(junction); // the junction itself, not what it points at
+    }
+    assert.ok(existsSync(join(target, 'dek.bin')));
+  });
+
+  it('reads back a key file the wrapper wrote, exactly, and it unwraps to its DEK', async (t) => {
+    const w = await provisionedWrapper(t);
+    if (w === undefined) return;
+    const dek = randomDek();
+    const buffer = new Uint8Array(MAX_WRAPPED_KEY_BYTES);
+    const wrapped = buffer.slice(0, await w.wrap(Uint8Array.from(dek), buffer));
+    assert.equal(wrapped.length, WRAPPED_DEK_LENGTHS.win32);
+    const path = write(wrapped, 'wrapped-dek.bin');
+
+    const read = await w.readKeyFile(path);
+    assert.deepEqual(read, wrapped);
+    const recovered = new Uint8Array(DEK_LENGTH);
+    assert.equal(await w.unwrap(read, recovered), DEK_LENGTH);
+    assert.deepEqual(recovered, dek);
+  });
+
+  it('refuses a right-size key file with an unknown version as malformed', async (t) => {
+    const w = await provisionedWrapper(t);
+    if (w === undefined) return;
+    const buffer = new Uint8Array(MAX_WRAPPED_KEY_BYTES);
+    const wrapped = buffer.slice(0, await w.wrap(randomDek(), buffer));
+    wrapped[0]! ^= 0xff; // the version byte
+    const path = write(wrapped, 'wrapped-dek.bin');
+    await assert.rejects(w.readKeyFile(path), refused(Status.fileMalformed, 'ERR_HKDFGUARD_INVALID_KEY_FILE', path));
   });
 });

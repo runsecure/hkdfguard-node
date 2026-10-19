@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { TestContext } from 'node:test';
 import { MAX_WRAPPED_KEY_BYTES } from '@runsecure/hkdfguard-abstractions';
 import {
-  NativeKeyWrapperV1, NotInstalledError, StatusError, UnsupportedPlatformError,
+  NativeKeyWrapperV1, NotInstalledError, Status, StatusError, UnsupportedPlatformError,
 } from '@runsecure/hkdfguard-keywrapping-native-v1';
 
 // Which native service the end-to-end tests run against - the same rules as the
@@ -25,9 +25,8 @@ const DEFAULT_TEST_SERVICES: Record<string, string> = {
   linux: 'com.hkdfguard.native.linux.test',
 };
 
-// Windows status codes the probe tells "not provisioned" by (see keywrapping-native-v1's status tables).
-const WINDOWS_KEK_NOT_FOUND = -12;
-const WINDOWS_ACCESS_DENIED = -13;
+// The status codes the probe tells "not provisioned" by.
+const { kekNotFound: KEK_NOT_FOUND, kekAccessDenied: KEK_ACCESS_DENIED } = Status;
 
 // Bounds the first native call: on macOS each node executable is answered with a keychain dialog.
 const NATIVE_CALL_TIMEOUT_MS = 60_000;
@@ -75,7 +74,7 @@ async function resolveTestEnvironment(): Promise<TestEnvironment> {
       return { skipReason: `The test KEK '${service}' is not provisioned. Run ${SCRIPTS}/provision-macos-test-key.sh, or set ${TEST_SERVICE_VARIABLE} to a provisioned service.` };
     }
     if (process.platform === 'linux') {
-      return { skipReason: `Set ${TEST_SERVICE_VARIABLE} to a service provisioned with hkdfguard-v1-initialize. On a Linux TPM host, sudo ${SCRIPTS}/provision-linux-test-key.sh provisions ${service}.` };
+      return { skipReason: `Set ${TEST_SERVICE_VARIABLE} to a service provisioned with hkdfguard. On a Linux TPM host, sudo ${SCRIPTS}/provision-linux-test-key.sh provisions ${service}.` };
     }
   }
 
@@ -83,13 +82,13 @@ async function resolveTestEnvironment(): Promise<TestEnvironment> {
   // says whether the default service is provisioned.
   const outcome = await probe(wrapper);
   if (outcome === 'timed out') {
-    return { failReason: `The first native call under service '${service}' has not returned after ${NATIVE_CALL_TIMEOUT_MS / 1000}s. On macOS the KEK's keychain item is asking for access in a dialog: click "Always Allow" (each node executable asks once). In a session with no UI the library reports keychainAccessDenied (-17) instead.` };
+    return { failReason: `The first native call under service '${service}' has not returned after ${NATIVE_CALL_TIMEOUT_MS / 1000}s. On macOS the KEK's keychain item is asking for access in a dialog: click "Always Allow" (each node executable asks once). In a session with no UI the library reports KEK access denied (-18) instead.` };
   }
   if (!explicit && process.platform === 'win32' && outcome instanceof StatusError) {
-    if (outcome.status === WINDOWS_KEK_NOT_FOUND) {
+    if (outcome.status === KEK_NOT_FOUND) {
       return { skipReason: `The test KEK '${service}' is not provisioned. Run ${SCRIPTS}/provision-windows-test-key.ps1 from an elevated PowerShell, or set ${TEST_SERVICE_VARIABLE} to a provisioned service.` };
     }
-    if (outcome.status === WINDOWS_ACCESS_DENIED) {
+    if (outcome.status === KEK_ACCESS_DENIED) {
       return { skipReason: `The test KEK '${service}' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.` };
     }
   }

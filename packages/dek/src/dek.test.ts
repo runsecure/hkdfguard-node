@@ -6,7 +6,7 @@ import { describe, it, mock } from 'node:test';
 import {
   AuthenticationFailedError, CACHE_AAD_PREFIX, ClosedError, configurationAad, configurationPurpose, EncryptionLimitReachedError, HkdfGuardError, InvalidArgumentError,
   InvalidServiceNameError, isZero, KeyNotFoundError, MAX_WRAPPED_KEY_BYTES, NoCurrentKeyError, RefreshFailurePolicy,
-  type DataEncryptionKey as DataEncryptionKeyContract, type DataProtector,
+  type DataEncryptionKey as DataEncryptionKeyContract, type DataProtector, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
 import { capturingLogger, FakeKeyWrapper, RecordingFactory, TestProvider } from '@runsecure/hkdfguard-test-support';
 import { buildKeyRing, readKeyFile, verifyKeyFileLocation, type KeyFileSystem, type KeyRingConfig } from './build.js';
@@ -304,6 +304,47 @@ describe('buildKeyRing', () => {
       assert.ok(factory.options.every((o) => o.expirySeconds === 60 && o.refreshFailurePolicy?.maxFailures === 4));
       const protector = ring.createProtector('built');
       assert.equal(unprotect(protector, protector.encrypt('hello')), 'hello');
+    } finally {
+      await ring.close();
+    }
+  });
+
+  it('reads every key file through the key wrapper when it has readKeyFile', async () => {
+    const factory = new RecordingFactory();
+    const paths = { 1: keyFile('on disk one'), 2: keyFile('on disk two') };
+    const reads: { path: string; signal?: AbortSignal }[] = [];
+    const wrapper = Object.assign(new FakeKeyWrapper(), {
+      async readKeyFile(path: string, signal?: AbortSignal): Promise<Uint8Array> {
+        reads.push({ path, signal });
+        return utf8(`through the wrapper ${path === paths[1] ? 'one' : 'two'}`);
+      },
+    });
+    const signal = new AbortController().signal;
+    const ring = await buildKeyRing({ ...base(factory), keyWrapper: wrapper, keyFiles: paths, signal });
+    try {
+      assert.deepEqual(reads.map((r) => r.path), [paths[1], paths[2]]);
+      assert.ok(reads.every((r) => r.signal === signal));
+      assert.deepEqual(factory.wrapped.map((w) => new TextDecoder().decode(w)), ['through the wrapper one', 'through the wrapper two']);
+    } finally {
+      await ring.close();
+    }
+  });
+
+  it("surfaces the key wrapper's refusal of a key file, closing what it created", async () => {
+    const factory = new RecordingFactory();
+    const refusal = Object.assign(new Error("Key file 'k' was refused"), { code: 'EACCES' });
+    const wrapper = Object.assign(new FakeKeyWrapper(), { readKeyFile: async () => { throw refusal; } });
+    await assert.rejects(buildKeyRing({ ...base(factory), keyWrapper: wrapper, keyFiles: { 1: keyFile('wrapped') }, ephemeralKeys: [0] }), (e: unknown) => e === refusal);
+    assert.equal(factory.created.length, 0);
+  });
+
+  it('reads key files with readKeyFile when the key wrapper has no readKeyFile', async () => {
+    const factory = new RecordingFactory();
+    const wrapper = new FakeKeyWrapper();
+    assert.equal((wrapper as KeyWrapper).readKeyFile, undefined);
+    const ring = await buildKeyRing({ ...base(factory), keyWrapper: wrapper, keyFiles: { 1: keyFile('read by the helper') } });
+    try {
+      assert.deepEqual(factory.wrapped.map((w) => new TextDecoder().decode(w)), ['read by the helper']);
     } finally {
       await ring.close();
     }

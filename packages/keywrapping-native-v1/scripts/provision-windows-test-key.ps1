@@ -38,7 +38,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# The same publisher, root and Artifact Signing profile the loader requires of HkdfGuardV1.dll
+# The same publisher, root and Artifact Signing profile the loader requires of HkdfGuard.dll
 # (winExpectedPublisher, winExpectedRootSHA256 and winExpectedProfileEKU in windowspolicy.ts; keep
 # them in step). Only the root is pinned: Artifact Signing reissues the leaf every few days and
 # rotates its intermediates.
@@ -58,7 +58,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 # The known-folder location, not the ProgramFiles environment variable, which any process can change.
 $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
-$tool = Join-Path $programFiles 'HkdfGuard\v1\hkdfguard-v1-initialize.exe'
+$tool = Join-Path $programFiles 'HkdfGuard\v1\hkdfguard.exe'
 if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
     throw "The HkdfGuard provisioning tool is not installed at '$tool'. Install the HkdfGuard native package first."
 }
@@ -107,7 +107,7 @@ if ($ekus -cnotcontains $CodeSigningEku -or $ekus -cnotcontains $ExpectedProfile
 Write-Host "Provisioning the KEK for service '$ServiceName'..."
 & $tool provision --service-name $ServiceName
 if ($LASTEXITCODE -ne 0) {
-    throw "hkdfguard-v1-initialize provision failed with exit code $LASTEXITCODE."
+    throw "hkdfguard provision failed with exit code $LASTEXITCODE."
 }
 
 Write-Host ''

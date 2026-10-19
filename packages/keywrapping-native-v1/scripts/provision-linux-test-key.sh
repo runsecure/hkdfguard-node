@@ -13,8 +13,8 @@
 #      every TPM KEK on this host;
 #   3. writes /etc/hkdfguard/policy.toml requiring the TPM, the derivation secret, and a pinned
 #      TPM Name for each test service (the provisioning allowlist), learning each Name from the
-#      TPM itself through hkdfguard-v1-initialize, run as the test user;
-#   4. runs "hkdfguard-v1-initialize provision" for both services, as the test user, to confirm.
+#      TPM itself through hkdfguard, run as the test user;
+#   4. runs "hkdfguard provision" for both services, as the test user, to confirm.
 #
 # It refuses to overwrite a policy it didn't write. Re-running it is safe: it re-learns the same
 # Names (the KEKs are derived on demand from the TPM's seed and the secret) and rewrites its own
@@ -41,7 +41,7 @@ set -euo pipefail
 
 readonly SERVICE="com.hkdfguard.native.linux.test"
 readonly OTHER_SERVICE="${SERVICE}.other"
-readonly TOOL="/usr/bin/hkdfguard-v1-initialize"
+readonly TOOL="/usr/bin/hkdfguard"
 readonly TPM_DEVICE="/dev/tpmrm0"
 readonly ETC_DIR="/etc/hkdfguard"
 readonly POLICY="${ETC_DIR}/policy.toml"
@@ -168,7 +168,7 @@ learn_name() {
     local output name
     output="$(provision_as_test_user "$1" || true)"
     name="$(grep -oE '"000b[0-9a-f]{64}"' <<<"${output}" | head -n 1 | tr -d '"')"
-    [[ -n ${name} ]] || die "could not learn the TPM Name for $1; hkdfguard-v1-initialize said:"$'\n'"${output}"
+    [[ -n ${name} ]] || die "could not learn the TPM Name for $1; hkdfguard said:"$'\n'"${output}"
     echo "${name}"
 }
 

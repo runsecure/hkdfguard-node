@@ -1,65 +1,133 @@
 /**
- * Each platform's native status codes, exactly as its header defines them, and what they mean -
- * plain data, so it can be tested anywhere. A code missing from a table (reserved, unassigned or
- * unknown) has no description.
+ * The native status codes and what they mean - plain data, so it can be tested anywhere. Every
+ * platform's hkdfguard.h defines the same HKDFGUARD_ERR_* table, number for number, so the codes and
+ * their meanings live here once. A platform's table adds what to do about a code there (which group
+ * grants access to a KEK, where the policy lives) and falls back to the shared meaning for the rest.
+ * A code missing from a table (reserved or unknown) has no description.
  */
 
-/** macOS libhkdfguard_v1.dylib (hkdfguard.h). -3 and -4 are reserved and never returned. */
-export const macStatusDescriptions: ReadonlyMap<number, string> = new Map([
-  [-1, 'invalid input length, or a null buffer'],
-  [-2, 'the output buffer is too small for the result'],
-  [-5, 'encryption failed'],
-  [-6, 'AES-GCM authentication failed: the payload was altered, or wrapped for another service under this KEK'],
-  [-7, 'the native library produced an unexpected output length'],
-  [-8, "the service name is null, empty, too long, or has a character other than an ASCII letter, digit or '.'"],
-  [-9, 'this Mac has no Secure Enclave'],
-  [-10, 'no KEK is provisioned for this service in this keychain mode; run hkdfguard-v1-initialize provision'],
-  [-11, "the keychain item for this service can't be reconstructed into a key"],
-  [-12, 'the access policy for a new KEK could not be created'],
-  [-13, 'the Secure Enclave refused to generate a key'],
-  [-14, 'the new KEK could not be stored in the keychain'],
-  [-15, 'the new KEK could not be reloaded after it was stored'],
-  [-16, "the payload was wrapped under a different KEK than this service's"],
-  [-17, "the keychain denied access: it is locked, there is no session to prompt in, or this process isn't allowed"],
-  [-18, 'the keychain could not be read'],
-]);
-
-/** Linux libhkdfguard.so.1. -7 is reserved; -10..-15 are unassigned on Linux. */
-export const linuxStatusDescriptions: ReadonlyMap<number, string> = new Map([
-  [-1, 'invalid argument: a null pointer, wrong DEK length, or negative buffer capacity'],
-  [-2, 'the output buffer is too small for the result'],
-  [-3, 'no KEK provider could be reached: no usable TPM, PKCS#11 token or external secret under /etc/hkdfguard/policy.toml'],
-  [-4, "a KEK provider was reached but failed (policy file, secret file permissions, TPM or token error); the native library's log names the reason"],
-  [-5, 'the wrapped payload is malformed or failed AES-GCM authentication'],
-  [-6, 'an unexpected internal failure in the native library'],
-  [-8, 'the service name is malformed or invalid'],
-  [-9, 'no KEK is provisioned for this service; run hkdfguard-v1-initialize provision'],
-  [-16, "the payload was wrapped under a different KEK than this service's current one: another service, or the KEK or TPM derivation secret has changed"],
-  [-17, 'process hardening failed: core dumps or ptrace access could not be disabled'],
-]);
-
-/** Windows HkdfGuardV1.dll (HKDFGUARD_ERR_*). */
-export const windowsStatusDescriptions: ReadonlyMap<number, string> = new Map([
-  [-1, 'invalid argument: a null pointer, wrong DEK length, or bad service'],
-  [-2, 'the output buffer is too small for the result'],
-  [-3, 'the KEK provider or key could not be opened or created'],
-  [-4, 'an ECDH, HKDF or AES operation failed'],
-  [-5, 'AES-GCM authentication failed: the wrapped payload was altered'],
-  [-6, 'the wrapped payload is not a valid WrappedDekV1'],
-  [-7, 'an unexpected internal failure in the native library'],
-  [-8, 'the service name is malformed or invalid'],
-  [-9, 'HKLM\\Software\\Policies\\HkdfGuard\\KeyStoragePolicy is invalid'],
-  [-10, 'an HKLM\\Software\\Policies\\HkdfGuard\\KeyUseGroups entry is unresolvable, not a group, or over-broad'],
-  [-11, "the payload was wrapped under a different KEK than this service's"],
-  [-12, 'no KEK is provisioned for this service; run hkdfguard-v1-initialize provision'],
-  [-13, 'the KEK exists, but this account is not authorized to use it; add it to the HkdfGuardUsers group or a KeyUseGroups group'],
-  [-14, "the existing KEK's ACL is missing, lacks SYSTEM/Administrators, or grants an over-broad principal"],
-]);
-
-/** Status codes the tests and loaders refer to by name. */
+/** HKDFGUARD_OK and HKDFGUARD_ERR_*, exactly as every platform's hkdfguard.h defines them. */
 export const Status = {
   ok: 0,
-  linuxProcessHardeningFailed: -17,
-  windowsKekNotFound: -12,
-  windowsAccessDenied: -13,
+
+  // General (-1..-7; -7 is reserved)
+  invalidArgument: -1,
+  bufferTooSmall: -2,
+  providerUnavailable: -3,
+  providerError: -4,
+  cryptoError: -5,
+  internalError: -6,
+
+  // Service name and policy (-8..-9)
+  invalidServiceName: -8,
+  policyInvalid: -9,
+
+  // Wrapped payload (-10..-15; -13..-15 are reserved)
+  payloadMalformed: -10,
+  payloadAuthFailed: -11,
+  payloadUnsupported: -12,
+
+  // KEK and process (-16..-31; -21..-31 are reserved)
+  kekFingerprintMismatch: -16,
+  kekNotFound: -17,
+  kekAccessDenied: -18,
+  kekInvalid: -19,
+  processHardeningFailed: -20,
+
+  // Key file, hkdfguard_open_file (-32..-63; -40..-63 are reserved)
+  fileNotFound: -32,
+  fileAccessDenied: -33,
+  fileIo: -34,
+  fileTooShort: -35,
+  fileTooLong: -36,
+  filePlaintextKey: -37,
+  fileMalformed: -38,
+  fileUntrusted: -39,
+
+  // Windows-specific (-64..-79), refining policyInvalid
+  winGroupInvalid: -64,
+
+  // macOS-specific (-96..-111), each refining providerError
+  macAccessControlCreationFailed: -96,
+  macKeyGenerationFailed: -97,
+  macKeychainWriteFailed: -98,
+  macKekVerificationFailed: -99,
+  macKeychainReadFailed: -100,
 } as const;
+
+/**
+ * HKDFGUARD_WRAPPED_MAX_LEN on each platform: the length of every wrapped DEK, and so of every key
+ * file hkdfguard_open_file accepts. Each fits in MAX_WRAPPED_KEY_BYTES.
+ */
+export const WRAPPED_DEK_LENGTHS: Readonly<Record<'win32' | 'linux' | 'darwin', number>> = {
+  win32: 132,
+  linux: 276,
+  darwin: 125,
+};
+
+/** What each code means on every platform. */
+export const sharedStatusDescriptions: ReadonlyMap<number, string> = new Map([
+  [Status.invalidArgument, 'invalid argument: a null pointer, wrong DEK length, negative buffer capacity, or bad path'],
+  [Status.bufferTooSmall, 'the output buffer is too small for the result'],
+  [Status.providerUnavailable, 'no key storage provider could be used at all'],
+  [Status.providerError, 'the KEK provider or key could not be opened or created'],
+  [Status.cryptoError, 'an ECDH, HKDF, AES or random number operation failed'],
+  [Status.internalError, 'an unexpected internal failure in the native library'],
+  [Status.invalidServiceName, "the service name is null, empty, too long, or has a character other than an ASCII letter, digit or '.'"],
+  [Status.policyInvalid, "the machine's HkdfGuard policy is invalid"],
+  [Status.payloadMalformed, 'the wrapped payload is not a valid WrappedDekV1'],
+  [Status.payloadAuthFailed, 'AES-GCM authentication failed: the wrapped payload was altered'],
+  [Status.payloadUnsupported, "the wrapped payload's version or suite is not one this native library understands"],
+  [Status.kekFingerprintMismatch, "the payload was wrapped under a different KEK than this service's current one"],
+  [Status.kekNotFound, 'no KEK is provisioned for this service; run hkdfguard provision'],
+  [Status.kekAccessDenied, 'the KEK exists, but this account is not authorized to use it'],
+  [Status.kekInvalid, 'the existing KEK is unusable as found'],
+  [Status.processHardeningFailed, 'process hardening failed'],
+  [Status.fileNotFound, 'the key file, or a folder in its path, does not exist'],
+  [Status.fileAccessDenied, 'this account may not read the key file'],
+  [Status.fileIo, 'the key file is not a regular file, is in use by a writer, or could not be read'],
+  [Status.fileTooShort, 'the key file is shorter than a wrapped DEK'],
+  [Status.fileTooLong, 'the key file is longer than a wrapped DEK'],
+  [Status.filePlaintextKey, 'the key file holds what looks like an UNWRAPPED key (32 raw bytes, or its hex or base64): treat it as a key exposure'],
+  [Status.fileMalformed, 'the key file is the right size, but is not a valid wrapped DEK'],
+  [Status.fileUntrusted, "the key file's path is not trusted: a link or reparse point, a short or network path, or a file or folder another account could replace"],
+  [Status.winGroupInvalid, 'an HKLM\\Software\\Policies\\HkdfGuard\\KeyUseGroups entry is unresolvable, not a group, not host-local, or over-broad'],
+  [Status.macAccessControlCreationFailed, 'the access policy for a new KEK could not be created'],
+  [Status.macKeyGenerationFailed, 'the Secure Enclave refused to generate a key'],
+  [Status.macKeychainWriteFailed, 'the new KEK could not be stored in the keychain'],
+  [Status.macKekVerificationFailed, 'the new KEK could not be reloaded after it was stored'],
+  [Status.macKeychainReadFailed, 'the keychain could not be read'],
+]);
+
+/** The shared descriptions with a platform's own hints in place of some. */
+function withHints(hints: [number, string][]): ReadonlyMap<number, string> {
+  return new Map([...sharedStatusDescriptions, ...hints]);
+}
+
+/** Windows HkdfGuard.dll. */
+export const windowsStatusDescriptions: ReadonlyMap<number, string> = withHints([
+  [Status.providerError, 'the KEK\'s key storage provider (Platform Crypto Provider or Software KSP) could not open or create the key'],
+  [Status.policyInvalid, 'a machine policy value under HKLM\\Software\\Policies\\HkdfGuard is invalid'],
+  [Status.kekNotFound, 'no KEK is provisioned for this service; run hkdfguard provision from an elevated prompt'],
+  [Status.kekAccessDenied, 'the KEK exists, but this account is not authorized to use it (or, for a new KEK, the process is not elevated); add it to the HkdfGuardUsers group or a KeyUseGroups group'],
+  [Status.kekInvalid, "the existing KEK's ACL is missing, lacks SYSTEM/Administrators, or grants an over-broad principal"],
+]);
+
+/** Linux libhkdfguard.so.1. */
+export const linuxStatusDescriptions: ReadonlyMap<number, string> = withHints([
+  [Status.providerUnavailable, 'no KEK provider could be reached: no usable TPM, PKCS#11 token or external secret under /etc/hkdfguard/policy.toml'],
+  [Status.providerError, "a KEK provider was reached but failed (policy file, secret file permissions, TPM or token error); the native library's log names the reason"],
+  [Status.policyInvalid, "/etc/hkdfguard/policy.toml can't be used: unparsable, an invalid or contradictory setting, insecure ownership or permissions, or a provider this build lacks"],
+  [Status.kekNotFound, 'no KEK is provisioned for this service; run hkdfguard provision'],
+  [Status.kekFingerprintMismatch, "the payload was wrapped under a different KEK than this service's current one: another service, or the KEK or TPM derivation secret has changed"],
+  [Status.processHardeningFailed, 'process hardening failed: core dumps or ptrace access could not be disabled'],
+]);
+
+/** macOS libhkdfguard_v1.dylib. */
+export const macStatusDescriptions: ReadonlyMap<number, string> = withHints([
+  [Status.providerUnavailable, 'this Mac has no Secure Enclave'],
+  [Status.payloadAuthFailed, 'AES-GCM authentication failed: the payload was altered, or wrapped for another service under this KEK'],
+  [Status.kekNotFound, 'no KEK is provisioned for this service in this keychain mode; run hkdfguard-v1-initialize provision'],
+  [Status.kekAccessDenied, "the keychain denied access: it is locked, there is no session to prompt in, or this process isn't allowed"],
+  [Status.kekInvalid, "the keychain item for this service can't be reconstructed into a key"],
+]);

@@ -3,8 +3,8 @@
  *
  *   - load / unload / bind: map the verified KMS library (dlopen, LoadLibraryExW) and resolve its
  *     exports. The TypeScript loader decides whether a file may be loaded; this never searches.
- *   - wrapDek / unwrapDek / generateAndWrapDek: call the library on libuv's thread pool, so a TPM or
- *     Secure Enclave operation never blocks the event loop. The library works on the add-on's own
+ *   - wrapDek / unwrapDek / generateAndWrapDek / openFile: call the library on libuv's thread pool, so
+ *     a TPM or Secure Enclave operation, or a key file's checks, never block the event loop. The library works on the add-on's own
  *     copies of the buffers, zeroed afterwards; the result reaches the caller's buffer on the main
  *     thread when the call completes. Each resolves to [status, written].
  *   - hardenProcess: the Linux library's process-hardening call.
@@ -126,7 +126,7 @@ static int bytes_arg(napi_env env, napi_value value, uint8_t** data, size_t* len
 /* --- Library handle ------------------------------------------------------------------------------ */
 
 typedef int32_t (*wrap_fn)(const char*, const uint8_t*, int32_t, uint8_t*, int32_t*);
-typedef int32_t (*generate_fn)(const char*, uint8_t*, int32_t*);
+typedef int32_t (*generate_fn)(const char*, uint8_t*, int32_t*); /* also hkdfguard_open_file's shape */
 typedef int32_t (*harden_fn)(void);
 
 typedef struct {
@@ -134,6 +134,7 @@ typedef struct {
   void* wrap;
   void* unwrap;
   void* generate;
+  void* open_file;
   void* harden;
 } kms_library;
 
@@ -261,6 +262,7 @@ static napi_value bind(napi_env env, napi_callback_info info) {
     { "hkdfguard_wrap_dek", &library->wrap },
     { "hkdfguard_unwrap_dek", &library->unwrap },
     { "hkdfguard_generate_and_wrap_dek", &library->generate },
+    { "hkdfguard_open_file", &library->open_file },
     { harden_name, &library->harden },
   };
 
@@ -313,8 +315,8 @@ typedef struct {
   napi_async_work work;
   napi_deferred deferred;
   void* fn;
-  int generate; /* hkdfguard_generate_and_wrap_dek's shape, rather than wrap/unwrap's */
-  char* service;
+  int generate; /* hkdfguard_generate_and_wrap_dek's (and hkdfguard_open_file's) shape, rather than wrap/unwrap's */
+  char* service; /* or, for hkdfguard_open_file, the key file's path */
   uint8_t* input; /* the add-on's copy of the input; NULL when it is empty */
   int32_t input_length;
   uint8_t* output; /* the add-on's output buffer; NULL when the caller's is empty */
@@ -381,8 +383,8 @@ static void complete_call(napi_env env, napi_status status, void* data) {
   free_call(env, call);
 }
 
-/* start_call(env, info, which): wrapDek/unwrapDek(library, service, input, output) or
- * generateAndWrapDek(library, service, output). */
+/* start_call(env, info, which): wrapDek/unwrapDek(library, service, input, output),
+ * generateAndWrapDek(library, service, output) or openFile(library, path, output). */
 static napi_value start_call(napi_env env, napi_callback_info info, int which) {
   size_t argc = 4;
   napi_value argv[4];
@@ -395,8 +397,8 @@ static napi_value start_call(napi_env env, napi_callback_info info, int which) {
     napi_throw_error(env, NULL, "hkdfguard_native: out of memory");
     return NULL;
   }
-  call->generate = which == 2;
-  call->fn = which == 0 ? library->wrap : which == 1 ? library->unwrap : library->generate;
+  call->generate = which >= 2;
+  call->fn = which == 0 ? library->wrap : which == 1 ? library->unwrap : which == 2 ? library->generate : library->open_file;
   if (call->fn == NULL) {
     free(call);
     napi_throw_error(env, NULL, "hkdfguard_native: the library is not bound");
@@ -450,6 +452,7 @@ static napi_value start_call(napi_env env, napi_callback_info info, int which) {
 static napi_value wrap_dek(napi_env env, napi_callback_info info) { return start_call(env, info, 0); }
 static napi_value unwrap_dek(napi_env env, napi_callback_info info) { return start_call(env, info, 1); }
 static napi_value generate_and_wrap_dek(napi_env env, napi_callback_info info) { return start_call(env, info, 2); }
+static napi_value open_file(napi_env env, napi_callback_info info) { return start_call(env, info, 3); }
 
 /* hardenProcess(library): the status, or null when the library has no hardening call. */
 static napi_value harden_process(napi_env env, napi_callback_info info) {
@@ -834,6 +837,7 @@ NAPI_MODULE_INIT() {
     { "wrapDek", NULL, wrap_dek, NULL, NULL, NULL, napi_enumerable, NULL },
     { "unwrapDek", NULL, unwrap_dek, NULL, NULL, NULL, napi_enumerable, NULL },
     { "generateAndWrapDek", NULL, generate_and_wrap_dek, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "openFile", NULL, open_file, NULL, NULL, NULL, napi_enumerable, NULL },
     { "hardenProcess", NULL, harden_process, NULL, NULL, NULL, napi_enumerable, NULL },
     { "kekExists", NULL, kek_exists, NULL, NULL, NULL, napi_enumerable, NULL },
 #if !defined(_WIN32)

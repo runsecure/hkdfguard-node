@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -11,7 +12,9 @@ import { ProtectedCache } from '@runsecure/hkdfguard-cache';
 import { AesGcmCryptoProviderFactory, AesGcmPipelineDataProtector, KEY_SIZE } from '@runsecure/hkdfguard-cryptoprovider-aesgcm256';
 import { buildKeyRing, DefaultFormatProvider, type KeyRing } from '@runsecure/hkdfguard-dek';
 import { EncryptedConfigurationReader, mapLookup } from '@runsecure/hkdfguard-encryptedconfig';
-import { NativeKeyWrapperV1, StatusError } from '@runsecure/hkdfguard-keywrapping-native-v1';
+import {
+  KeyFileRefusedError, NativeKeyWrapperV1, NotInstalledError, Status, StatusError, UnsupportedPlatformError,
+} from '@runsecure/hkdfguard-keywrapping-native-v1';
 import { otherServiceName, testServiceName } from './testservice.js';
 
 // End to end over the real native KEK: the paths a deployment and a running application actually
@@ -21,9 +24,22 @@ import { otherServiceName, testServiceName } from './testservice.js';
 const KEY_FILE_VERSION = 3;
 
 const open: KeyRing[] = [];
+const directories: string[] = [];
 after(async () => {
   await Promise.all(open.map((ring) => ring.close()));
+  for (const directory of directories) rmSync(directory, { recursive: true, force: true });
 });
+
+/**
+ * A fresh folder for key files, by its long path: the native library reads every key file and
+ * refuses an 8.3 short name anywhere in its path, and Windows can hand out the temp folder in short
+ * form (C:\Users\RUNNER~1\... on GitHub-hosted runners). realpathSync.native expands it.
+ */
+function keyFileFolder(): string {
+  const directory = realpathSync.native(mkdtempSync(join(tmpdir(), 'hkdfguard-e2e-')));
+  directories.push(directory);
+  return directory;
+}
 
 interface RingOptions {
   keyFile?: string;
@@ -62,7 +78,7 @@ async function runPipeline(service: string, secrets: Record<string, string>): Pr
 
     const wrapped = new Uint8Array(MAX_WRAPPED_KEY_BYTES);
     const length = await NativeKeyWrapperV1.create(service).wrap(dek, wrapped);
-    const keyFile = join(mkdtempSync(join(tmpdir(), 'hkdfguard-e2e-')), 'wrapped-dek-v3.bin');
+    const keyFile = join(keyFileFolder(), 'wrapped-dek-v3.bin');
     writeFileSync(keyFile, wrapped.subarray(0, length), { mode: 0o600 });
     return { keyFile, values };
   } finally {
@@ -134,7 +150,37 @@ describe('a deployment', () => {
     const wrapped = readFileSync(keyFile);
     wrapped[wrapped.length >> 1]! ^= 0x01;
     writeFileSync(keyFile, wrapped, { mode: 0o600 });
-    await assert.rejects(buildRing(service, { keyFile }), StatusError);
+    // Refused as the key file is read, if the change lands in a field it checks, else at unwrap.
+    await assert.rejects(buildRing(service, { keyFile }), (e: unknown) => e instanceof StatusError || e instanceof KeyFileRefusedError);
+  });
+
+  native('reads its key file through the native library: one with an unknown version is refused before any unwrap', async (service) => {
+    const { keyFile } = await runPipeline(service, { Secret: 'value' });
+    const wrapped = readFileSync(keyFile);
+    wrapped[0]! ^= 0xff; // the version byte
+    writeFileSync(keyFile, wrapped, { mode: 0o600 });
+    await assert.rejects(buildRing(service, { keyFile }), (e: unknown) =>
+      e instanceof KeyFileRefusedError && e.status === Status.fileMalformed && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE');
+  });
+
+  // Needs only the installed library - reading a file never touches a KEK. Windows only: elsewhere
+  // the library refuses any key file under the sticky, world-writable /tmp before looking inside it.
+  it('refuses to build from a plaintext key file', { skip: process.platform !== 'win32' }, async (t) => {
+    let wrapper: NativeKeyWrapperV1;
+    try {
+      wrapper = NativeKeyWrapperV1.create('hkdfguard.keyfile.reader');
+    } catch (error) {
+      if (error instanceof NotInstalledError || error instanceof UnsupportedPlatformError) {
+        t.skip(`the native library can't be used here: ${error.message}`);
+        return;
+      }
+      throw error;
+    }
+    const keyFile = join(keyFileFolder(), 'plaintext.bin');
+    writeFileSync(keyFile, randomBytes(32));
+    await assert.rejects(buildKeyRing({
+      keyWrapper: wrapper, cryptoProviderFactory: new AesGcmCryptoProviderFactory(), keyRefreshInterval: 60, keyFiles: { 1: keyFile },
+    }), (e: unknown) => e instanceof KeyFileRefusedError && e.status === Status.filePlaintextKey && e.message.includes('key exposure'));
   });
 });
 

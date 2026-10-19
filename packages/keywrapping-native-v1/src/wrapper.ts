@@ -1,7 +1,7 @@
 import { InvalidArgumentError, validateServiceName, wipe, type KeyWrapper } from '@runsecure/hkdfguard-abstractions';
 import { StatusError } from './errors.js';
 import { hostLibrary } from './host.js';
-import type { KmsLibrary } from './library.js';
+import { openKeyFile, type KmsLibrary } from './library.js';
 
 /** The length, in bytes, of every DEK the native library wraps and unwraps. */
 export const DEK_LENGTH = 32;
@@ -69,6 +69,24 @@ export class NativeKeyWrapperV1 implements KeyWrapper {
     checkCall(signal, undefined, result);
     const [status, written] = await this.library.generateAndWrapDek(this.serviceName, result);
     return this.complete('generate-and-wrap', status, written, result);
+  }
+
+  /**
+   * Reads a key file through the native library's hkdfguard_open_file rather than Node's file I/O,
+   * resolving to its bytes still wrapped, ready for unwrap - buildKeyRing reads every key file this
+   * way. Besides the size and format checks, the native library refuses a file another account could
+   * have written or replaced - its path, owner and permissions are checked the way only the platform
+   * can - and one holding what looks like an unwrapped key.
+   *
+   * @throws InvalidArgumentError for an empty path, before any native call.
+   * @throws KeyFileRefusedError when the library refuses the file: `code` is 'ENOENT' (the file or a
+   *   folder in its path does not exist), 'EACCES' (this account may not read it, or its path is not
+   *   trusted), ERR_HKDFGUARD_INVALID_KEY_FILE (the wrong size, what looks like an unwrapped key, or
+   *   not a wrapped DEK) or 'EIO'; `status` is the native status.
+   */
+  async readKeyFile(path: string, signal?: AbortSignal): Promise<Uint8Array> {
+    signal?.throwIfAborted();
+    return openKeyFile(this.library, path);
   }
 
   /** A native status as a byte count or a StatusError; a success claiming more than `result` holds is refused. */
