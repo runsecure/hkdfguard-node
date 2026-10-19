@@ -33,7 +33,7 @@
 
 set -euo pipefail
 
-readonly SERVICE="com.hkdfguard.native.macos.test"
+readonly SERVICE="com.hkdfguard.integration.test.221"
 readonly TEAM_ID="MFW3T8R8J3"
 readonly SYSTEM_DIR="/Library/Application Support/HkdfGuard/v1"
 readonly USER_DIR="${HOME}/.hkdfguard/v1"

@@ -32,7 +32,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^(?!\.)(?!.*\.\.)[A-Za-z0-9.]{1,128}$')]
-    [string] $ServiceName = 'com.hkdfguard.native.windows.test'
+    [string] $ServiceName = 'com.hkdfguard.integration.test.221'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,7 +112,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ''
 Write-Host "Service '$ServiceName' is provisioned. Run the native integration tests from the hkdfguard-node repository root:"
-if ($ServiceName -ne 'com.hkdfguard.native.windows.test') {
+if ($ServiceName -ne 'com.hkdfguard.integration.test.221') {
     # Only the default service is found without being named.
     Write-Host "    `$env:HKDFGUARD_TEST_SERVICE = '$ServiceName'"
 }

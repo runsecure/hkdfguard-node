@@ -7,7 +7,7 @@ export const UNPROVISIONED_SERVICE_NAME = 'hkdfguard.integrationtest.unprovision
 
 /** The test KEK each platform's provisioning script creates. */
 export const DEFAULT_TEST_SERVICES: Record<string, string> = {
-  win32: 'com.hkdfguard.native.windows.test', // scripts/provision-windows-test-key.ps1
-  darwin: 'com.hkdfguard.native.macos.test', // scripts/provision-macos-test-key.sh
-  linux: 'com.hkdfguard.native.linux.test', // scripts/provision-linux-test-key.sh
+  win32: 'com.hkdfguard.integration.test.221', // scripts/provision-windows-test-key.ps1
+  darwin: 'com.hkdfguard.integration.test.221', // scripts/provision-macos-test-key.sh
+  linux: 'com.hkdfguard.integration.test.221', // scripts/provision-linux-test-key.sh
 };

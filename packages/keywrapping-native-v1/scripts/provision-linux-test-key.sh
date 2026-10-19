@@ -23,8 +23,8 @@
 # Then run the native tests - the key wrapper's own and the end-to-end ones - from the repository
 # root (the native add-on is compiled at install, so a C compiler must be installed):
 #
-#   HKDFGUARD_TEST_SERVICE=com.hkdfguard.native.linux.test \
-#   HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.native.linux.test.other \
+#   HKDFGUARD_TEST_SERVICE=com.hkdfguard.integration.test.221 \
+#   HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.integration.test.221.other \
 #   npm test --workspace packages/keywrapping-native-v1 --workspace packages/integration
 #
 # The policy it writes is the same one hkdfguard-go's and hkdfguard-dotnet's copies of this script
@@ -39,7 +39,7 @@
 
 set -euo pipefail
 
-readonly SERVICE="com.hkdfguard.native.linux.test"
+readonly SERVICE="com.hkdfguard.integration.test.221"
 readonly OTHER_SERVICE="${SERVICE}.other"
 readonly TOOL="/usr/bin/hkdfguard"
 readonly TPM_DEVICE="/dev/tpmrm0"

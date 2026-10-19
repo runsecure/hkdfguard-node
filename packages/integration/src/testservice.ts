@@ -20,9 +20,9 @@ const UNPROVISIONED_SERVICE_NAME = 'hkdfguard.integrationtest.unprovisioned';
 
 /** The test KEK each platform's provisioning script (packages/keywrapping-native-v1/scripts) creates. */
 const DEFAULT_TEST_SERVICES: Record<string, string> = {
-  win32: 'com.hkdfguard.native.windows.test',
-  darwin: 'com.hkdfguard.native.macos.test',
-  linux: 'com.hkdfguard.native.linux.test',
+  win32: 'com.hkdfguard.integration.test.221',
+  darwin: 'com.hkdfguard.integration.test.221',
+  linux: 'com.hkdfguard.integration.test.221',
 };
 
 // The status codes the probe tells "not provisioned" by.
