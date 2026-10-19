@@ -173,6 +173,20 @@ on macOS) against the same pins the loader applies before
 running it, and prints the `npm test` command to run next. They provision the same KEKs as the .NET
 and Go ports' copies, so one host serves all three ports' tests.
 
+The tests against the real system and the installed native library are in three platform suites
+in `packages/keywrapping-native-v1/src`, each skipped as a whole on the other platforms and each
+case skipped with its reason when what it needs is missing - never passed:
+
+| Suite | Runs | Needs, beyond its platform |
+|---|---|---|
+| Linux: `linux.test.ts` (loader against the real filesystem and dynamic linker; the library's contract: exact statuses, its own service-name and length checks, tampering, capacities, concurrency, the `hkdfguard` deployment path) | Linux | Path, `/proc` and libc checks: nothing. Installed-library checks: the `libhkdfguard1` package. Contract tests: the package and `HKDFGUARD_TEST_SERVICE`; some also `HKDFGUARD_TEST_SERVICE_OTHER`, `tpm.require_pinned_names = true` in `/etc/hkdfguard/policy.toml`, or `/usr/bin/hkdfguard` |
+| macOS: the `macOS loader` suite in `native.test.ts` (location and signature checks, the provisioning tool refused as a library, probes, the default test service found only when provisioned) | macOS | The library and `hkdfguard-v1-initialize` installed (system or per-user); the rest need nothing |
+| Windows: `windows.test.ts` (loader: fixed path, planted file, junction, unsigned, tampered, not a PE image, the installed signer and mapped module, `hkdfguard.exe` refused as not a DLL, `hkdfguard_kek_exists`) and the key-file suite in `native.test.ts` | Windows | `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` (and `hkdfguard.exe`) installed; reading back a real key file also the test service |
+
+What every platform shares - loading once, round trips, direct binding calls, too-small buffers,
+corrupt payloads, another service's payload - is the `installed native library` suite in
+`native.test.ts`; the gating all of them use is in `src/installed.test-support.ts`.
+
 `packages/integration` holds the end-to-end tests over the real native KEK - a pipeline encrypting
 configuration, the native KEK wrapping its key, an application reading it back, and runtime keys
 generated through the KEK - the port of the .NET `NativeEndToEndTests`. It is a private workspace,
