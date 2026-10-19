@@ -54,7 +54,7 @@ export function loadDarwinLibrary(): NativeKmsLibrary {
   }
   try {
     macVerifyLoadedImage(path, native.symbolImagePath!(handle, PROBE_EXPORT));
-    return NativeKmsLibrary.bind(native, handle, path, null, macStatusDescriptions);
+    return NativeKmsLibrary.bind(native, handle, path, macStatusDescriptions);
   } catch (error) {
     native.unload(handle);
     throw error;

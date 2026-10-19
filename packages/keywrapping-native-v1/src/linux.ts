@@ -68,7 +68,7 @@ export function loadLinuxLibrary(): NativeKmsLibrary {
     const loaded = native.symbolImagePath!(handle, PROBE_EXPORT);
     linuxVerifyLoadedImage(path, loaded === null ? null : linuxTrustedFile(loaded));
     linuxVerifyDependencies(path, elfReadNeededFile, (soname) => native.loadedPath!(soname), linuxTrustedFile);
-    return NativeKmsLibrary.bind(native, handle, path, 'hkdfguard_harden_process', linuxStatusDescriptions);
+    return NativeKmsLibrary.bind(native, handle, path, linuxStatusDescriptions);
   } catch (error) {
     native.unload(handle);
     throw error;

@@ -1,7 +1,7 @@
 import { InvalidArgumentError, validateServiceName, wipe, type KeyWrapper } from '@runsecure/hkdfguard-abstractions';
 import { StatusError } from './errors.js';
 import { hostLibrary } from './host.js';
-import { openKeyFile, type KmsLibrary } from './library.js';
+import { HARDEN_REQUIRE_PROTECTED_SIGNATURE, openKeyFile, type KmsLibrary } from './library.js';
 
 /** The length, in bytes, of every DEK the native library wraps and unwraps. */
 export const DEK_LENGTH = 32;
@@ -108,20 +108,71 @@ function checkCall(signal: AbortSignal | undefined, input: Uint8Array | undefine
   }
 }
 
+/** How strict {@link hardenProcess} is. */
+export interface ProcessHardeningOptions {
+  /**
+   * Fail unless no other process of the same user can attach a debugger to, or inject code into,
+   * this process - what the native command-line tools themselves require. On Windows it also closes
+   * everything the process creates afterwards (threads, child processes, named pipes and other
+   * named objects) to its own user, so use it in a service that shares no objects with other
+   * processes by name. On macOS it fails unless the host executable is signed with the Hardened
+   * Runtime and without the get-task-allow or DYLD_* entitlements, so unsigned hosts (node itself)
+   * can't use it. On Linux it adds nothing: the plain call already guarantees it. Default false:
+   * harden as far as this process allows; on macOS a weak code signature is only logged.
+   */
+  readonly requireProtectedSignature?: boolean;
+}
+
+const HARDENING_OPTIONS: ReadonlySet<string> = new Set(['requireProtectedSignature']);
+
 /**
- * Hardens the whole process through the native library, loading it if needed. DEKs pass through
- * this process's memory, so a core dump, or another process of the same user attaching a debugger,
- * could recover them. On Linux it sets the core-dump limit to zero and clears the dumpable flag.
+ * Opt-in hardening of the whole process, through the native KMS library's
+ * hkdfguard_harden_process_with_flags, loading the library if needed. DEKs pass through this
+ * process's memory, so a crash dump, or another process of the same user attaching a debugger or
+ * reading its memory, could recover them. The native library never does this on its own: it
+ * changes process-wide state the application owns. What it does:
  *
- * Opt-in because it is process-wide: debuggers and crash dumps stop working. Call it once, early,
- * after any privilege drop. It does not stop root or CAP_SYS_PTRACE, nor keep memory out of swap.
+ * - Windows: crash reports leave out the heap (WerSetFlags NOHEAP), and the process's and its
+ *   existing threads' access lists are replaced so that only SYSTEM may read or write its memory,
+ *   inject threads or duplicate its handles - the account it runs as keeps only query, synchronize
+ *   and terminate. Threads started later keep the default access unless `requireProtectedSignature`
+ *   is set; call it early, before starting worker threads (libuv starts its thread pool at the
+ *   first asynchronous fs, crypto, dns or zlib call, or the first KMS call).
+ * - Linux: the core dump limit is set to zero (hard limit included) and the process's dumpable flag
+ *   is cleared, which also stops ptrace and /proc/<pid>/mem access by other processes of the same
+ *   user.
+ * - macOS: core dumps are disabled and debugger attachment is denied; the host executable's code
+ *   signature decides whether code injection is possible, which the library can check but not
+ *   change.
  *
- * @throws UnsupportedPlatformError off Linux.
- * @throws StatusError if the hardening failed - treat that as a reason not to start.
+ * It is opt-in because it is process-wide: debuggers, inspectors and crash dumps stop working for
+ * the application. Call it once, early, and after any privilege drop (on Linux the kernel resets
+ * the dumpable flag when a process's credentials change). It is a same-user barrier: it does not
+ * stop administrators, root, SYSTEM, a process with CAP_SYS_PTRACE or SeDebugPrivilege, or the
+ * kernel, and it does not keep memory out of swap, the page file or hibernation files; those are
+ * host settings.
+ *
+ * @throws InvalidArgumentError if `options` is not an object, has an option this library doesn't
+ *   define, or a value that isn't a boolean - before the native library is loaded or called.
+ * @throws StatusError if the hardening failed, or the process can't meet
+ *   `requireProtectedSignature` - treat that as a reason not to start.
  */
-export function hardenProcess(library: KmsLibrary = hostLibrary()): void {
-  const status = library.hardenProcess();
+export function hardenProcess(options: ProcessHardeningOptions = {}, library?: KmsLibrary): void {
+  // Checked here so an unknown option never reaches native code, which would refuse it anyway.
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw new InvalidArgumentError('Process hardening options must be an object.');
+  }
+  for (const [name, value] of Object.entries(options)) {
+    if (!HARDENING_OPTIONS.has(name)) throw new InvalidArgumentError(`Unknown process hardening option '${name}'.`);
+    if (value !== undefined && typeof value !== 'boolean') {
+      throw new InvalidArgumentError(`Process hardening option '${name}' must be a boolean.`);
+    }
+  }
+  const flags = options.requireProtectedSignature === true ? HARDEN_REQUIRE_PROTECTED_SIGNATURE : 0;
+
+  const kms = library ?? hostLibrary();
+  const status = kms.hardenProcess(flags);
   if (status !== 0) {
-    throw new StatusError('process hardening', undefined, status, library.describeStatus(status));
+    throw new StatusError('process hardening', undefined, status, kms.describeStatus(status));
   }
 }

@@ -111,6 +111,7 @@ export const windowsStatusDescriptions: ReadonlyMap<number, string> = withHints(
   [Status.kekNotFound, 'no KEK is provisioned for this service; run hkdfguard provision from an elevated prompt'],
   [Status.kekAccessDenied, 'the KEK exists, but this account is not authorized to use it (or, for a new KEK, the process is not elevated); add it to the HkdfGuardUsers group or a KeyUseGroups group'],
   [Status.kekInvalid, "the existing KEK's ACL is missing, lacks SYSTEM/Administrators, or grants an over-broad principal"],
+  [Status.processHardeningFailed, 'process hardening failed: the crash-report heap exclusion or the process and thread access lists could not be set, or (with requireProtectedSignature) the process could not be closed to its own user'],
 ]);
 
 /** Linux libhkdfguard.so.1. */
@@ -130,4 +131,5 @@ export const macStatusDescriptions: ReadonlyMap<number, string> = withHints([
   [Status.kekNotFound, 'no KEK is provisioned for this service in this keychain mode; run hkdfguard-v1-initialize provision'],
   [Status.kekAccessDenied, "the keychain denied access: it is locked, there is no session to prompt in, or this process isn't allowed"],
   [Status.kekInvalid, "the keychain item for this service can't be reconstructed into a key"],
+  [Status.processHardeningFailed, "process hardening failed: core dumps or debugger attachment could not be denied, or (with requireProtectedSignature) the host executable's code signature still allows it - it needs the Hardened Runtime, without get-task-allow or DYLD_* entitlements"],
 ]);

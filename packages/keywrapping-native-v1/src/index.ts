@@ -17,6 +17,6 @@
  * The library is called through this package's own native add-on (native/hkdfguard_native.c),
  * compiled by node-gyp at install.
  */
-export { NativeKeyWrapperV1, DEK_LENGTH, hardenProcess } from './wrapper.js';
+export { NativeKeyWrapperV1, DEK_LENGTH, hardenProcess, type ProcessHardeningOptions } from './wrapper.js';
 export { KeyFileRefusedError, NotInstalledError, StatusError, UnsupportedPlatformError, UntrustedError } from './errors.js';
 export { Status, WRAPPED_DEK_LENGTHS } from './status.js';

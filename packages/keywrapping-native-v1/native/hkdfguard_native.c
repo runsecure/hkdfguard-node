@@ -7,13 +7,16 @@
  *     a TPM or Secure Enclave operation, or a key file's checks, never block the event loop. The library works on the add-on's own
  *     copies of the buffers, zeroed afterwards; the result reaches the caller's buffer on the main
  *     thread when the call completes. Each resolves to [status, written].
- *   - hardenProcess: the Linux library's process-hardening call.
+ *   - hardenProcess: the library's opt-in process hardening, hkdfguard_harden_process_with_flags -
+ *     on every platform. Only ever called when the application asks for it.
  *   - symbolImagePath (Unix): which file the dynamic linker mapped an export from (dladdr).
  *   - loadedPath (Linux): which file an already-loaded soname is bound to (RTLD_NOLOAD + dlinfo).
  *   - checkCodeSignature / productVersion (macOS): SecStaticCodeCheckValidity; kern.osproductversion.
  *   - programFilesPath / fileAttributes / securityDescriptor / describeSid / verifiedSigner (Windows):
  *     the known folder, reparse-point attributes, owner and DACL, account names, and the signer of the
  *     chain WinVerifyTrust itself validated.
+ *   - testOpenOwnProcess (Windows, tests only): whether this process may open itself with an access
+ *     mask, which shows the hardening took effect. Node has no FFI to call OpenProcess otherwise.
  *
  * Every policy decision is made in TypeScript (the src policy files), where it is tested on every platform.
  */
@@ -127,7 +130,7 @@ static int bytes_arg(napi_env env, napi_value value, uint8_t** data, size_t* len
 
 typedef int32_t (*wrap_fn)(const char*, const uint8_t*, int32_t, uint8_t*, int32_t*);
 typedef int32_t (*generate_fn)(const char*, uint8_t*, int32_t*); /* also hkdfguard_open_file's shape */
-typedef int32_t (*harden_fn)(void);
+typedef int32_t (*harden_fn)(unsigned int);
 
 typedef struct {
   void* handle; /* dlopen handle or HMODULE */
@@ -245,38 +248,32 @@ static napi_value unload(napi_env env, napi_callback_info info) {
   return js_undefined(env);
 }
 
-/* bind(library, hardenSymbol | null): resolves the KMS exports, returning the names of any missing. */
+/* bind(library): resolves the KMS exports - every one required, on every platform - returning the
+ * names of any missing. */
 static napi_value bind(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value argv[2];
+  size_t argc = 1;
+  napi_value argv[1];
   CHECK(napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
   kms_library* library = library_arg(env, argv[0]);
   if (library == NULL) return NULL;
-
-  char* harden_name = NULL;
-  napi_valuetype type;
-  CHECK(napi_typeof(env, argv[1], &type));
-  if (type == napi_string && (harden_name = utf8_arg(env, argv[1])) == NULL) return NULL;
 
   struct { const char* name; void** target; } exports[] = {
     { "hkdfguard_wrap_dek", &library->wrap },
     { "hkdfguard_unwrap_dek", &library->unwrap },
     { "hkdfguard_generate_and_wrap_dek", &library->generate },
     { "hkdfguard_open_file", &library->open_file },
-    { harden_name, &library->harden },
+    { "hkdfguard_harden_process_with_flags", &library->harden },
   };
 
   napi_value missing;
   CHECK(napi_create_array(env, &missing));
   uint32_t count = 0;
   for (size_t i = 0; i < sizeof exports / sizeof exports[0]; i++) {
-    if (exports[i].name == NULL) continue;
     *exports[i].target = find_symbol(library->handle, exports[i].name);
     if (*exports[i].target == NULL) {
       napi_set_element(env, missing, count++, js_string(env, exports[i].name));
     }
   }
-  free(harden_name);
   return missing;
 }
 
@@ -454,15 +451,27 @@ static napi_value unwrap_dek(napi_env env, napi_callback_info info) { return sta
 static napi_value generate_and_wrap_dek(napi_env env, napi_callback_info info) { return start_call(env, info, 2); }
 static napi_value open_file(napi_env env, napi_callback_info info) { return start_call(env, info, 3); }
 
-/* hardenProcess(library): the status, or null when the library has no hardening call. */
+/* hardenProcess(library, flags): hkdfguard_harden_process_with_flags' status. Synchronous, on the
+ * main thread: it changes process-wide state once, at startup, and returns quickly. The TypeScript
+ * caller refuses unknown flags first; the library refuses them too (HKDFGUARD_ERR_INVALID_ARGUMENT). */
 static napi_value harden_process(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1];
+  size_t argc = 2;
+  napi_value argv[2];
   CHECK(napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
   kms_library* library = library_arg(env, argv[0]);
   if (library == NULL) return NULL;
-  if (library->harden == NULL) return js_null(env);
-  return js_int(env, ((harden_fn)library->harden)());
+  napi_valuetype type;
+  uint32_t flags = 0;
+  if (argc < 2 || napi_typeof(env, argv[1], &type) != napi_ok || type != napi_number
+      || napi_get_value_uint32(env, argv[1], &flags) != napi_ok) {
+    napi_throw_type_error(env, NULL, "hkdfguard_native: expected the hardening flags as a number");
+    return NULL;
+  }
+  if (library->harden == NULL) {
+    napi_throw_error(env, NULL, "hkdfguard_native: the library is not bound");
+    return NULL;
+  }
+  return js_int(env, ((harden_fn)library->harden)((unsigned int)flags));
 }
 
 /* kekExists(library, service): [status, exists] from hkdfguard_kek_exists, or null when the library
@@ -697,6 +706,26 @@ static napi_value security_descriptor(napi_env env, napi_callback_info info) {
   return result;
 }
 
+/* testOpenOwnProcess(access): 0 if OpenProcess(access) on this very process succeeds - the handle
+ * is closed at once and never reaches JavaScript - else GetLastError(). For the opt-in process
+ * hardening tests only, which check the process's new DACL from inside it: Node has no FFI to call
+ * kernel32 itself, and another process (PowerShell) would test a different access check. It can only
+ * ask about this process, and grants nothing it couldn't already do. */
+static napi_value test_open_own_process(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  CHECK(napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  uint32_t access = 0;
+  if (argc < 1 || napi_get_value_uint32(env, argv[0], &access) != napi_ok) {
+    napi_throw_type_error(env, NULL, "hkdfguard_native: expected an access mask");
+    return NULL;
+  }
+  HANDLE process = OpenProcess((DWORD)access, FALSE, GetCurrentProcessId());
+  if (process == NULL) return js_int(env, GetLastError());
+  CloseHandle(process);
+  return js_int(env, 0);
+}
+
 /* describeSid(sid): "DOMAIN\account (S-...)", or the SID itself if it maps to no account here. */
 static napi_value describe_sid(napi_env env, napi_callback_info info) {
   size_t argc = 1;
@@ -856,6 +885,7 @@ NAPI_MODULE_INIT() {
     { "securityDescriptor", NULL, security_descriptor, NULL, NULL, NULL, napi_enumerable, NULL },
     { "describeSid", NULL, describe_sid, NULL, NULL, NULL, napi_enumerable, NULL },
     { "verifiedSigner", NULL, verified_signer, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "testOpenOwnProcess", NULL, test_open_own_process, NULL, NULL, NULL, napi_enumerable, NULL },
 #endif
   };
   if (napi_define_properties(env, exports, sizeof properties / sizeof properties[0], properties) != napi_ok) {

@@ -98,7 +98,7 @@ export function loadWindowsLibrary(): NativeKmsLibrary {
     throw untrustedCause(error, `'${path}' passed verification but could not be loaded`);
   }
   try {
-    return NativeKmsLibrary.bind(native, handle, path, null, windowsStatusDescriptions);
+    return NativeKmsLibrary.bind(native, handle, path, windowsStatusDescriptions);
   } catch (error) {
     native.unload(handle);
     throw error;

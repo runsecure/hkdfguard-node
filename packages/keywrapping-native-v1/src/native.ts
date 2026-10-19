@@ -7,13 +7,14 @@ export type LibraryHandle = { readonly __brand: 'hkdfguard-native-library' };
 export interface NativeAddon {
   load(path: string): LibraryHandle;
   unload(library: LibraryHandle): void;
-  /** Resolves the KMS exports, returning the names of any that are missing. */
-  bind(library: LibraryHandle, hardenSymbol: string | null): string[];
+  /** Resolves the KMS exports (every one required, on every platform), returning the names of any that are missing. */
+  bind(library: LibraryHandle): string[];
   wrapDek(library: LibraryHandle, service: string, input: Uint8Array, output: Uint8Array): Promise<[number, number]>;
   unwrapDek(library: LibraryHandle, service: string, input: Uint8Array, output: Uint8Array): Promise<[number, number]>;
   generateAndWrapDek(library: LibraryHandle, service: string, output: Uint8Array): Promise<[number, number]>;
   openFile(library: LibraryHandle, path: string, output: Uint8Array): Promise<[number, number]>;
-  hardenProcess(library: LibraryHandle): number | null;
+  /** hkdfguard_harden_process_with_flags(flags): its status. */
+  hardenProcess(library: LibraryHandle, flags: number): number;
   kekExists(library: LibraryHandle, service: string): [number, boolean] | null;
   symbolImagePath?(library: LibraryHandle, symbol: string): string | null;
   loadedPath?(soname: string): string | null;
@@ -24,6 +25,8 @@ export interface NativeAddon {
   securityDescriptor?(path: string): { owner: string; daclAbsent: boolean; aces: { type: number; flags: number; mask: number; sid: string }[] };
   describeSid?(sid: string): string;
   verifiedSigner?(path: string): { subject: string; ekus: string[]; rootCertificate: Uint8Array } | { status: number } | { error: string };
+  /** Windows, for the opt-in process hardening tests only: 0 if this process may open itself with `access`, else the Windows error. */
+  testOpenOwnProcess?(access: number): number;
 }
 
 let addon: NativeAddon | undefined;

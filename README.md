@@ -80,6 +80,61 @@ A refusal throws `KeyFileRefusedError`, with `status` and an fs-style `code`: `E
 wrapper without `readKeyFile` has its key files read by `readKeyFile` in
 `@runsecure/hkdfguard-dek`, with Node's own file I/O.
 
+### Process hardening
+
+DEKs pass through your process's memory, so a crash dump, or another process of the same user
+attaching a debugger or reading that memory, could recover them. `hardenProcess()` calls the
+native library's `hkdfguard_harden_process_with_flags` to close that off, on every platform:
+
+| Platform | What it does |
+|---|---|
+| Windows | Crash reports leave out the heap, and the process's and its threads' access lists are replaced so only SYSTEM can read or write its memory, inject threads or duplicate its handles. Its own account keeps only query, synchronize and terminate. |
+| Linux | Core dumps off (hard limit included), and the process marked non-dumpable, which also stops ptrace and `/proc/<pid>/mem` access by the same user. |
+| macOS | Core dumps off and debugger attachment denied. Whether code can be injected depends on the host executable's code signature, which the library checks but can't change. |
+
+Neither the native library nor any machine policy does this for you: it changes process-wide
+state your application owns, so it is opt-in. Call it once, early in startup - after any privilege
+drop on Linux, and on Windows before the process starts threads: threads that exist at the call
+are covered, later ones keep the default access. In Node that means before the first asynchronous
+`fs`, `crypto`, `dns` or `zlib` call and the first KMS call (each starts libuv's thread pool), and
+before any `worker_threads` worker:
+
+```ts
+import { hardenProcess } from '@runsecure/hkdfguard-keywrapping-native-v1';
+
+hardenProcess();   // throws StatusError if it fails: don't start
+```
+
+Native debuggers, memory dumps and crash dumps stop working for the process. It is a same-user
+barrier: it does not stop administrators, root, SYSTEM, `SeDebugPrivilege`, `CAP_SYS_PTRACE` or
+the kernel, and it does not keep memory out of swap, the page file or hibernation files. Nor does
+it cover Node's own inspector, which runs inside the process: don't run a hardened process with
+`--inspect`, and on Linux and macOS start it with `--disable-sigusr1`, since otherwise any process
+of the same user can open the inspector by sending it `SIGUSR1`.
+
+`hardenProcess({ requireProtectedSignature: true })` is the strict form the native command-line
+tools use: it fails unless no other process of the same user can debug or inject into this one.
+An option `hardenProcess` doesn't know, or a value that isn't a boolean, throws
+`InvalidArgumentError` before the native library is called.
+
+- **Windows:** it also closes threads started later - libuv's thread pool included - and
+  everything else the process creates afterwards without its own security descriptor (child
+  processes, named pipes, named events), to its own account. Use it in a service that shares no
+  objects with other processes by name: a `child_process` started afterwards, for example, can't
+  be stopped by Task Manager, and a same-user client can't connect to a named pipe the process
+  creates without a security descriptor.
+- **macOS:** it fails unless the host executable is signed with the Hardened Runtime and without
+  the `get-task-allow` or `DYLD_*` entitlements, so unsigned hosts such as a plain `node` can't
+  use it. Without it, a weak signature is only logged.
+- **Linux:** it adds nothing; the plain call already guarantees it.
+
+**Node on Windows:** the plain call closes the threads that exist when it runs, and threads started
+later keep the default access, which lets other processes of the same user read and change their
+registers. Calling it before the first asynchronous call keeps libuv's thread pool covered, but
+nothing in a real service stays that disciplined: any dependency's first `fs.promises` or `crypto`
+call, a `worker_threads` worker, or a later KMS call starts threads that plain mode leaves open. So
+**use `requireProtectedSignature: true` for a Windows service**: it closes later threads too.
+
 ## Development
 
 Node.js 22 or later (see `.nvmrc`), with Python 3 and a C compiler for the add-on.
@@ -128,6 +183,18 @@ test service and is skipped the same way.
 that created it, so the first native call from each `node` executable is answered with a keychain
 dialog in a logged-in session - click "Always Allow" - and with status -18 where there is no UI.
 The tests fail with a message saying so after 60 seconds rather than hang.
+
+`hardenProcess()` hardens the whole test process, so its tests against the real library
+(`src/hardening.test.ts`: Windows and Linux) run only with `HKDFGUARD_TEST_PROCESS_HARDENING=1`.
+`node --test` runs each test file in its own process, so the rest of the suite is never hardened.
+On Windows the check that the process can no longer open itself for reading goes through the
+add-on's test-only `testOpenOwnProcess`, since Node has no FFI to call `OpenProcess` itself:
+
+```sh
+cd packages/keywrapping-native-v1
+HKDFGUARD_TEST_PROCESS_HARDENING=1 node --test-name-pattern="closes the process" dist/hardening.test.js
+HKDFGUARD_TEST_PROCESS_HARDENING=1 node --test-name-pattern="requireProtectedSignature" dist/hardening.test.js
+```
 
 ## Continuous integration and releases
 

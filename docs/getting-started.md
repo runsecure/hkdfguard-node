@@ -352,5 +352,7 @@ its meaning. The codes are the same on every platform (`Status` in
 ## Next steps
 
 - [`hkdfguard` CLI reference](reference/cli.md): every command and option.
+- [Process hardening](../README.md#process-hardening): the opt-in `hardenProcess()` call that
+  keeps crash dumps, debuggers and other processes of the same user out of your process's memory.
 - The README's package table and examples for `@runsecure/hkdfguard-cache` and
   `@runsecure/hkdfguard-encryptedconfig`, until their how-to pages are written.

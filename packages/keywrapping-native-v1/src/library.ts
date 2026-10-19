@@ -1,5 +1,5 @@
 import { InvalidArgumentError, MAX_WRAPPED_KEY_BYTES } from '@runsecure/hkdfguard-abstractions';
-import { KeyFileRefusedError, UnsupportedPlatformError, UntrustedError } from './errors.js';
+import { KeyFileRefusedError, UntrustedError } from './errors.js';
 import type { LibraryHandle, NativeAddon } from './native.js';
 import { Status } from './status.js';
 
@@ -21,9 +21,21 @@ export interface KmsLibrary {
   openFile(path: string, output: Uint8Array): Promise<[number, number]>;
   /** What a non-zero status means on this platform, or undefined if unknown. */
   describeStatus(status: number): string | undefined;
-  /** The process-hardening status. @throws UnsupportedPlatformError off Linux. */
-  hardenProcess(): number;
+  /**
+   * hkdfguard_harden_process_with_flags, on every platform: makes this process's memory harder to
+   * recover - no crash dumps of its memory, and no debugger attach or memory reads by other
+   * processes of the same user. `flags` is a bitwise OR of the HARDEN_* flags, or 0. Returns
+   * Status.ok, Status.processHardeningFailed, or Status.invalidArgument for an unknown flag. Use
+   * hardenProcess (wrapper.ts) rather than calling it directly.
+   */
+  hardenProcess(flags: number): number;
 }
+
+/**
+ * hkdfguard_harden_process_with_flags' HKDFGUARD_HARDEN_REQUIRE_PROTECTED_SIGNATURE: fail unless no
+ * other process of the same user can debug or inject into this one. Same bit on every platform.
+ */
+export const HARDEN_REQUIRE_PROTECTED_SIGNATURE = 0x1;
 
 /**
  * Reads a key file through the library's hkdfguard_open_file, returning exactly the bytes read -
@@ -49,8 +61,6 @@ export async function openKeyFile(library: KmsLibrary, path: string): Promise<Ui
   return buffer.slice(0, read);
 }
 
-export const NO_HARDENING = 'The HkdfGuard native KMS library on this platform has no process hardening call; it is available on Linux only.';
-
 /** A verified, loaded library, called through the add-on. */
 export class NativeKmsLibrary implements KmsLibrary {
   private constructor(
@@ -60,11 +70,11 @@ export class NativeKmsLibrary implements KmsLibrary {
   ) {}
 
   /**
-   * Binds the KMS exports of a loaded, verified library - every platform's has the three DEK calls;
-   * `hardenSymbol` is null where there is no hardening call.
+   * Binds the KMS exports of a loaded, verified library - every platform's has the three DEK calls,
+   * hkdfguard_open_file and hkdfguard_harden_process_with_flags.
    */
-  static bind(native: NativeAddon, handle: LibraryHandle, path: string, hardenSymbol: string | null, descriptions: ReadonlyMap<number, string>): NativeKmsLibrary {
-    const missing = native.bind(handle, hardenSymbol);
+  static bind(native: NativeAddon, handle: LibraryHandle, path: string, descriptions: ReadonlyMap<number, string>): NativeKmsLibrary {
+    const missing = native.bind(handle);
     if (missing.length > 0) {
       throw new UntrustedError(`'${path}' has no '${missing[0]}' export; it is not the HkdfGuard native library.`);
     }
@@ -91,10 +101,8 @@ export class NativeKmsLibrary implements KmsLibrary {
     return this.descriptions.get(status);
   }
 
-  hardenProcess(): number {
-    const status = this.native.hardenProcess(this.handle);
-    if (status === null) throw new UnsupportedPlatformError(NO_HARDENING);
-    return status;
+  hardenProcess(flags: number): number {
+    return this.native.hardenProcess(this.handle, flags);
   }
 
   /** hkdfguard_kek_exists: [status, exists], or undefined when the library has no such export. @internal For the tests. */
