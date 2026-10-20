@@ -164,7 +164,7 @@ themselves (through the library's `hkdfguard_kek_exists` export, and the provisi
 `HKDFGUARD_TEST_SERVICE_OTHER` names a second provisioned service for the cross-service isolation
 tests. To provision a test host, run from `packages/keywrapping-native-v1`:
 
-- Linux: `sudo scripts/provision-linux-test-key.sh` (TPM-backed test KEKs and policy; `--remove` undoes it)
+- Linux: `sudo scripts/provision-linux-test-key.sh` (the TPM-backed test KEK and policy; `--remove` undoes it)
 - macOS: `scripts/provision-macos-test-key.sh` as the account that runs the tests (`--remove` retires the KEK)
 - Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell (`-Remove` retires
   the KEK; a provisioning run also retires the legacy `com.hkdfguard.native.windows.test`, after

@@ -43,10 +43,12 @@ describe('provisioning scripts', () => {
   it('each script provisions the one default service the tests look for', () => {
     const service = DEFAULT_TEST_SERVICE.replace(/[.]/g, '\\.');
     assert.match(script('provision-linux-test-key.sh'), new RegExp(`^readonly SERVICE="${service}"$`, 'm'));
-    assert.match(script('provision-linux-test-key.sh'), /^readonly OTHER_SERVICE="\$\{SERVICE\}\.other"$/m);
+    // One test service only: the isolation tests use a never-provisioned name unless
+    // HKDFGUARD_TEST_SERVICE_OTHER names a second real KEK.
+    assert.doesNotMatch(script('provision-linux-test-key.sh'), /^readonly OTHER_SERVICE=/m);
     assert.match(script('provision-macos-test-key.sh'), new RegExp(`^readonly SERVICE="${service}"$`, 'm'));
     assert.match(script('provision-windows-test-key.ps1'), new RegExp(`^    \\[string\\] \\$ServiceName = '${service}',?$`, 'm'));
-    for (const name of [DEFAULT_TEST_SERVICE, `${DEFAULT_TEST_SERVICE}.other`, UNPROVISIONED_SERVICE_NAME]) {
+    for (const name of [DEFAULT_TEST_SERVICE, UNPROVISIONED_SERVICE_NAME]) {
       assert.ok(isValidServiceName(name), name);
     }
   });

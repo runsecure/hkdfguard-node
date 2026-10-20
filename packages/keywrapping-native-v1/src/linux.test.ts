@@ -32,7 +32,6 @@ import { TEST_OTHER_SERVICE_VARIABLE, UNPROVISIONED_SERVICE_NAME } from './tests
  *
  *   sudo scripts/provision-linux-test-key.sh
  *   HKDFGUARD_TEST_SERVICE=com.hkdfguard.integration.test.221 \
- *   HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.integration.test.221.other \
  *   npm test --workspace packages/keywrapping-native-v1
  *
  * native.test.ts covers what every platform shares; these pin down the exact Linux status codes,
