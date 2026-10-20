@@ -166,7 +166,9 @@ tests. To provision a test host, run from `packages/keywrapping-native-v1`:
 
 - Linux: `sudo scripts/provision-linux-test-key.sh` (TPM-backed test KEKs and policy; `--remove` undoes it)
 - macOS: `scripts/provision-macos-test-key.sh` as the account that runs the tests (`--remove` retires the KEK)
-- Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell
+- Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell (`-Remove` retires
+  the KEK; a provisioning run also retires the legacy `com.hkdfguard.native.windows.test`, after
+  asking - `-KeepLegacyKey` keeps it)
 
 Each checks the installed tool (`hkdfguard.exe`, `/usr/bin/hkdfguard`, or `hkdfguard-v1-initialize`
 on macOS) against the same pins the loader applies before

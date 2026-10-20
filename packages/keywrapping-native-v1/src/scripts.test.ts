@@ -45,7 +45,7 @@ describe('provisioning scripts', () => {
     assert.match(script('provision-linux-test-key.sh'), new RegExp(`^readonly SERVICE="${quote(DEFAULT_TEST_SERVICES.linux!)}"$`, 'm'));
     assert.match(script('provision-linux-test-key.sh'), /^readonly OTHER_SERVICE="\$\{SERVICE\}\.other"$/m);
     assert.match(script('provision-macos-test-key.sh'), new RegExp(`^readonly SERVICE="${quote(DEFAULT_TEST_SERVICES.darwin!)}"$`, 'm'));
-    assert.match(script('provision-windows-test-key.ps1'), new RegExp(`^    \\[string\\] \\$ServiceName = '${quote(DEFAULT_TEST_SERVICES.win32!)}'$`, 'm'));
+    assert.match(script('provision-windows-test-key.ps1'), new RegExp(`^    \\[string\\] \\$ServiceName = '${quote(DEFAULT_TEST_SERVICES.win32!)}',?$`, 'm'));
     for (const name of [...Object.values(DEFAULT_TEST_SERVICES), `${DEFAULT_TEST_SERVICES.linux}.other`, UNPROVISIONED_SERVICE_NAME]) {
       assert.ok(isValidServiceName(name), name);
     }
@@ -53,7 +53,11 @@ describe('provisioning scripts', () => {
 
   it('the Linux script accepts a policy written by any port', () => {
     const text = script('provision-linux-test-key.sh');
-    for (const marker of ['MARKER', 'GO_MARKER', 'DOTNET_MARKER']) assert.match(text, new RegExp(`^readonly ${marker}="# Written by `, 'm'));
-    assert.match(text, /\$\{first\} == "\$\{MARKER\}" \|\| \$\{first\} == "\$\{GO_MARKER\}" \|\| \$\{first\} == "\$\{DOTNET_MARKER\}"/);
+    assert.match(text, /^readonly MARKER="# Written by hkdfguard-node packages\/keywrapping-native-v1\/scripts\/provision-linux-test-key\.sh - test hosts only\."$/m);
+    // Every port's copy writes the same policy under its own marker, and accepts all five.
+    for (const port of ['dotnet scripts', 'go keywrapping/nativev1/scripts', 'java scripts', 'node packages/keywrapping-native-v1/scripts', 'python scripts']) {
+      assert.ok(text.includes(`    "# Written by hkdfguard-${port}/provision-linux-test-key.sh - test hosts only."\n`), port);
+    }
+    assert.match(text, /for marker in "\$\{KNOWN_MARKERS\[@\]\}"; do/);
   });
 });
