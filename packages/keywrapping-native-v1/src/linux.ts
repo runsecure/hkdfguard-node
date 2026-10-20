@@ -1,12 +1,11 @@
-import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { errnoOf, unixProbe } from './darwin.js';
 import { elfReadNeededFile } from './elf.js';
 import { UntrustedError } from './errors.js';
 import { NativeKmsLibrary } from './library.js';
 import {
-  linuxCandidatePaths, linuxChoosePath, linuxKnownReleases, linuxReadEnvironment, linuxResolveTrusted, linuxVerifyContent,
-  linuxVerifyDependencies, linuxVerifyEnvironment, linuxVerifyLoadedImage,
+  linuxCandidatePaths, linuxChoosePath, linuxReadEnvironment, linuxResolveTrusted, linuxVerifyDependencies, linuxVerifyEnvironment,
+  linuxVerifyLoadedImage,
 } from './linuxpolicy.js';
 import { PROBE_EXPORT } from './macpolicy.js';
 import { nativeAddon } from './native.js';
@@ -38,15 +37,10 @@ export function linuxTrustedFile(path: string): string {
   return linuxResolveTrusted(path, FileType.Regular, linuxStatus, linuxReadLink)!;
 }
 
-function sha256File(path: string): string {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
-}
-
 /** Verifies and loads the Linux native KMS library (see linuxpolicy.ts). */
 export function loadLinuxLibrary(): NativeKmsLibrary {
   const native = nativeAddon();
   const path = linuxTrustedFile(linuxChoosePath(linuxCandidatePaths(process.arch), unixProbe));
-  linuxVerifyContent(path, sha256File, linuxKnownReleases);
 
   let initial: Uint8Array | undefined;
   try {

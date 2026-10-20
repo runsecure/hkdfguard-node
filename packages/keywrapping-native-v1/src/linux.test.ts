@@ -1,6 +1,5 @@
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,8 +13,8 @@ import { hostLibrary } from './host.js';
 import type { KmsLibrary } from './library.js';
 import { linuxReadLink, linuxStatus, linuxTrustedFile } from './linux.js';
 import {
-  ENV_AUDIT, ENV_LIBRARY_PATH, ENV_PRELOAD, linuxKnownReleases, linuxReadEnvironment, linuxResolveTrusted, linuxVerifyContent,
-  linuxVerifyDependencies, linuxVerifyEnvironment, linuxVerifyLoadedImage,
+  ENV_AUDIT, ENV_LIBRARY_PATH, ENV_PRELOAD, linuxReadEnvironment, linuxResolveTrusted, linuxVerifyDependencies, linuxVerifyEnvironment,
+  linuxVerifyLoadedImage,
 } from './linuxpolicy.js';
 import { PROBE_EXPORT } from './macpolicy.js';
 import { nativeAddon } from './native.js';
@@ -117,7 +116,6 @@ async function wrap(p: Provisioned, dek: Uint8Array): Promise<Uint8Array> {
 
 const filled = (value: number, length: number) => new Uint8Array(length).fill(value);
 const resolveReal = (path: string, expected: FileType, allowMissing = false) => linuxResolveTrusted(path, expected, linuxStatus, linuxReadLink, allowMissing);
-const sha256File = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
 
 function temporaryDirectory(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -218,13 +216,6 @@ describe('the Linux loader against the real system', { skip: process.platform !=
     if (path === undefined) return;
     const needed = elfReadNeededFile(linuxTrustedFile(path));
     for (const name of ['libtss2-esys.so.0', 'libc.so.6']) assert.ok(needed.includes(name), `DT_NEEDED is ${needed.join(', ')}`);
-  });
-
-  it('finds the installed library a known release in a trusted location', (t) => {
-    const path = installedPath(t);
-    if (path === undefined) return;
-    const resolved = linuxTrustedFile(path);
-    linuxVerifyContent(resolved, sha256File, linuxKnownReleases);
   });
 
   it('loads the installed library through the verified loader, its dependencies trusted', async (t) => {

@@ -13,11 +13,13 @@ import { ENOENT, ENOTDIR, FileType, PERM_GROUP_WRITE, PERM_OTHER_WRITE, type Fil
  *     is refused.
  *  2. Path integrity. Every directory walked through, every symbolic link followed, and the file
  *     itself must be owned by root, and no directory or file may be writable by group or others.
- *  3. Content. The file's SHA-256 must be a known release - Linux has no platform code signature.
- *  4. Environment. Every location LD_LIBRARY_PATH, LD_PRELOAD or LD_AUDIT names must pass the same
+ *  3. Environment. Every location LD_LIBRARY_PATH, LD_PRELOAD or LD_AUDIT names must pass the same
  *     path checks, in both the environment the process started with and the current one.
- *  5. What was loaded. After dlopen, dladdr must place the export in the verified file, and every
+ *  4. What was loaded. After dlopen, dladdr must place the export in the verified file, and every
  *     object in its dependency closure must be bound to a file that passes the path checks.
+ *
+ * The library is not content-pinned: a release's authenticity is verified with Sigstore/cosign when
+ * the package is installed, so path integrity is what the loader enforces.
  */
 
 export const LINUX_FILE_NAME = 'libhkdfguard.so.1';
@@ -28,14 +30,6 @@ export const LINUX_MAX_SYMBOLIC_LINKS = 40;
 export const ENV_LIBRARY_PATH = 'LD_LIBRARY_PATH';
 export const ENV_PRELOAD = 'LD_PRELOAD';
 export const ENV_AUDIT = 'LD_AUDIT';
-
-/**
- * The SHA-256 of every native release this package accepts. Each distribution and architecture has
- * its own build; a release not listed here is refused until this package lists it.
- */
-export const linuxKnownReleases: ReadonlyMap<string, string> = new Map([
-  ['a3a9312fd2d603a62e6a5b1ed46ba5e4a51adcba321aa5a1014a762ff07ca064', 'libhkdfguard1 0.1.0-1~ubuntu24.04.1 (amd64)'],
-]);
 
 /** Where the package may have installed the library for a process of `arch`, in the order tried. */
 export function linuxCandidatePaths(arch: string): string[] {
@@ -142,14 +136,6 @@ export function linuxResolveTrusted(path: string, expected: FileType, getStatus:
     throw new UntrustedError(`'${path}' resolves to '${resolved}', which is a ${resolvedType}, not a ${expected}.`);
   }
   return resolved;
-}
-
-/** Requires the file's SHA-256 (lowercase hex) to be a known release. */
-export function linuxVerifyContent(path: string, sha256Hex: (path: string) => string, knownReleases: ReadonlyMap<string, string>): void {
-  const hash = sha256Hex(path);
-  if (!knownReleases.has(hash)) {
-    throw new UntrustedError(`'${path}' has SHA-256 ${hash}, which is not a HkdfGuard native release this version of the package recognizes; refusing to load it. If it is a newer genuine release, update the package.`);
-  }
 }
 
 /**

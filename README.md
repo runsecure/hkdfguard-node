@@ -58,9 +58,11 @@ const n = await secrets.decrypt('ConnectionStrings:Admin', buffer);
 `@runsecure/hkdfguard-keywrapping-native-v1` calls the native KMS library through its own small C
 add-on, `native/hkdfguard_native.c`, compiled by node-gyp when the package is installed - so
 installing it needs Python 3 and a C compiler (Visual Studio Build Tools on Windows). The add-on only
-loads and calls the library; every verification rule (path ownership, code signature or pinned
-SHA-256, the dynamic linker's environment, what was actually loaded) is TypeScript, and is tested on
-every platform. KMS calls run on libuv's thread pool, so a TPM operation never blocks the event loop.
+loads and calls the library; every verification rule (path ownership, code signature on Windows and
+macOS, the dynamic linker's environment, what was actually loaded) is TypeScript, and is tested on
+every platform. The Linux library is not content-pinned: verify a release with Sigstore/cosign
+(`gh attestation verify`) when you install it, and the loader enforces path integrity from there.
+KMS calls run on libuv's thread pool, so a TPM operation never blocks the event loop.
 
 The Windows library is `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll`, beside the `hkdfguard.exe`
 tool; on Linux the tool is `/usr/bin/hkdfguard`. Every platform's library returns the same status
