@@ -10,7 +10,8 @@ import { WIN_CODE_SIGNING_EKU, WIN_EXPECTED_PROFILE_EKU, WIN_EXPECTED_PUBLISHER,
 // The provisioning scripts vet the native tool against the same pins the loader vets the library
 // against, and provision the services the tests look for; this keeps them from drifting apart.
 
-const script = (name: string) => readFileSync(join(__dirname, '..', 'scripts', name), 'utf8');
+// Windows checkouts may convert line endings to CRLF, which would defeat the `$` anchors below.
+const script = (name: string) => readFileSync(join(__dirname, '..', 'scripts', name), 'utf8').replace(/\r\n/g, '\n');
 
 describe('provisioning scripts', () => {
   it("the Windows script pins what the loader pins", () => {
