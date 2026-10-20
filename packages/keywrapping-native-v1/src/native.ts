@@ -7,12 +7,14 @@ export type LibraryHandle = { readonly __brand: 'hkdfguard-native-library' };
 export interface NativeAddon {
   load(path: string): LibraryHandle;
   unload(library: LibraryHandle): void;
-  /** Resolves the KMS exports, returning the names of any that are missing. */
-  bind(library: LibraryHandle, hardenSymbol: string | null): string[];
+  /** Resolves the KMS exports (every one required, on every platform), returning the names of any that are missing. */
+  bind(library: LibraryHandle): string[];
   wrapDek(library: LibraryHandle, service: string, input: Uint8Array, output: Uint8Array): Promise<[number, number]>;
   unwrapDek(library: LibraryHandle, service: string, input: Uint8Array, output: Uint8Array): Promise<[number, number]>;
   generateAndWrapDek(library: LibraryHandle, service: string, output: Uint8Array): Promise<[number, number]>;
-  hardenProcess(library: LibraryHandle): number | null;
+  openFile(library: LibraryHandle, path: string, output: Uint8Array): Promise<[number, number]>;
+  /** hkdfguard_harden_process_with_flags(flags): its status. */
+  hardenProcess(library: LibraryHandle, flags: number): number;
   kekExists(library: LibraryHandle, service: string): [number, boolean] | null;
   symbolImagePath?(library: LibraryHandle, symbol: string): string | null;
   loadedPath?(soname: string): string | null;

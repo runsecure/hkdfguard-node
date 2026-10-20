@@ -1,5 +1,5 @@
 import { constants as fsConstants } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { lstat, open, realpath, stat } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import {
   HkdfGuardError, InvalidArgumentError, MAX_WRAPPED_KEY_BYTES, RefreshFailurePolicy, validateServiceName,
@@ -139,7 +139,11 @@ function entries(keyFiles: KeyRingConfig['keyFiles']): [number, string][] {
 }
 
 /**
- * Reads a wrapped DEK, refusing anything that isn't a regular file, one its group or other users can
+ * Reads a wrapped DEK with Node's own file I/O - how buildKeyRing reads key files for a key wrapper
+ * with no readKeyFile of its own (a remote KMS, say, or a test double). A wrapper backed by the
+ * native KMS library reads through that library instead, which makes its own checks.
+ *
+ * Refuses anything that isn't a regular file, one its group or other users can
  * write, or - outside Windows, whose ACLs the native tool sets - one in a location anyone but root
  * or this process's user could replace it in (see {@link verifyKeyFileLocation}), an empty file, or one over
  * MAX_WRAPPED_KEY_BYTES - never reading more than one byte past the limit, so a wrong path (a log, a
@@ -200,6 +204,17 @@ async function verifyFolders(directory: string, path: string, euid: number, fs: 
     }
     if (dirname(folder) === folder) return;
   }
+}
+
+/**
+ * A key file's wrapped DEK and its modification time - the key file's age. Read through the key
+ * wrapper when it has readKeyFile (its own checks on who could have written the file), otherwise
+ * with {@link readKeyFile}.
+ */
+async function readKeyFileFor(wrapper: KeyWrapper, path: string, signal: AbortSignal | undefined): Promise<{ wrapped: Uint8Array; modifiedMs: number }> {
+  if (wrapper.readKeyFile === undefined) return readKeyFileWithTime(path);
+  const wrapped = await wrapper.readKeyFile(path, signal);
+  return { wrapped, modifiedMs: (await stat(path)).mtimeMs };
 }
 
 /** {@link readKeyFile}, with the opened file's modification time - the key file's age. */
@@ -274,7 +289,7 @@ export async function buildKeyRing(config: KeyRingConfig, internals: BuildIntern
     const maxAgeDays = config.keyFileMaxAgeDays ?? DEFAULT_KEY_FILE_MAX_AGE_DAYS;
     for (const [version, path] of entries(config.keyFiles)) {
       signal?.throwIfAborted();
-      const { wrapped, modifiedMs } = await readKeyFileWithTime(path);
+      const { wrapped, modifiedMs } = await readKeyFileFor(keyWrapper, path, signal);
       await addOwned(ring, version, await factory.create(keyWrapper, wrapped, providerOptions),
         keyFileDeadline(version, path, modifiedMs, maxAgeDays, config.logger));
     }

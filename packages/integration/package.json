@@ -12,7 +12,8 @@
     "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.1.0",
     "@runsecure/hkdfguard-dek": "0.1.0",
     "@runsecure/hkdfguard-encryptedconfig": "0.1.0",
-    "@runsecure/hkdfguard-keywrapping-native-v1": "0.1.0"
+    "@runsecure/hkdfguard-keywrapping-native-v1": "0.1.0",
+    "@runsecure/hkdfguard-test-support": "0.0.0"
   },
   "engines": { "node": ">=22" }
 }

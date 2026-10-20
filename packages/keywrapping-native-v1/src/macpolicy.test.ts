@@ -65,9 +65,9 @@ describe('macOS platform', () => {
 
 describe('macOS locations', () => {
   it('are the agreed paths', () => {
-    assert.equal(MAC_SYSTEM_PATH, '/Library/Application Support/HkdfGuard/v1/libhkdfguard_v1.dylib');
-    assert.equal(macUserPath('/Users/dev'), '/Users/dev/.hkdfguard/v1/libhkdfguard_v1.dylib');
-    assert.equal(macUserPath('/Users/dev/'), '/Users/dev/.hkdfguard/v1/libhkdfguard_v1.dylib');
+    assert.equal(MAC_SYSTEM_PATH, '/Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib');
+    assert.equal(macUserPath('/Users/dev'), '/Users/dev/.hkdfguard/v1/libhkdfguard.dylib');
+    assert.equal(macUserPath('/Users/dev/'), '/Users/dev/.hkdfguard/v1/libhkdfguard.dylib');
   });
 
   it('prefer the system install, even when a user install exists', () => {
@@ -92,7 +92,7 @@ describe('macOS locations', () => {
   it('report neither install usable as not installed, naming both', () => {
     for (const home of [HOME, '', 'relative/home']) {
       assert.throws(() => macChoosePath((p) => (!p.startsWith('/') && p.endsWith('.dylib') ? 0 : ENOENT), home),
-        (e: unknown) => e instanceof NotInstalledError && e.message.includes(MAC_SYSTEM_PATH) && e.message.includes('.hkdfguard/v1/libhkdfguard_v1.dylib'));
+        (e: unknown) => e instanceof NotInstalledError && e.message.includes(MAC_SYSTEM_PATH) && e.message.includes('.hkdfguard/v1/libhkdfguard.dylib'));
     }
   });
 
@@ -174,7 +174,7 @@ describe('macOS path integrity', () => {
 describe('macOS code signature and dyld', () => {
   it('pins the HkdfGuard team', () => {
     assert.equal(MAC_TEAM_ID, 'MFW3T8R8J3');
-    assert.equal(MAC_CODE_REQUIREMENT, 'identifier "libhkdfguard_v1" and anchor apple generic'
+    assert.equal(MAC_CODE_REQUIREMENT, 'identifier "libhkdfguard" and anchor apple generic'
       + ' and certificate 1[field.1.2.840.113635.100.6.2.6] exists'
       + ' and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
       + ' and certificate leaf[subject.OU] = "MFW3T8R8J3"');
@@ -189,7 +189,7 @@ describe('macOS code signature and dyld', () => {
 
   it('refuses a library of the same name on DYLD_LIBRARY_PATH, consulting only that variable', () => {
     for (const searchPath of [undefined, '', '/opt/lib:/usr/local/lib']) macRefuseShadowing(() => searchPath, () => false);
-    const decoy = '/tmp/decoy/libhkdfguard_v1.dylib';
+    const decoy = '/tmp/decoy/libhkdfguard.dylib';
     for (const searchPath of ['/tmp/decoy', '/opt/lib:/tmp/decoy/:/usr/local/lib']) {
       untrusted(() => macRefuseShadowing(() => searchPath, (p) => p === decoy), decoy, 'DYLD_LIBRARY_PATH');
     }
@@ -200,7 +200,7 @@ describe('macOS code signature and dyld', () => {
 
   it('accepts only the verified file as what dyld loaded', () => {
     macVerifyLoadedImage(MAC_SYSTEM_PATH, MAC_SYSTEM_PATH);
-    untrusted(() => macVerifyLoadedImage(MAC_SYSTEM_PATH, '/tmp/decoy/libhkdfguard_v1.dylib'), '/tmp/decoy/libhkdfguard_v1.dylib', MAC_SYSTEM_PATH, 'unloaded');
+    untrusted(() => macVerifyLoadedImage(MAC_SYSTEM_PATH, '/tmp/decoy/libhkdfguard.dylib'), '/tmp/decoy/libhkdfguard.dylib', MAC_SYSTEM_PATH, 'unloaded');
     untrusted(() => macVerifyLoadedImage(MAC_SYSTEM_PATH, null), PROBE_EXPORT);
     assert.equal(PROBE_EXPORT, 'hkdfguard_wrap_dek');
   });

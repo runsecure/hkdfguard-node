@@ -22,7 +22,7 @@ import { ENOENT, ENOTDIR, FileType, PERM_GROUP_WRITE, PERM_OTHER_WRITE, type Fil
  *     name, and after dlopen asks dyld (dladdr) which file it mapped.
  */
 
-export const MAC_FILE_NAME = 'libhkdfguard_v1.dylib';
+export const MAC_FILE_NAME = 'libhkdfguard.dylib';
 export const MAC_SYSTEM_DIRECTORY = '/Library/Application Support/HkdfGuard/v1';
 export const MAC_USER_DIRECTORY_UNDER_HOME = '.hkdfguard/v1';
 export const MAC_SYSTEM_PATH = `${MAC_SYSTEM_DIRECTORY}/${MAC_FILE_NAME}`;
@@ -33,9 +33,9 @@ export const MAC_TEAM_ID = 'MFW3T8R8J3';
 /**
  * Matches the release build's own designated requirement: this library's identifier, signed with a
  * Developer ID Application certificate issued to the HkdfGuard team - so a development build, or
- * any other binary the team signs (such as hkdfguard-v1-initialize), is refused.
+ * any other binary the team signs (such as the hkdfguard tool), is refused.
  */
-export const MAC_CODE_REQUIREMENT = 'identifier "libhkdfguard_v1" and anchor apple generic'
+export const MAC_CODE_REQUIREMENT = 'identifier "libhkdfguard" and anchor apple generic'
   + ' and certificate 1[field.1.2.840.113635.100.6.2.6] exists' // Developer ID CA
   + ' and certificate leaf[field.1.2.840.113635.100.6.1.13] exists' // Developer ID Application leaf
   + ` and certificate leaf[subject.OU] = "${MAC_TEAM_ID}"`;

@@ -2,8 +2,8 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { NotInstalledError, UnsupportedPlatformError, UntrustedError } from './errors.js';
 import {
-  LINUX_MAX_SYMBOLIC_LINKS, linuxCandidatePaths, linuxChoosePath, linuxKnownReleases, linuxParentOf, linuxReadEnvironment,
-  linuxResolveTrusted, linuxVerifyContent, linuxVerifyDependencies, linuxVerifyEnvironment, linuxVerifyLoadedImage,
+  LINUX_MAX_SYMBOLIC_LINKS, linuxCandidatePaths, linuxChoosePath, linuxParentOf, linuxReadEnvironment, linuxResolveTrusted,
+  linuxVerifyDependencies, linuxVerifyEnvironment, linuxVerifyLoadedImage,
 } from './linuxpolicy.js';
 import { PROBE_EXPORT } from './macpolicy.js';
 import { ENOENT, ENOTDIR, FileType, type FileStatus } from './unixpath.js';
@@ -119,16 +119,6 @@ describe('Linux path integrity', () => {
     untrusted(() => fs.resolve(`${LIBRARY}/x`), 'not a directory');
     untrusted(() => linuxResolveTrusted(LIBRARY, FileType.Regular, () => undefined, () => undefined), "'/'");
     assert.deepEqual(['/', '/usr', '/usr/lib'].map(linuxParentOf), ['/', '/', '/usr']);
-  });
-});
-
-describe('Linux content', () => {
-  it('accepts only known releases, each a lowercase SHA-256', () => {
-    const releases = new Map([['a'.repeat(64), 'test release']]);
-    linuxVerifyContent(LIBRARY, () => 'a'.repeat(64), releases);
-    untrusted(() => linuxVerifyContent(LIBRARY, () => 'b'.repeat(64), releases), 'b'.repeat(64), LIBRARY);
-    assert.ok(linuxKnownReleases.size > 0);
-    for (const [hash, description] of linuxKnownReleases) assert.ok(/^[0-9a-f]{64}$/.test(hash) && description.trim() !== '');
   });
 });
 

@@ -3,11 +3,12 @@
  *
  *   - load / unload / bind: map the verified KMS library (dlopen, LoadLibraryExW) and resolve its
  *     exports. The TypeScript loader decides whether a file may be loaded; this never searches.
- *   - wrapDek / unwrapDek / generateAndWrapDek: call the library on libuv's thread pool, so a TPM or
- *     Secure Enclave operation never blocks the event loop. The library works on the add-on's own
+ *   - wrapDek / unwrapDek / generateAndWrapDek / openFile: call the library on libuv's thread pool, so
+ *     a TPM or Secure Enclave operation, or a key file's checks, never block the event loop. The library works on the add-on's own
  *     copies of the buffers, zeroed afterwards; the result reaches the caller's buffer on the main
  *     thread when the call completes. Each resolves to [status, written].
- *   - hardenProcess: the Linux library's process-hardening call.
+ *   - hardenProcess: the library's opt-in process hardening, hkdfguard_harden_process_with_flags -
+ *     on every platform. Only ever called when the application asks for it.
  *   - symbolImagePath (Unix): which file the dynamic linker mapped an export from (dladdr).
  *   - loadedPath (Linux): which file an already-loaded soname is bound to (RTLD_NOLOAD + dlinfo).
  *   - checkCodeSignature / productVersion (macOS): SecStaticCodeCheckValidity; kern.osproductversion.
@@ -126,14 +127,15 @@ static int bytes_arg(napi_env env, napi_value value, uint8_t** data, size_t* len
 /* --- Library handle ------------------------------------------------------------------------------ */
 
 typedef int32_t (*wrap_fn)(const char*, const uint8_t*, int32_t, uint8_t*, int32_t*);
-typedef int32_t (*generate_fn)(const char*, uint8_t*, int32_t*);
-typedef int32_t (*harden_fn)(void);
+typedef int32_t (*generate_fn)(const char*, uint8_t*, int32_t*); /* also hkdfguard_open_file's shape */
+typedef int32_t (*harden_fn)(unsigned int);
 
 typedef struct {
   void* handle; /* dlopen handle or HMODULE */
   void* wrap;
   void* unwrap;
   void* generate;
+  void* open_file;
   void* harden;
 } kms_library;
 
@@ -244,37 +246,32 @@ static napi_value unload(napi_env env, napi_callback_info info) {
   return js_undefined(env);
 }
 
-/* bind(library, hardenSymbol | null): resolves the KMS exports, returning the names of any missing. */
+/* bind(library): resolves the KMS exports - every one required, on every platform - returning the
+ * names of any missing. */
 static napi_value bind(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value argv[2];
+  size_t argc = 1;
+  napi_value argv[1];
   CHECK(napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
   kms_library* library = library_arg(env, argv[0]);
   if (library == NULL) return NULL;
-
-  char* harden_name = NULL;
-  napi_valuetype type;
-  CHECK(napi_typeof(env, argv[1], &type));
-  if (type == napi_string && (harden_name = utf8_arg(env, argv[1])) == NULL) return NULL;
 
   struct { const char* name; void** target; } exports[] = {
     { "hkdfguard_wrap_dek", &library->wrap },
     { "hkdfguard_unwrap_dek", &library->unwrap },
     { "hkdfguard_generate_and_wrap_dek", &library->generate },
-    { harden_name, &library->harden },
+    { "hkdfguard_open_file", &library->open_file },
+    { "hkdfguard_harden_process_with_flags", &library->harden },
   };
 
   napi_value missing;
   CHECK(napi_create_array(env, &missing));
   uint32_t count = 0;
   for (size_t i = 0; i < sizeof exports / sizeof exports[0]; i++) {
-    if (exports[i].name == NULL) continue;
     *exports[i].target = find_symbol(library->handle, exports[i].name);
     if (*exports[i].target == NULL) {
       napi_set_element(env, missing, count++, js_string(env, exports[i].name));
     }
   }
-  free(harden_name);
   return missing;
 }
 
@@ -313,8 +310,8 @@ typedef struct {
   napi_async_work work;
   napi_deferred deferred;
   void* fn;
-  int generate; /* hkdfguard_generate_and_wrap_dek's shape, rather than wrap/unwrap's */
-  char* service;
+  int generate; /* hkdfguard_generate_and_wrap_dek's (and hkdfguard_open_file's) shape, rather than wrap/unwrap's */
+  char* service; /* or, for hkdfguard_open_file, the key file's path */
   uint8_t* input; /* the add-on's copy of the input; NULL when it is empty */
   int32_t input_length;
   uint8_t* output; /* the add-on's output buffer; NULL when the caller's is empty */
@@ -381,8 +378,8 @@ static void complete_call(napi_env env, napi_status status, void* data) {
   free_call(env, call);
 }
 
-/* start_call(env, info, which): wrapDek/unwrapDek(library, service, input, output) or
- * generateAndWrapDek(library, service, output). */
+/* start_call(env, info, which): wrapDek/unwrapDek(library, service, input, output),
+ * generateAndWrapDek(library, service, output) or openFile(library, path, output). */
 static napi_value start_call(napi_env env, napi_callback_info info, int which) {
   size_t argc = 4;
   napi_value argv[4];
@@ -395,8 +392,8 @@ static napi_value start_call(napi_env env, napi_callback_info info, int which) {
     napi_throw_error(env, NULL, "hkdfguard_native: out of memory");
     return NULL;
   }
-  call->generate = which == 2;
-  call->fn = which == 0 ? library->wrap : which == 1 ? library->unwrap : library->generate;
+  call->generate = which >= 2;
+  call->fn = which == 0 ? library->wrap : which == 1 ? library->unwrap : which == 2 ? library->generate : library->open_file;
   if (call->fn == NULL) {
     free(call);
     napi_throw_error(env, NULL, "hkdfguard_native: the library is not bound");
@@ -450,16 +447,29 @@ static napi_value start_call(napi_env env, napi_callback_info info, int which) {
 static napi_value wrap_dek(napi_env env, napi_callback_info info) { return start_call(env, info, 0); }
 static napi_value unwrap_dek(napi_env env, napi_callback_info info) { return start_call(env, info, 1); }
 static napi_value generate_and_wrap_dek(napi_env env, napi_callback_info info) { return start_call(env, info, 2); }
+static napi_value open_file(napi_env env, napi_callback_info info) { return start_call(env, info, 3); }
 
-/* hardenProcess(library): the status, or null when the library has no hardening call. */
+/* hardenProcess(library, flags): hkdfguard_harden_process_with_flags' status. Synchronous, on the
+ * main thread: it changes process-wide state once, at startup, and returns quickly. The TypeScript
+ * caller refuses unknown flags first; the library refuses them too (HKDFGUARD_ERR_INVALID_ARGUMENT). */
 static napi_value harden_process(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1];
+  size_t argc = 2;
+  napi_value argv[2];
   CHECK(napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
   kms_library* library = library_arg(env, argv[0]);
   if (library == NULL) return NULL;
-  if (library->harden == NULL) return js_null(env);
-  return js_int(env, ((harden_fn)library->harden)());
+  napi_valuetype type;
+  uint32_t flags = 0;
+  if (argc < 2 || napi_typeof(env, argv[1], &type) != napi_ok || type != napi_number
+      || napi_get_value_uint32(env, argv[1], &flags) != napi_ok) {
+    napi_throw_type_error(env, NULL, "hkdfguard_native: expected the hardening flags as a number");
+    return NULL;
+  }
+  if (library->harden == NULL) {
+    napi_throw_error(env, NULL, "hkdfguard_native: the library is not bound");
+    return NULL;
+  }
+  return js_int(env, ((harden_fn)library->harden)((unsigned int)flags));
 }
 
 /* kekExists(library, service): [status, exists] from hkdfguard_kek_exists, or null when the library
@@ -834,6 +844,7 @@ NAPI_MODULE_INIT() {
     { "wrapDek", NULL, wrap_dek, NULL, NULL, NULL, napi_enumerable, NULL },
     { "unwrapDek", NULL, unwrap_dek, NULL, NULL, NULL, napi_enumerable, NULL },
     { "generateAndWrapDek", NULL, generate_and_wrap_dek, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "openFile", NULL, open_file, NULL, NULL, NULL, napi_enumerable, NULL },
     { "hardenProcess", NULL, harden_process, NULL, NULL, NULL, napi_enumerable, NULL },
     { "kekExists", NULL, kek_exists, NULL, NULL, NULL, napi_enumerable, NULL },
 #if !defined(_WIN32)

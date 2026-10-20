@@ -7,7 +7,7 @@ Windows PC or an Apple-silicon Mac, from nothing to encrypting and decrypting wi
 platform protects (TPM or Secure Enclave), then to a durable key file.
 
 **Running HkdfGuard in production** (installing, provisioning, creating key files): see the
-[`hkdfguard-v1-initialize` reference](reference/cli.md).
+[`hkdfguard` CLI reference](reference/cli.md).
 
 **Porting from the .NET or Go libraries:** the same pages exist in `hkdfguard-dotnet/docs` and
 `hkdfguard-go/docs`, with the same structure. Everything a value or a key file is made of - the
@@ -24,7 +24,7 @@ native key files - is byte-identical between the ports, so one deployment serves
 | How-to | Rotate keys | Planned (see [Getting started, step 6](getting-started.md#6-use-the-key-file)) |
 | How-to | Load settings from an `appsettings.json` shared with the .NET port | Planned (see `keyRingOptionsFromJson` in the README) |
 | How-to | Troubleshoot | Planned (see [If something goes wrong](getting-started.md#if-something-goes-wrong)) |
-| Reference | [`hkdfguard-v1-initialize`](reference/cli.md) | Draft (Windows and macOS; Linux partial) |
+| Reference | [`hkdfguard` CLI](reference/cli.md) | Draft (Windows and macOS; Linux partial) |
 | Reference | Native status codes | Planned (the tables in `packages/keywrapping-native-v1/src/status.ts` for now) |
 | Reference | `KeyRingOptions` / configuration schema | Planned (the doc comments in `packages/dek/src/options.ts` for now) |
 | Reference | API | Planned (generated from the TSDoc comments; each package ships `.d.ts` files) |
@@ -36,7 +36,7 @@ native key files - is byte-identical between the ports, so one deployment serves
 
 - Every code sample in these pages type-checks and runs against the current source on Node.js 22.
   When you change one, run it before committing.
-- Facts about `hkdfguard-v1-initialize` come from its own `--help` output and observed behavior.
+- Facts about the `hkdfguard` tool come from its own `--help` output and observed behavior.
   Anything not yet confirmed is marked **TODO (maintainer)**; search for that string before
   publishing.
 - Security rules are stated as rules, at the step where they apply, in a block that starts with

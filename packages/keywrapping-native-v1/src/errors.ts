@@ -1,4 +1,5 @@
 import { HkdfGuardError } from '@runsecure/hkdfguard-abstractions';
+import { Status } from './status.js';
 
 /** The native KMS library is not installed at any location it is loaded from. */
 export class NotInstalledError extends HkdfGuardError {
@@ -28,8 +29,8 @@ export class UnsupportedPlatformError extends HkdfGuardError {
 }
 
 /**
- * A native call that returned a non-zero status. Status codes differ between platforms;
- * `description` is this platform's meaning of `status`, or undefined when unknown.
+ * A native call that returned a non-zero status. Every platform shares one status table (see
+ * Status); `description` is what `status` means here, or undefined when unknown.
  */
 export class StatusError extends HkdfGuardError {
   constructor(
@@ -44,6 +45,47 @@ export class StatusError extends HkdfGuardError {
     super('ERR_HKDFGUARD_NATIVE_STATUS', service === undefined
       ? `Native ${operation} failed with status ${status}${meaning}.`
       : `Native KMS ${operation} failed for service '${service}' with status ${status}${meaning}.`);
+  }
+}
+
+/**
+ * The `code` a key-file refusal carries, chosen as Node's fs errors and the managed key-file read
+ * (readKeyFile in @runsecure/hkdfguard-dek) would report the same problem: 'ENOENT' for a missing
+ * file or folder, 'EACCES' for a file this account may not read or whose path is not trusted,
+ * ERR_HKDFGUARD_INVALID_KEY_FILE for a file of the wrong size, one holding what looks like an
+ * unwrapped key, or one that is not a wrapped DEK, ERR_HKDFGUARD_INVALID_ARGUMENT for a path the
+ * library rejects as an argument, and 'EIO' for anything else.
+ */
+export function keyFileErrorCode(status: number): string {
+  switch (status) {
+    case Status.fileNotFound: return 'ENOENT';
+    case Status.fileAccessDenied:
+    case Status.fileUntrusted: return 'EACCES';
+    case Status.fileTooShort:
+    case Status.fileTooLong:
+    case Status.filePlaintextKey:
+    case Status.fileMalformed: return INVALID_KEY_FILE;
+    case Status.invalidArgument: return 'ERR_HKDFGUARD_INVALID_ARGUMENT';
+    default: return 'EIO';
+  }
+}
+
+/** The code the managed key-file read gives an empty or oversized file; shared so both reads agree. */
+export const INVALID_KEY_FILE = 'ERR_HKDFGUARD_INVALID_KEY_FILE';
+
+/**
+ * A key file the native library's hkdfguard_open_file refused. `code` follows Node's fs errors (see
+ * {@link keyFileErrorCode}); `status` and `description` are the native status and its meaning.
+ */
+export class KeyFileRefusedError extends HkdfGuardError {
+  constructor(
+    /** The key file's path, as given. */
+    readonly path: string,
+    readonly status: number,
+    readonly description: string | undefined,
+  ) {
+    super(keyFileErrorCode(status),
+      `Key file '${path}' was refused by the native library with status ${status} (${description ?? 'unknown status'}).`);
   }
 }
 

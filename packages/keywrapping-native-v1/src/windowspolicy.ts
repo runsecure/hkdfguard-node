@@ -5,7 +5,7 @@ import { UntrustedError } from './errors.js';
  * passed in as plain data) so they can be checked on any platform. The loader (windows.ts) loads the
  * library from its one installed location and nowhere else, after five checks:
  *
- *  1. The file exists at %ProgramFiles%\HkdfGuard\v1\HkdfGuardV1.dll, the Program Files location
+ *  1. The file exists at %ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll, the Program Files location
  *     coming from the known-folder setting only an administrator can change.
  *  2. No component of that path, below the drive root, is a reparse point (symlink or junction).
  *  3. Every one of those components is owned by, and writable only by, SYSTEM, Administrators, or
@@ -16,7 +16,7 @@ import { UntrustedError } from './errors.js';
  *  5. Its PE header marks it a DLL for this process's architecture.
  */
 
-export const WIN_FILE_NAME = 'HkdfGuardV1.dll';
+export const WIN_FILE_NAME = 'HkdfGuard.dll';
 
 /** The Authenticode signer subject, as Windows renders it (X.500, reversed). */
 export const WIN_EXPECTED_PUBLISHER = 'CN=Torin Blair, O=Torin Blair, L=Littleton, S=co, C=US';

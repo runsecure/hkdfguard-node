@@ -3,7 +3,7 @@
 # Provisions the TPM-backed KEKs the native integration tests use on Linux.
 #
 # The libhkdfguard1 package installs no policy and no TPM derivation secret, so on a fresh host
-# every wrap fails with "no KEK is provisioned" (-9). This script, run once with sudo from the
+# every wrap fails with "no KEK is provisioned" (-17). This script, run once with sudo from the
 # account that runs the tests:
 #
 #   1. checks the installed hkdfguard packages against dpkg's checksums, and that the test
@@ -12,23 +12,27 @@
 #      0440) if there isn't one - an existing secret is never replaced, because that would change
 #      every TPM KEK on this host;
 #   3. writes /etc/hkdfguard/policy.toml requiring the TPM, the derivation secret, and a pinned
-#      TPM Name for each test service (the provisioning allowlist), learning each Name from the
-#      TPM itself through hkdfguard-v1-initialize, run as the test user;
-#   4. runs "hkdfguard-v1-initialize provision" for both services, as the test user, to confirm.
+#      TPM Name for the test service (the provisioning allowlist), learning the Name from the
+#      TPM itself through hkdfguard, run as the test user;
+#   4. runs "hkdfguard provision" for the service, as the test user, to confirm.
 #
 # It refuses to overwrite a policy it didn't write. Re-running it is safe: it re-learns the same
-# Names (the KEKs are derived on demand from the TPM's seed and the secret) and rewrites its own
+# Name (the KEK is derived on demand from the TPM's seed and the secret) and rewrites its own
 # policy. It never wraps a DEK and never touches a key file.
 #
 # Then run the native tests - the key wrapper's own and the end-to-end ones - from the repository
 # root (the native add-on is compiled at install, so a C compiler must be installed):
 #
-#   HKDFGUARD_TEST_SERVICE=com.hkdfguard.native.linux.test \
-#   HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.native.linux.test.other \
+#   HKDFGUARD_TEST_SERVICE=com.hkdfguard.integration.test.221 \
 #   npm test --workspace packages/keywrapping-native-v1 --workspace packages/integration
 #
-# The policy it writes is the same one hkdfguard-go's and hkdfguard-dotnet's copies of this script
-# write, and each script accepts the others', so one host can run every port's native tests.
+# The tests' cross-service isolation checks unwrap under a service that is never provisioned. To
+# run them against a second real KEK instead, provision one yourself and name it in
+# HKDFGUARD_TEST_SERVICE_OTHER.
+#
+# Every HkdfGuard port's copy of this script (.NET, Go, Java, Node, Python) writes the same
+# policy under its own marker, and each accepts the others', so one host can run every port's
+# native tests.
 #
 # Usage (from packages/keywrapping-native-v1):
 #   sudo scripts/provision-linux-test-key.sh            # provision
@@ -39,17 +43,22 @@
 
 set -euo pipefail
 
-readonly SERVICE="com.hkdfguard.native.linux.test"
-readonly OTHER_SERVICE="${SERVICE}.other"
-readonly TOOL="/usr/bin/hkdfguard-v1-initialize"
+readonly SERVICE="com.hkdfguard.integration.test.221"
+readonly TOOL="/usr/bin/hkdfguard"
 readonly TPM_DEVICE="/dev/tpmrm0"
 readonly ETC_DIR="/etc/hkdfguard"
 readonly POLICY="${ETC_DIR}/policy.toml"
 readonly SECRET="${ETC_DIR}/tpm.derivation-secret"
 readonly MARKER="# Written by hkdfguard-node packages/keywrapping-native-v1/scripts/provision-linux-test-key.sh - test hosts only."
-# The Go and .NET ports' copies write the same policy under their own markers; any counts as ours.
-readonly GO_MARKER="# Written by hkdfguard-go keywrapping/nativev1/scripts/provision-linux-test-key.sh - test hosts only."
-readonly DOTNET_MARKER="# Written by hkdfguard-dotnet scripts/provision-linux-test-key.sh - test hosts only."
+# Every port's copy of this script writes the same policy under its own marker; any of them
+# counts as ours.
+readonly KNOWN_MARKERS=(
+    "# Written by hkdfguard-dotnet scripts/provision-linux-test-key.sh - test hosts only."
+    "# Written by hkdfguard-go keywrapping/nativev1/scripts/provision-linux-test-key.sh - test hosts only."
+    "# Written by hkdfguard-java scripts/provision-linux-test-key.sh - test hosts only."
+    "# Written by hkdfguard-node packages/keywrapping-native-v1/scripts/provision-linux-test-key.sh - test hosts only."
+    "# Written by hkdfguard-python scripts/provision-linux-test-key.sh - test hosts only."
+)
 
 die() { echo "error: $*" >&2; exit 1; }
 note() { echo "==> $*"; }
@@ -66,9 +75,12 @@ esac
 
 policy_is_ours() {
     [[ -f ${POLICY} ]] || return 1
-    local first
+    local first marker
     first="$(head -n 1 "${POLICY}")"
-    [[ ${first} == "${MARKER}" || ${first} == "${GO_MARKER}" || ${first} == "${DOTNET_MARKER}" ]]
+    for marker in "${KNOWN_MARKERS[@]}"; do
+        [[ ${first} == "${marker}" ]] && return 0
+    done
+    return 1
 }
 
 if ${remove}; then
@@ -168,17 +180,15 @@ learn_name() {
     local output name
     output="$(provision_as_test_user "$1" || true)"
     name="$(grep -oE '"000b[0-9a-f]{64}"' <<<"${output}" | head -n 1 | tr -d '"')"
-    [[ -n ${name} ]] || die "could not learn the TPM Name for $1; hkdfguard-v1-initialize said:"$'\n'"${output}"
+    [[ -n ${name} ]] || die "could not learn the TPM Name for $1; hkdfguard said:"$'\n'"${output}"
     echo "${name}"
 }
 
 write_policy
-note "learning each test service's TPM Name (each call takes about a second)"
+note "learning the test service's TPM Name (this takes about a second)"
 service_name="$(learn_name "${SERVICE}")"
-other_name="$(learn_name "${OTHER_SERVICE}")"
-[[ ${service_name} != "${other_name}" ]] || die "the TPM derived the same key for both services; it is not usable"
 
-write_policy "\"${SERVICE}\" = \"${service_name}\"" "\"${OTHER_SERVICE}\" = \"${other_name}\""
+write_policy "\"${SERVICE}\" = \"${service_name}\""
 if command -v python3 >/dev/null; then
     python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "${POLICY}" \
         || die "${POLICY} is not valid TOML"
@@ -187,17 +197,14 @@ note "wrote ${POLICY}"
 
 # --- Confirm -----------------------------------------------------------------------------------
 
-for service in "${SERVICE}" "${OTHER_SERVICE}"; do
-    output="$(provision_as_test_user "${service}")" \
-        || die "provision failed for ${service} as ${TEST_USER}:"$'\n'"${output}"
-    note "${service}: provisioned on the TPM"
-done
+output="$(provision_as_test_user "${SERVICE}")" \
+    || die "provision failed for ${SERVICE} as ${TEST_USER}:"$'\n'"${output}"
+note "${SERVICE}: provisioned on the TPM"
 
 cat <<EOF
 
 Done. Run the native integration tests as ${TEST_USER}, from the hkdfguard-node repository root:
 
   HKDFGUARD_TEST_SERVICE=${SERVICE} \\
-  HKDFGUARD_TEST_SERVICE_OTHER=${OTHER_SERVICE} \\
   npm test --workspace packages/keywrapping-native-v1 --workspace packages/integration
 EOF

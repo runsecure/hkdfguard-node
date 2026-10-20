@@ -22,6 +22,20 @@ export interface KeyWrapper {
    * leaves this call. Resolves to the number of bytes written.
    */
   generateAndWrap(result: Uint8Array, signal?: AbortSignal): Promise<number>;
+
+  /**
+   * Reads a key file holding a key this wrapper wrapped, resolving to its bytes still wrapped -
+   * ready for unwrap. buildKeyRing reads every key file through its key wrapper when the wrapper
+   * has this method, so a wrapper backed by a native KMS can read through that KMS's own checks (the
+   * native library refuses a file another account could have replaced, or one holding what looks
+   * like an unwrapped key). Optional: without it, key files are read with ordinary file I/O
+   * (readKeyFile in @runsecure/hkdfguard-dek).
+   *
+   * Failures follow Node's fs errors where they match - `code` 'ENOENT' for a missing file,
+   * 'EACCES' for one this account may not read or the wrapper doesn't trust - and
+   * ERR_HKDFGUARD_INVALID_KEY_FILE for a file that isn't a wrapped key.
+   */
+  readKeyFile?(path: string, signal?: AbortSignal): Promise<Uint8Array>;
 }
 
 /**
