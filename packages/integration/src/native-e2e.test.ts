@@ -105,6 +105,14 @@ function native(name: string, body: (service: string, t: TestContext) => Promise
   });
 }
 
+/**
+ * Where a wrapped payload names its format, which each platform's library checks when it reads a key
+ * file. Linux and Windows payloads start with a version byte. A macOS payload starts with the
+ * 32-byte KEK fingerprint, followed by the suite byte (hkdfguard.h): changing byte 0 there leaves a
+ * well-formed payload naming another KEK, which only unwrap can refuse.
+ */
+const FORMAT_BYTE_OFFSET = process.platform === 'darwin' ? 32 : 0;
+
 /** Runs `body` against the test service with a fresh folder for its key files (keyFileDirectory), or skips. */
 function nativeWithKeyFiles(name: string, body: (service: string, directory: string, t: TestContext) => Promise<void>): void {
   native(name, async (service, t) => {
@@ -158,7 +166,7 @@ describe('a deployment', () => {
   nativeWithKeyFiles('reads its key file through the native library: one with an unknown version is refused before any unwrap', async (service, directory) => {
     const { keyFile } = await runPipeline(service, directory, { Secret: 'value' });
     const wrapped = readFileSync(keyFile);
-    wrapped[0]! ^= 0xff; // the version byte
+    wrapped[FORMAT_BYTE_OFFSET]! ^= 0xff;
     writeFileSync(keyFile, wrapped, { mode: 0o600 });
     await assert.rejects(buildRing(service, { keyFile }), (e: unknown) =>
       e instanceof KeyFileRefusedError && e.status === Status.fileMalformed && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE');
