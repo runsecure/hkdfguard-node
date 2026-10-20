@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { TestContext } from 'node:test';
-import { MAX_WRAPPED_KEY_BYTES } from '@runsecure/hkdfguard-abstractions';
+import { awaitNativeAccess, NATIVE_ACCESS_TIMEOUT_MS } from '@runsecure/hkdfguard-test-support';
 import { NotInstalledError, UnsupportedPlatformError } from './errors.js';
 import { hostLibrary } from './host.js';
 import { NativeKmsLibrary, type KmsLibrary } from './library.js';
@@ -12,7 +12,7 @@ import { linuxCandidatePaths } from './linuxpolicy.js';
 import { macChoosePath } from './macpolicy.js';
 import { Status } from './status.js';
 import { DEK_LENGTH, NativeKeyWrapperV1 } from './wrapper.js';
-import { DEFAULT_TEST_SERVICES, TEST_OTHER_SERVICE_VARIABLE, TEST_SERVICE_VARIABLE, UNPROVISIONED_SERVICE_NAME } from './testservices.test-support.js';
+import { DEFAULT_TEST_SERVICE, TEST_OTHER_SERVICE_VARIABLE, TEST_SERVICE_VARIABLE, UNPROVISIONED_SERVICE_NAME } from './testservices.test-support.js';
 
 /*
  * How the tests against this platform's installed native KMS library are gated - shared by
@@ -20,17 +20,20 @@ import { DEFAULT_TEST_SERVICES, TEST_OTHER_SERVICE_VARIABLE, TEST_SERVICE_VARIAB
  *
  * - Without the library installed, a test needing it is skipped.
  * - The round trips run against a provisioned service: HKDFGUARD_TEST_SERVICE when set, otherwise
- *   the default test service the platform's script under scripts/ provisions - found by the tests
- *   themselves on Windows (the library's hkdfguard_kek_exists) and macOS (the provisioning tool),
- *   and named by the variables the Linux script prints. Without one they are skipped.
+ *   DEFAULT_TEST_SERVICE, which every platform's script under scripts/ provisions - found by the
+ *   tests themselves on Windows (the library's hkdfguard_kek_exists) and macOS (the provisioning
+ *   tool), and named by the variables the Linux script prints. Without one they are skipped.
  * - A library that is installed but fails verification fails the run, never skips it.
  *
  * macOS: in the library's legacy keychain mode the KEK's access list names the binary that created
  * it, so the first call from another binary - node - is answered with a keychain dialog in a
- * logged-in session (click "Always Allow"), or KEK access denied (-18) without one.
+ * logged-in session (click "Always Allow"), or KEK access denied (-18) without one. The first call
+ * under each service is made with a deadline (awaitNativeAccess, in a child process), so a dialog
+ * nobody answers fails the run, saying so, rather than hanging it.
  */
 
-const NATIVE_CALL_TIMEOUT_MS = 60_000;
+/** This package's entry module, which awaitNativeAccess's child process loads. */
+const PACKAGE_ENTRY = join(__dirname, 'index.js');
 
 /** The installed library, verified and loaded; skips the test (returning undefined) when there is none here. */
 export function installedLibrary(t: TestContext): KmsLibrary | undefined {
@@ -66,14 +69,14 @@ export function macProvisioningTool(): string | undefined {
   }
 }
 
-/** Whether the platform default test service is provisioned, without prompting; undefined when it can't tell. */
+/** Whether the default test service is provisioned, without prompting; undefined when it can't tell. */
 export function defaultServiceProvisioned(library: KmsLibrary, service: string): { provisioned: boolean; reason?: string } | undefined {
   if (process.platform === 'darwin') {
     // The tool created the KEK, so it is on the keychain item's access list and never prompts.
     const tool = macProvisioningTool();
     if (tool === undefined) return undefined;
     try {
-      const status = execFileSync(tool, ['status', '--service-name', service], { encoding: 'utf8' });
+      const status = execFileSync(tool, ['status', '--service-name', service], { encoding: 'utf8', timeout: NATIVE_ACCESS_TIMEOUT_MS });
       if (status.includes('kek: present')) return { provisioned: true };
       if (status.includes('kek: absent')) return { provisioned: false, reason: `The test KEK '${service}' is not provisioned. Run scripts/provision-macos-test-key.sh, or set ${TEST_SERVICE_VARIABLE} to a provisioned service.` };
     } catch {
@@ -94,14 +97,13 @@ export function defaultServiceProvisioned(library: KmsLibrary, service: string):
 }
 
 let resolved: { service?: string; skipReason?: string } | undefined;
-let accessChecked: Promise<void> | undefined;
 
 /** The test service, chosen once per process (see defaultServiceProvisioned), or undefined with the reason why not. */
 export function testService(library: KmsLibrary): { service?: string; skipReason?: string } {
   resolved ??= (() => {
     const named = process.env[TEST_SERVICE_VARIABLE];
     if (named) return { service: named };
-    const service = DEFAULT_TEST_SERVICES[process.platform]!;
+    const service = DEFAULT_TEST_SERVICE;
     const answer = defaultServiceProvisioned(library, service);
     // Can't tell: run the tests, so a real failure is reported rather than hidden.
     return answer === undefined || answer.provisioned ? { service } : { skipReason: answer.reason };
@@ -120,13 +122,9 @@ export async function provisionedWrapper(t: TestContext): Promise<NativeKeyWrapp
   }
 
   const wrapper = NativeKeyWrapperV1.create(service);
-  // The first call under the service, with a deadline, so a keychain dialog nobody answers fails
-  // the run with a message saying what to do rather than hanging it.
-  accessChecked ??= new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`The first native call under service '${service}' has not returned after ${NATIVE_CALL_TIMEOUT_MS / 1000}s. On macOS the KEK's keychain item is asking for access in a dialog: click "Always Allow". Without a UI session the library reports KEK access denied (-18); run the tests from a logged-in session.`)), NATIVE_CALL_TIMEOUT_MS);
-    wrapper.generateAndWrap(new Uint8Array(MAX_WRAPPED_KEY_BYTES)).then(() => resolve(), () => resolve()).finally(() => clearTimeout(timer));
-  });
-  await accessChecked;
+  // The first call under the service, with a deadline: a keychain dialog nobody answers fails the
+  // test with a message saying what to do rather than hanging the run (macOS only).
+  await awaitNativeAccess(service, PACKAGE_ENTRY);
   return wrapper;
 }
 
@@ -134,3 +132,10 @@ export const randomDek = (): Uint8Array => randomFillSync(new Uint8Array(DEK_LEN
 
 /** A second provisioned service, or one no KEK exists for. */
 export const otherServiceName = (): string => process.env[TEST_OTHER_SERVICE_VARIABLE] || UNPROVISIONED_SERVICE_NAME;
+
+/** otherServiceName, once its first call has returned within the deadline (see awaitNativeAccess): it may be provisioned too. */
+export async function accessibleOtherServiceName(): Promise<string> {
+  const service = otherServiceName();
+  await awaitNativeAccess(service, PACKAGE_ENTRY);
+  return service;
+}

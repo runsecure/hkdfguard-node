@@ -172,8 +172,17 @@ tests. To provision a test host, run from `packages/keywrapping-native-v1`:
 
 Each checks the installed tool (`hkdfguard.exe`, `/usr/bin/hkdfguard`, or `hkdfguard-v1-initialize`
 on macOS) against the same pins the loader applies before
-running it, and prints the `npm test` command to run next. They provision the same KEKs as the .NET
-and Go ports' copies, so one host serves all three ports' tests.
+running it, and prints the `npm test` command to run next. Every platform's script provisions the
+same default test service, `com.hkdfguard.integration.test.221` (`DEFAULT_TEST_SERVICE` in the
+tests) - the KEKs every port's copy provisions, so one host serves all the ports' tests.
+
+**Linux key files:** the Linux native library refuses a key file if any directory up its chain is
+writable by its group or others, sticky or not - so never one under `/tmp`, `/var/tmp` or
+`/dev/shm`. The tests that write key files it reads (and the `hkdfguard wrap` test) put them in a
+private (0700) folder from `keyFileDirectory` in `packages/test-support`: under `$XDG_RUNTIME_DIR`
+when that passes the same check, else under `~/.cache/hkdfguard-tests`, every directory up the chain
+owned by root or the test user and writable by neither group nor others - and removed after each
+test. Without such a directory those tests are skipped, saying why.
 
 The tests against the real system and the installed native library are in three platform suites
 in `packages/keywrapping-native-v1/src`, each skipped as a whole on the other platforms and each
@@ -198,13 +207,16 @@ test service and is skipped the same way.
 **macOS:** in the native library's legacy keychain mode the KEK's access list names the binary
 that created it, so the first native call from each `node` executable is answered with a keychain
 dialog in a logged-in session - click "Always Allow" - and with status -18 where there is no UI.
-The tests fail with a message saying so after 60 seconds rather than hang.
+The first call under each service is made in a short-lived child process (the same `node`
+executable, so "Always Allow" there answers for the tests too) that is killed after 60 seconds, and
+the tests then fail with a message saying so rather than hang.
 
 `hardenProcess()` hardens the whole test process, so its tests against the real library
 (`src/hardening.test.ts`: Windows and Linux) run only with `HKDFGUARD_TEST_PROCESS_HARDENING=1`.
 `node --test` runs each test file in its own process, so the rest of the suite is never hardened.
-On Windows the check that the process can no longer open itself for reading goes through the
-add-on's test-only `testOpenOwnProcess`, since Node has no FFI to call `OpenProcess` itself:
+On Windows the check that the process's own account can no longer open it for reading is made by a
+second process of that account - Windows PowerShell, calling `OpenProcess` by the test process's
+pid - so the shipped add-on carries no test-only export:
 
 ```sh
 cd packages/keywrapping-native-v1

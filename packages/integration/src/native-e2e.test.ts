@@ -1,7 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { after, describe, it, type TestContext } from 'node:test';
@@ -12,6 +11,7 @@ import { ProtectedCache } from '@runsecure/hkdfguard-cache';
 import { AesGcmCryptoProviderFactory, AesGcmPipelineDataProtector, KEY_SIZE } from '@runsecure/hkdfguard-cryptoprovider-aesgcm256';
 import { buildKeyRing, DefaultFormatProvider, type KeyRing } from '@runsecure/hkdfguard-dek';
 import { EncryptedConfigurationReader, mapLookup } from '@runsecure/hkdfguard-encryptedconfig';
+import { keyFileDirectory } from '@runsecure/hkdfguard-test-support';
 import {
   KeyFileRefusedError, NativeKeyWrapperV1, NotInstalledError, Status, StatusError, UnsupportedPlatformError,
 } from '@runsecure/hkdfguard-keywrapping-native-v1';
@@ -24,22 +24,15 @@ import { otherServiceName, testServiceName } from './testservice.js';
 const KEY_FILE_VERSION = 3;
 
 const open: KeyRing[] = [];
-const directories: string[] = [];
 after(async () => {
   await Promise.all(open.map((ring) => ring.close()));
-  for (const directory of directories) rmSync(directory, { recursive: true, force: true });
 });
 
-/**
- * A fresh folder for key files, by its long path: the native library reads every key file and
- * refuses an 8.3 short name anywhere in its path, and Windows can hand out the temp folder in short
- * form (C:\Users\RUNNER~1\... on GitHub-hosted runners). realpathSync.native expands it.
+/*
+ * Key files go in keyFileDirectory's folder (the test-support package), removed after each test: the
+ * native library reads every key file, and refuses one under an 8.3 short name on Windows, or in a
+ * directory chain a group or other user can write on Linux - so never under /tmp there.
  */
-function keyFileFolder(): string {
-  const directory = realpathSync.native(mkdtempSync(join(tmpdir(), 'hkdfguard-e2e-')));
-  directories.push(directory);
-  return directory;
-}
 
 interface RingOptions {
   keyFile?: string;
@@ -62,10 +55,10 @@ async function buildRing(service: string, options: RingOptions): Promise<KeyRing
 
 /**
  * Does what the release pipeline does: protects configuration under a fresh in-memory key, then hands
- * that key to the native KEK and writes the wrapped result as the release's key file. Returns the key
- * file's path and the configuration values.
+ * that key to the native KEK and writes the wrapped result as the release's key file in `directory`.
+ * Returns the key file's path and the configuration values.
  */
-async function runPipeline(service: string, secrets: Record<string, string>): Promise<{ keyFile: string; values: Record<string, string> }> {
+async function runPipeline(service: string, directory: string, secrets: Record<string, string>): Promise<{ keyFile: string; values: Record<string, string> }> {
   const pipeline = new AesGcmPipelineDataProtector(new DefaultFormatProvider(), KEY_FILE_VERSION);
   const dek = new Uint8Array(KEY_SIZE);
   try {
@@ -78,7 +71,7 @@ async function runPipeline(service: string, secrets: Record<string, string>): Pr
 
     const wrapped = new Uint8Array(MAX_WRAPPED_KEY_BYTES);
     const length = await NativeKeyWrapperV1.create(service).wrap(dek, wrapped);
-    const keyFile = join(keyFileFolder(), 'wrapped-dek-v3.bin');
+    const keyFile = join(directory, 'wrapped-dek-v3.bin');
     writeFileSync(keyFile, wrapped.subarray(0, length), { mode: 0o600 });
     return { keyFile, values };
   } finally {
@@ -112,9 +105,17 @@ function native(name: string, body: (service: string, t: TestContext) => Promise
   });
 }
 
+/** Runs `body` against the test service with a fresh folder for its key files (keyFileDirectory), or skips. */
+function nativeWithKeyFiles(name: string, body: (service: string, directory: string, t: TestContext) => Promise<void>): void {
+  native(name, async (service, t) => {
+    const directory = keyFileDirectory(t, 'hkdfguard-e2e-');
+    if (directory !== undefined) await body(service, directory, t);
+  });
+}
+
 describe('a deployment', () => {
-  native('decrypts pipeline-encrypted configuration through its natively wrapped key file', async (service) => {
-    const { keyFile, values } = await runPipeline(service, {
+  nativeWithKeyFiles('decrypts pipeline-encrypted configuration through its natively wrapped key file', async (service, directory) => {
+    const { keyFile, values } = await runPipeline(service, directory, {
       'ConnectionStrings:Admin': 'Server=db;User=admin;Password=s3cret',
       'Api:Key': 'k-0123456789abcdef',
     });
@@ -123,15 +124,15 @@ describe('a deployment', () => {
     assert.equal(await reveal(reader, 'Api:Key'), 'k-0123456789abcdef');
   });
 
-  native('fails authentication for a value moved to another key', async (service) => {
-    const { keyFile, values } = await runPipeline(service, { 'ConnectionStrings:Admin': 'admin-only', 'ConnectionStrings:Reports': 'reports' });
+  nativeWithKeyFiles('fails authentication for a value moved to another key', async (service, directory) => {
+    const { keyFile, values } = await runPipeline(service, directory, { 'ConnectionStrings:Admin': 'admin-only', 'ConnectionStrings:Reports': 'reports' });
     values['ConnectionStrings:Reports'] = values['ConnectionStrings:Admin']!; // an edited configuration file
     const reader = configReader(await buildRing(service, { keyFile }), values);
     await assert.rejects(reveal(reader, 'ConnectionStrings:Reports'), AuthenticationFailedError);
   });
 
-  native('reveals the same key after a restart that reads the same key file', async (service) => {
-    const { keyFile, values } = await runPipeline(service, { Secret: 'survives a restart' });
+  nativeWithKeyFiles('reveals the same key after a restart that reads the same key file', async (service, directory) => {
+    const { keyFile, values } = await runPipeline(service, directory, { Secret: 'survives a restart' });
     const first = await buildRing(service, { keyFile });
     assert.equal(await reveal(configReader(first, values), 'Secret'), 'survives a restart');
     await first.close();
@@ -140,13 +141,13 @@ describe('a deployment', () => {
     assert.equal(await reveal(configReader(second, values), 'Secret'), 'survives a restart');
   });
 
-  native('refuses to build from a key file wrapped under another service', async (service) => {
-    const { keyFile } = await runPipeline(service, { Secret: 'value' });
-    await assert.rejects(buildRing(otherServiceName(), { keyFile }), StatusError);
+  nativeWithKeyFiles('refuses to build from a key file wrapped under another service', async (service, directory) => {
+    const { keyFile } = await runPipeline(service, directory, { Secret: 'value' });
+    await assert.rejects(buildRing(await otherServiceName(), { keyFile }), StatusError);
   });
 
-  native('refuses to build from a tampered key file', async (service) => {
-    const { keyFile } = await runPipeline(service, { Secret: 'value' });
+  nativeWithKeyFiles('refuses to build from a tampered key file', async (service, directory) => {
+    const { keyFile } = await runPipeline(service, directory, { Secret: 'value' });
     const wrapped = readFileSync(keyFile);
     wrapped[wrapped.length >> 1]! ^= 0x01;
     writeFileSync(keyFile, wrapped, { mode: 0o600 });
@@ -154,8 +155,8 @@ describe('a deployment', () => {
     await assert.rejects(buildRing(service, { keyFile }), (e: unknown) => e instanceof StatusError || e instanceof KeyFileRefusedError);
   });
 
-  native('reads its key file through the native library: one with an unknown version is refused before any unwrap', async (service) => {
-    const { keyFile } = await runPipeline(service, { Secret: 'value' });
+  nativeWithKeyFiles('reads its key file through the native library: one with an unknown version is refused before any unwrap', async (service, directory) => {
+    const { keyFile } = await runPipeline(service, directory, { Secret: 'value' });
     const wrapped = readFileSync(keyFile);
     wrapped[0]! ^= 0xff; // the version byte
     writeFileSync(keyFile, wrapped, { mode: 0o600 });
@@ -163,8 +164,9 @@ describe('a deployment', () => {
       e instanceof KeyFileRefusedError && e.status === Status.fileMalformed && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE');
   });
 
-  // Needs only the installed library - reading a file never touches a KEK. Windows only: elsewhere
-  // the library refuses any key file under the sticky, world-writable /tmp before looking inside it.
+  // Needs only the installed library - reading a file never touches a KEK. Windows only, where it
+  // has been run against the real library; its key file goes in keyFileDirectory's folder, which on
+  // Linux is a private one outside /tmp, as the library requires.
   it('refuses to build from a plaintext key file', { skip: process.platform !== 'win32' }, async (t) => {
     let wrapper: NativeKeyWrapperV1;
     try {
@@ -176,7 +178,9 @@ describe('a deployment', () => {
       }
       throw error;
     }
-    const keyFile = join(keyFileFolder(), 'plaintext.bin');
+    const directory = keyFileDirectory(t, 'hkdfguard-e2e-');
+    if (directory === undefined) return;
+    const keyFile = join(directory, 'plaintext.bin');
     writeFileSync(keyFile, randomBytes(32));
     await assert.rejects(buildKeyRing({
       keyWrapper: wrapper, cryptoProviderFactory: new AesGcmCryptoProviderFactory(), keyRefreshInterval: 60, keyFiles: { 1: keyFile },
@@ -197,8 +201,8 @@ describe('runtime keys', () => {
     assert.equal(await reveal(cache, 'token'), 'cached secret');
   });
 
-  native('and a deployed key in one ring each do their job', async (service) => {
-    const { keyFile, values } = await runPipeline(service, { Secret: 'from the release' });
+  nativeWithKeyFiles('and a deployed key in one ring each do their job', async (service, directory) => {
+    const { keyFile, values } = await runPipeline(service, directory, { Secret: 'from the release' });
     const ring = await buildRing(service, { keyFile, ephemeral: [100] });
 
     // Configuration decrypts under the release's key file; new values encrypt under the runtime key.

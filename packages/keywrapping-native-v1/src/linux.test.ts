@@ -1,11 +1,12 @@
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
 import { isValidServiceName, isZero, MAX_SERVICE_NAME_LENGTH, MAX_WRAPPED_KEY_BYTES } from '@runsecure/hkdfguard-abstractions';
+import { keyFileDirectory, linuxKeyFileRoot, untrustedDirectoryChain } from '@runsecure/hkdfguard-test-support';
 import { unixProbe } from './darwin.js';
 import { elfReadNeededFile } from './elf.js';
 import { NotInstalledError, StatusError, UntrustedError } from './errors.js';
@@ -440,23 +441,24 @@ describe('the Linux native library against a provisioned service', { skip: proce
     // application unwraps the key file through this binding.
     const p = await provisioned(t, { cli: true });
     if (p === undefined) return;
-    const directory = temporaryDirectory('hkdfguard-cli-');
-    try {
-      const dek = randomDek();
-      const dekFile = join(directory, 'dek');
-      const keyFile = join(directory, 'key.bin');
-      writeFileSync(dekFile, Buffer.from(dek).toString('base64'), { mode: 0o600, flag: 'wx' });
+    // Not under /tmp: the library refuses a key file in any group- or other-writable directory chain.
+    const directory = keyFileDirectory(t, 'hkdfguard-cli-');
+    if (directory === undefined) return;
+    const dek = randomDek();
+    const dekFile = join(directory, 'dek');
+    const keyFile = join(directory, 'key.bin');
+    writeFileSync(dekFile, Buffer.from(dek).toString('base64'), { mode: 0o600, flag: 'wx' });
 
-      const { status, output } = runCli('wrap', '--key-file-path', keyFile, '--service-name', p.service, '--dek-file', dekFile);
-      assert.equal(status, 0, `hkdfguard wrap exited ${status}: ${output}`);
-      assert.equal(statSync(keyFile).mode & 0o777, 0o600);
+    const { status, output } = runCli('wrap', '--key-file-path', keyFile, '--service-name', p.service, '--dek-file', dekFile);
+    assert.equal(status, 0, `hkdfguard wrap exited ${status}: ${output}`);
+    assert.equal(statSync(keyFile).mode & 0o777, 0o600);
 
-      const recovered = new Uint8Array(DEK_LENGTH);
-      assert.equal(await p.wrapper.unwrap(readFileSync(keyFile), recovered), DEK_LENGTH);
-      assert.deepEqual(recovered, dek);
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
+    // Read back as an application does - through the library's hkdfguard_open_file - and unwrapped.
+    const wrapped = await p.wrapper.readKeyFile(keyFile);
+    assert.deepEqual(wrapped, new Uint8Array(readFileSync(keyFile)));
+    const recovered = new Uint8Array(DEK_LENGTH);
+    assert.equal(await p.wrapper.unwrap(wrapped, recovered), DEK_LENGTH);
+    assert.deepEqual(recovered, dek);
   });
 
   it('reports the test service as provisioned through the provisioning tool', async (t) => {
@@ -464,6 +466,58 @@ describe('the Linux native library against a provisioned service', { skip: proce
     if (p === undefined) return;
     const { status, output } = runCli('provision', '--service-name', p.service);
     assert.equal(status, 0, `hkdfguard provision exited ${status}: ${output}`);
+  });
+});
+
+describe('the private key-file folder the Linux tests use (test support)', { skip: process.platform !== 'linux' && 'Linux only' }, () => {
+  // keyFileDirectory: the Linux native library refuses a key file whose directory chain has a group-
+  // or other-writable directory, sticky or not, so the tests that write key files use this instead
+  // of the temp directory.
+
+  /** The trusted root the folders are made in; skips the test, saying why, without one. */
+  function root(t: TestContext): string | undefined {
+    const { root: directory, skipReason } = linuxKeyFileRoot();
+    if (directory === undefined) t.skip(skipReason);
+    return directory;
+  }
+
+  it('makes a private folder outside the temp directories, trusted all the way up, and removes it after the test', async (t) => {
+    if (root(t) === undefined) return;
+    let made: string | undefined;
+    await t.test('a test using it', (inner) => {
+      made = keyFileDirectory(inner, 'hkdfguard-helper-');
+      assert.ok(made !== undefined, 'the test was skipped');
+      const status = statSync(made);
+      assert.deepEqual([status.isDirectory(), status.uid, status.mode & 0o7777], [true, process.getuid!(), 0o700]);
+      assert.equal(untrustedDirectoryChain(made), undefined);
+      for (const sticky of ['/tmp/', '/var/tmp/', '/dev/shm/']) assert.ok(!made.startsWith(sticky), made);
+      writeFileSync(join(made, 'key.bin'), new Uint8Array(4), { mode: 0o600 });
+    });
+    assert.ok(made !== undefined && !existsSync(made), `${made} is still there after its test`);
+  });
+
+  it('finds the sticky, world-writable temp directories untrusted', () => {
+    for (const directory of ['/tmp', '/var/tmp', '/dev/shm']) {
+      if (!existsSync(directory)) continue;
+      assert.match(untrustedDirectoryChain(directory) ?? 'trusted', /writable by its group or others \(mode 1777\)/, directory);
+    }
+  });
+
+  it('finds a group-writable or sticky directory untrusted, and every directory under one', (t) => {
+    const directory = keyFileDirectory(t, 'hkdfguard-helper-');
+    if (directory === undefined) return;
+    const shared = join(directory, 'shared');
+    const inside = join(shared, 'private');
+    mkdirSync(inside, { recursive: true, mode: 0o700 });
+    chmodSync(inside, 0o700);
+    for (const mode of [0o770, 0o707, 0o1777, 0o1770]) {
+      chmodSync(shared, mode);
+      assert.match(untrustedDirectoryChain(shared) ?? 'trusted', /writable by its group or others/, mode.toString(8));
+      const why = untrustedDirectoryChain(inside) ?? 'trusted';
+      assert.ok(why.startsWith(`${shared} is writable by its group or others`), `${mode.toString(8)}: ${why}`);
+    }
+    chmodSync(shared, 0o755);
+    assert.equal(untrustedDirectoryChain(inside), undefined);
   });
 });
 

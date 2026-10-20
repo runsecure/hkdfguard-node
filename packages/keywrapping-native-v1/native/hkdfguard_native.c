@@ -15,8 +15,6 @@
  *   - programFilesPath / fileAttributes / securityDescriptor / describeSid / verifiedSigner (Windows):
  *     the known folder, reparse-point attributes, owner and DACL, account names, and the signer of the
  *     chain WinVerifyTrust itself validated.
- *   - testOpenOwnProcess (Windows, tests only): whether this process may open itself with an access
- *     mask, which shows the hardening took effect. Node has no FFI to call OpenProcess otherwise.
  *
  * Every policy decision is made in TypeScript (the src policy files), where it is tested on every platform.
  */
@@ -706,26 +704,6 @@ static napi_value security_descriptor(napi_env env, napi_callback_info info) {
   return result;
 }
 
-/* testOpenOwnProcess(access): 0 if OpenProcess(access) on this very process succeeds - the handle
- * is closed at once and never reaches JavaScript - else GetLastError(). For the opt-in process
- * hardening tests only, which check the process's new DACL from inside it: Node has no FFI to call
- * kernel32 itself, and another process (PowerShell) would test a different access check. It can only
- * ask about this process, and grants nothing it couldn't already do. */
-static napi_value test_open_own_process(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1];
-  CHECK(napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
-  uint32_t access = 0;
-  if (argc < 1 || napi_get_value_uint32(env, argv[0], &access) != napi_ok) {
-    napi_throw_type_error(env, NULL, "hkdfguard_native: expected an access mask");
-    return NULL;
-  }
-  HANDLE process = OpenProcess((DWORD)access, FALSE, GetCurrentProcessId());
-  if (process == NULL) return js_int(env, GetLastError());
-  CloseHandle(process);
-  return js_int(env, 0);
-}
-
 /* describeSid(sid): "DOMAIN\account (S-...)", or the SID itself if it maps to no account here. */
 static napi_value describe_sid(napi_env env, napi_callback_info info) {
   size_t argc = 1;
@@ -885,7 +863,6 @@ NAPI_MODULE_INIT() {
     { "securityDescriptor", NULL, security_descriptor, NULL, NULL, NULL, napi_enumerable, NULL },
     { "describeSid", NULL, describe_sid, NULL, NULL, NULL, napi_enumerable, NULL },
     { "verifiedSigner", NULL, verified_signer, NULL, NULL, NULL, napi_enumerable, NULL },
-    { "testOpenOwnProcess", NULL, test_open_own_process, NULL, NULL, NULL, napi_enumerable, NULL },
 #endif
   };
   if (napi_define_properties(env, exports, sizeof properties / sizeof properties[0], properties) != napi_ok) {

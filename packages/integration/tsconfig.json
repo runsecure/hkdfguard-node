@@ -8,6 +8,7 @@
     { "path": "../cryptoprovider-aesgcm256" },
     { "path": "../dek" },
     { "path": "../encryptedconfig" },
-    { "path": "../keywrapping-native-v1" }
+    { "path": "../keywrapping-native-v1" },
+    { "path": "../test-support" }
   ]
 }

@@ -25,8 +25,6 @@ export interface NativeAddon {
   securityDescriptor?(path: string): { owner: string; daclAbsent: boolean; aces: { type: number; flags: number; mask: number; sid: string }[] };
   describeSid?(sid: string): string;
   verifiedSigner?(path: string): { subject: string; ekus: string[]; rootCertificate: Uint8Array } | { status: number } | { error: string };
-  /** Windows, for the opt-in process hardening tests only: 0 if this process may open itself with `access`, else the Windows error. */
-  testOpenOwnProcess?(access: number): number;
 }
 
 let addon: NativeAddon | undefined;

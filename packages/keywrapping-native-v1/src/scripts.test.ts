@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { isValidServiceName } from '@runsecure/hkdfguard-abstractions';
 import { MAC_CODE_REQUIREMENT, MAC_TEAM_ID } from './macpolicy.js';
-import { DEFAULT_TEST_SERVICES, UNPROVISIONED_SERVICE_NAME } from './testservices.test-support.js';
+import { DEFAULT_TEST_SERVICE, UNPROVISIONED_SERVICE_NAME } from './testservices.test-support.js';
 import { WIN_CODE_SIGNING_EKU, WIN_EXPECTED_PROFILE_EKU, WIN_EXPECTED_PUBLISHER, WIN_EXPECTED_ROOT_SHA256, WIN_FILE_NAME } from './windowspolicy.js';
 
 // The provisioning scripts vet the native tool against the same pins the loader vets the library
@@ -40,13 +40,13 @@ describe('provisioning scripts', () => {
       MAC_CODE_REQUIREMENT.replace('identifier "libhkdfguard_v1"', 'identifier "hkdfguard-v1-initialize"'));
   });
 
-  it('each script provisions the default service the tests look for', () => {
-    const quote = (s: string) => s.replace(/[.]/g, '\\.');
-    assert.match(script('provision-linux-test-key.sh'), new RegExp(`^readonly SERVICE="${quote(DEFAULT_TEST_SERVICES.linux!)}"$`, 'm'));
+  it('each script provisions the one default service the tests look for', () => {
+    const service = DEFAULT_TEST_SERVICE.replace(/[.]/g, '\\.');
+    assert.match(script('provision-linux-test-key.sh'), new RegExp(`^readonly SERVICE="${service}"$`, 'm'));
     assert.match(script('provision-linux-test-key.sh'), /^readonly OTHER_SERVICE="\$\{SERVICE\}\.other"$/m);
-    assert.match(script('provision-macos-test-key.sh'), new RegExp(`^readonly SERVICE="${quote(DEFAULT_TEST_SERVICES.darwin!)}"$`, 'm'));
-    assert.match(script('provision-windows-test-key.ps1'), new RegExp(`^    \\[string\\] \\$ServiceName = '${quote(DEFAULT_TEST_SERVICES.win32!)}',?$`, 'm'));
-    for (const name of [...Object.values(DEFAULT_TEST_SERVICES), `${DEFAULT_TEST_SERVICES.linux}.other`, UNPROVISIONED_SERVICE_NAME]) {
+    assert.match(script('provision-macos-test-key.sh'), new RegExp(`^readonly SERVICE="${service}"$`, 'm'));
+    assert.match(script('provision-windows-test-key.ps1'), new RegExp(`^    \\[string\\] \\$ServiceName = '${service}',?$`, 'm'));
+    for (const name of [DEFAULT_TEST_SERVICE, `${DEFAULT_TEST_SERVICE}.other`, UNPROVISIONED_SERVICE_NAME]) {
       assert.ok(isValidServiceName(name), name);
     }
   });

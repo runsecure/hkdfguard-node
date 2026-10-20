@@ -4,8 +4,9 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, describe, it, type TestContext } from 'node:test';
+import { describe, it, type TestContext } from 'node:test';
 import { isZero, MAX_WRAPPED_KEY_BYTES } from '@runsecure/hkdfguard-abstractions';
+import { keyFileDirectory, NATIVE_ACCESS_TIMEOUT_MS } from '@runsecure/hkdfguard-test-support';
 import { unixProbe } from './darwin.js';
 import { KeyFileRefusedError, StatusError, UntrustedError } from './errors.js';
 import { hostLibrary } from './host.js';
@@ -16,15 +17,15 @@ import { linuxStatusDescriptions, macStatusDescriptions, Status, windowsStatusDe
 import { ENOENT, statusFromMode } from './unixpath.js';
 import { DEK_LENGTH, NativeKeyWrapperV1 } from './wrapper.js';
 import {
-  defaultServiceProvisioned, installedLibrary, macProvisioningTool, otherServiceName, provisionedWrapper, randomDek,
+  accessibleOtherServiceName, defaultServiceProvisioned, installedLibrary, macProvisioningTool, provisionedWrapper, randomDek,
 } from './installed.test-support.js';
-import { DEFAULT_TEST_SERVICES, UNPROVISIONED_SERVICE_NAME } from './testservices.test-support.js';
+import { DEFAULT_TEST_SERVICE, UNPROVISIONED_SERVICE_NAME } from './testservices.test-support.js';
 
 /*
  * Real wrapping and unwrapping against this platform's installed native KMS library. No native
  * library creates a KEK during wrap/unwrap, so the round trips run against a provisioned service:
- * HKDFGUARD_TEST_SERVICE when set, otherwise the default test service the platform's script under
- * scripts/ provisions - found by the tests themselves on Windows and macOS, and named by the
+ * HKDFGUARD_TEST_SERVICE when set, otherwise DEFAULT_TEST_SERVICE, which every platform's script
+ * under scripts/ provisions - found by the tests themselves on Windows and macOS, and named by the
  * variables the Linux script prints. Without the library installed every test here is skipped;
  * without a service the round trips are - reported as skipped, never as passed. A library that is
  * installed but fails verification fails the run. The tests never create or delete a KEK. The
@@ -164,7 +165,7 @@ describe('the installed native library', () => {
     const destination = new Uint8Array(DEK_LENGTH);
     // Another provisioned KEK: a fingerprint mismatch (or, on macOS, an authentication failure); none at all: KEK not found.
     const refusals: number[] = [Status.kekFingerprintMismatch, Status.payloadAuthFailed, Status.kekNotFound];
-    await assert.rejects(NativeKeyWrapperV1.create(otherServiceName()).unwrap(wrapped.subarray(0, n), destination),
+    await assert.rejects(NativeKeyWrapperV1.create(await accessibleOtherServiceName()).unwrap(wrapped.subarray(0, n), destination),
       (e: unknown) => e instanceof StatusError && refusals.includes(e.status));
     assert.ok(isZero(destination));
   });
@@ -222,7 +223,7 @@ describe('the macOS loader against the real system', { skip: process.platform !=
   it('reports an unprovisioned service as absent through the provisioning tool', (t) => {
     const tool = macProvisioningTool();
     if (tool === undefined) { t.skip('the provisioning tool is not installed'); return; }
-    assert.ok(execFileSync(tool, ['status', '--service-name', UNPROVISIONED_SERVICE_NAME], { encoding: 'utf8' }).includes('kek: absent'));
+    assert.ok(execFileSync(tool, ['status', '--service-name', UNPROVISIONED_SERVICE_NAME], { encoding: 'utf8', timeout: NATIVE_ACCESS_TIMEOUT_MS }).includes('kek: absent'));
   });
 
   it('fails the location check for a correctly named file in a user-writable temporary directory', () => {
@@ -249,8 +250,8 @@ describe('the macOS loader against the real system', { skip: process.platform !=
     if (tool === undefined) { t.skip('the provisioning tool is not installed'); return; }
     const library = installedLibrary(t);
     if (library === undefined) return;
-    const service = DEFAULT_TEST_SERVICES.darwin!;
-    const provisioned = execFileSync(tool, ['status', '--service-name', service], { encoding: 'utf8' }).includes('kek: present');
+    const service = DEFAULT_TEST_SERVICE;
+    const provisioned = execFileSync(tool, ['status', '--service-name', service], { encoding: 'utf8', timeout: NATIVE_ACCESS_TIMEOUT_MS }).includes('kek: present');
 
     const answer = defaultServiceProvisioned(library, service);
 
@@ -261,29 +262,27 @@ describe('the macOS loader against the real system', { skip: process.platform !=
 /*
  * Key files read through the real library's hkdfguard_open_file. Refusals of a file's size,
  * contents or location need no KEK, so they run wherever the Windows library is installed; reading
- * back a real wrapped key needs the provisioned test service. Windows only: elsewhere the library
- * refuses a key file under the sticky, world-writable /tmp, so these temporary files would only
- * ever be untrusted. (The key-ring halves of these tests are in packages/integration.)
+ * back a real wrapped key needs the provisioned test service. Windows only: they pin the Windows
+ * library's key-file length and its refusal of 8.3 names and junctions. On Linux the library reads
+ * key files only from a directory chain no group or other user can write - never under /tmp - so
+ * the key files Linux tests write go in keyFileDirectory's private folder (the CLI test in
+ * linux.test.ts, and the key-ring halves of these tests in packages/integration).
  */
 describe('key files read through the installed native library', { skip: process.platform !== 'win32' }, () => {
-  const directories: string[] = [];
-  after(() => {
-    for (const directory of directories) rmSync(directory, { recursive: true, force: true });
-  });
-
   /**
-   * A fresh folder under the temp folder, by its long path: hkdfguard_open_file refuses an 8.3 short
-   * name anywhere in a path, and Windows can hand out %TEMP% in short form (C:\Users\RUNNER~1\...
-   * on GitHub-hosted runners). realpathSync.native expands it; realpathSync would not.
+   * A fresh folder for key files, removed after the test - keyFileDirectory, in the test-support
+   * package: on Windows a folder under the temp folder by its long path, since hkdfguard_open_file
+   * refuses an 8.3 short name anywhere in a path and Windows can hand out %TEMP% in short form
+   * (C:\Users\RUNNER~1\... on GitHub-hosted runners).
    */
-  function temporaryFolder(): string {
-    const directory = realpathSync.native(mkdtempSync(join(tmpdir(), 'hkdfguard-keyfile-')));
-    directories.push(directory);
+  function temporaryFolder(t: TestContext): string {
+    const directory = keyFileDirectory(t);
+    assert.ok(directory !== undefined, 'no folder for key files');
     return directory;
   }
 
-  function write(contents: Uint8Array, name = 'key.bin'): string {
-    const path = join(temporaryFolder(), name);
+  function write(t: TestContext, contents: Uint8Array, name = 'key.bin'): string {
+    const path = join(temporaryFolder(t), name);
     writeFileSync(path, contents);
     return path;
   }
@@ -299,16 +298,16 @@ describe('key files read through the installed native library', { skip: process.
 
   it('expands a short temp folder name to its long form', (t) => {
     if (installedLibrary(t) === undefined) return;
-    const directory = temporaryFolder();
+    const directory = temporaryFolder(t);
     assert.ok(!/~\d/.test(directory), directory);
   });
 
   it('refuses a missing file, and a file in a missing folder', async (t) => {
     const r = reader(t);
     if (r === undefined) return;
-    const missing = join(temporaryFolder(), 'missing.bin');
+    const missing = join(temporaryFolder(t), 'missing.bin');
     await assert.rejects(r.readKeyFile(missing), refused(Status.fileNotFound, 'ENOENT', missing));
-    await assert.rejects(r.readKeyFile(join(temporaryFolder(), 'no-such-folder', 'dek.bin')), refused(Status.fileNotFound, 'ENOENT'));
+    await assert.rejects(r.readKeyFile(join(temporaryFolder(t), 'no-such-folder', 'dek.bin')), refused(Status.fileNotFound, 'ENOENT'));
   });
 
   it('refuses what looks like an unwrapped key as a key exposure', async (t) => {
@@ -323,7 +322,7 @@ describe('key files read through the installed native library', { skip: process.
       'base64-with-newline': Buffer.from(`${dek.toString('base64')}\n`, 'ascii'),
     };
     for (const [form, contents] of Object.entries(forms)) {
-      const path = write(contents, `plaintext-${form}.bin`);
+      const path = write(t, contents, `plaintext-${form}.bin`);
       await assert.rejects(r.readKeyFile(path), (e: unknown) =>
         refused(Status.filePlaintextKey, 'ERR_HKDFGUARD_INVALID_KEY_FILE', path)(e) && (e as Error).message.includes('key exposure'), form);
     }
@@ -337,7 +336,7 @@ describe('key files read through the installed native library', { skip: process.
       [length + 1, Status.fileTooLong], [4096, Status.fileTooLong]] as const) {
       const contents = new Uint8Array(size);
       if (size > 0) contents[0] = 0x7f; // never mistaken for text
-      const path = write(contents, `size-${size}.bin`);
+      const path = write(t, contents, `size-${size}.bin`);
       await assert.rejects(r.readKeyFile(path), refused(status, 'ERR_HKDFGUARD_INVALID_KEY_FILE', path), String(size));
     }
   });
@@ -345,7 +344,7 @@ describe('key files read through the installed native library', { skip: process.
   it('refuses a folder', async (t) => {
     const r = reader(t);
     if (r === undefined) return;
-    const directory = temporaryFolder();
+    const directory = temporaryFolder(t);
     await assert.rejects(r.readKeyFile(directory), (e: unknown) => e instanceof KeyFileRefusedError
       && (e.status === Status.fileIo || e.status === Status.fileAccessDenied) && (e.code === 'EIO' || e.code === 'EACCES'));
   });
@@ -353,7 +352,7 @@ describe('key files read through the installed native library', { skip: process.
   it('refuses a file reached through a junction as untrusted', async (t) => {
     const r = reader(t);
     if (r === undefined) return;
-    const directory = temporaryFolder();
+    const directory = temporaryFolder(t);
     const target = join(directory, 'real');
     mkdirSync(target);
     writeFileSync(join(target, 'dek.bin'), new Uint8Array(WRAPPED_DEK_LENGTHS.win32));
@@ -375,7 +374,7 @@ describe('key files read through the installed native library', { skip: process.
     const buffer = new Uint8Array(MAX_WRAPPED_KEY_BYTES);
     const wrapped = buffer.slice(0, await w.wrap(Uint8Array.from(dek), buffer));
     assert.equal(wrapped.length, WRAPPED_DEK_LENGTHS.win32);
-    const path = write(wrapped, 'wrapped-dek.bin');
+    const path = write(t, wrapped, 'wrapped-dek.bin');
 
     const read = await w.readKeyFile(path);
     assert.deepEqual(read, wrapped);
@@ -390,7 +389,7 @@ describe('key files read through the installed native library', { skip: process.
     const buffer = new Uint8Array(MAX_WRAPPED_KEY_BYTES);
     const wrapped = buffer.slice(0, await w.wrap(randomDek(), buffer));
     wrapped[0]! ^= 0xff; // the version byte
-    const path = write(wrapped, 'wrapped-dek.bin');
+    const path = write(t, wrapped, 'wrapped-dek.bin');
     await assert.rejects(w.readKeyFile(path), refused(Status.fileMalformed, 'ERR_HKDFGUARD_INVALID_KEY_FILE', path));
   });
 });
