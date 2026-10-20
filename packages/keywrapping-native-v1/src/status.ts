@@ -124,11 +124,11 @@ export const linuxStatusDescriptions: ReadonlyMap<number, string> = withHints([
   [Status.processHardeningFailed, 'process hardening failed: core dumps or ptrace access could not be disabled'],
 ]);
 
-/** macOS libhkdfguard_v1.dylib. */
+/** macOS libhkdfguard.dylib. */
 export const macStatusDescriptions: ReadonlyMap<number, string> = withHints([
   [Status.providerUnavailable, 'this Mac has no Secure Enclave'],
   [Status.payloadAuthFailed, 'AES-GCM authentication failed: the payload was altered, or wrapped for another service under this KEK'],
-  [Status.kekNotFound, 'no KEK is provisioned for this service in this keychain mode; run hkdfguard-v1-initialize provision'],
+  [Status.kekNotFound, 'no KEK is provisioned for this service in this keychain mode; run hkdfguard provision'],
   [Status.kekAccessDenied, "the keychain denied access: it is locked, there is no session to prompt in, or this process isn't allowed"],
   [Status.kekInvalid, "the keychain item for this service can't be reconstructed into a key"],
   [Status.processHardeningFailed, "process hardening failed: core dumps or debugger attachment could not be denied, or (with requireProtectedSignature) the host executable's code signature still allows it - it needs the Hardened Runtime, without get-task-allow or DYLD_* entitlements"],

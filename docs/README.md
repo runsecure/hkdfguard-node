@@ -36,7 +36,7 @@ native key files - is byte-identical between the ports, so one deployment serves
 
 - Every code sample in these pages type-checks and runs against the current source on Node.js 22.
   When you change one, run it before committing.
-- Facts about the `hkdfguard` tool (`hkdfguard-v1-initialize` on macOS) come from its own `--help` output and observed behavior.
+- Facts about the `hkdfguard` tool come from its own `--help` output and observed behavior.
   Anything not yet confirmed is marked **TODO (maintainer)**; search for that string before
   publishing.
 - Security rules are stated as rules, at the step where they apply, in a block that starts with

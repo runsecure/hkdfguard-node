@@ -58,11 +58,11 @@ export function installedLinuxLibraryPath(): string | undefined {
   }
 }
 
-/** The hkdfguard-v1-initialize installed beside the library the macOS loader would choose. */
+/** The hkdfguard tool installed beside the library the macOS loader would choose. */
 export function macProvisioningTool(): string | undefined {
   try {
     const { path } = macChoosePath((p) => (existsSync(p) ? 0 : 2), homedir());
-    const tool = join(dirname(path), 'hkdfguard-v1-initialize');
+    const tool = join(dirname(path), 'hkdfguard');
     return existsSync(tool) ? tool : undefined;
   } catch {
     return undefined;

@@ -37,7 +37,9 @@ describe('provisioning scripts', () => {
     const text = script('provision-macos-test-key.sh');
     assert.equal(/^readonly TEAM_ID="([^"]*)"$/m.exec(text)?.[1], MAC_TEAM_ID);
     assert.equal(/^readonly REQUIREMENT='([^']*)'$/m.exec(text)?.[1],
-      MAC_CODE_REQUIREMENT.replace('identifier "libhkdfguard_v1"', 'identifier "hkdfguard-v1-initialize"'));
+      MAC_CODE_REQUIREMENT.replace('identifier "libhkdfguard"', 'identifier "hkdfguard"'));
+    assert.match(text, /^readonly TOOL_NAME="hkdfguard"$/m);
+    assert.doesNotMatch(text, /v1-initialize|libhkdfguard_v1/);
   });
 
   it('each script provisions the one default service the tests look for', () => {

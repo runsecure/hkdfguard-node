@@ -340,7 +340,7 @@ describe('status codes', () => {
     assert.ok(linuxStatusDescriptions.get(Status.kekFingerprintMismatch)!.includes('different KEK'));
     assert.ok(macStatusDescriptions.get(Status.kekAccessDenied)!.includes('keychain'));
     assert.ok(macStatusDescriptions.get(Status.providerUnavailable)!.includes('Secure Enclave'));
-    assert.ok(macStatusDescriptions.get(Status.kekNotFound)!.includes('hkdfguard-v1-initialize provision'));
+    assert.ok(macStatusDescriptions.get(Status.kekNotFound)!.includes('hkdfguard provision'));
     assert.ok(sharedStatusDescriptions.get(Status.filePlaintextKey)!.includes('UNWRAPPED'));
   });
 });

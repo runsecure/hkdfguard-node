@@ -209,13 +209,13 @@ describe('the macOS loader against the real system', { skip: process.platform !=
   });
 
   it('refuses the provisioning tool - signed by the team, but not the library', (t) => {
-    const tool = join(MAC_SYSTEM_DIRECTORY, 'hkdfguard-v1-initialize');
+    const tool = join(MAC_SYSTEM_DIRECTORY, 'hkdfguard');
     if (!existsSync(tool)) { t.skip(`${tool} is not installed`); return; }
     assert.throws(() => macVerifySignature(tool, nativeAddon().checkCodeSignature!), (e: unknown) => e instanceof UntrustedError && e.message.includes(MAC_TEAM_ID));
   });
 
   it('refuses an unsigned file', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'hkdfguard-')), 'libhkdfguard_v1.dylib');
+    const path = join(mkdtempSync(join(tmpdir(), 'hkdfguard-')), 'libhkdfguard.dylib');
     writeFileSync(path, new Uint8Array([0xcf, 0xfa, 0xed, 0xfe]));
     assert.throws(() => macVerifySignature(realpathSync(path), nativeAddon().checkCodeSignature!), UntrustedError);
   });

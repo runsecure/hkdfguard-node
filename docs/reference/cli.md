@@ -1,7 +1,7 @@
 # `hkdfguard` CLI reference
 
 The HkdfGuard command-line tool is installed with each platform's native HkdfGuard package: as
-`hkdfguard.exe` on Windows, `hkdfguard` on Linux, and still as `hkdfguard-v1-initialize` on macOS.
+`hkdfguard.exe` on Windows and `hkdfguard` on Linux and macOS.
 It does the jobs the Node library deliberately can't:
 
 - **`provision`** creates a service's KEK. Wrapping and unwrapping never create one.
@@ -168,15 +168,15 @@ The rest (-7, -13 to -15, -21 to -31, -40 to -63, ...) are reserved.
 ## macOS
 
 Installed system-wide at `/Library/Application Support/HkdfGuard/v1`, or per user at
-`~/.hkdfguard/v1`, beside `libhkdfguard_v1.dylib`. The KEK is a Secure Enclave key, so it needs
+`~/.hkdfguard/v1`, beside `libhkdfguard.dylib`. The KEK is a Secure Enclave key, so it needs
 Apple silicon and macOS 13 or later.
 
 ```text
-hkdfguard-v1-initialize provision --service-name|-sn <name>
-hkdfguard-v1-initialize wrap --key-file-path|-kf <path> --service-name|-sn <name> \
+hkdfguard provision --service-name|-sn <name>
+hkdfguard wrap --key-file-path|-kf <path> --service-name|-sn <name> \
                           ( --dek-stdin | --dek-file <path> ) [--fingerprint|-fp <hex>] [--force|-f]
-hkdfguard-v1-initialize retire --service-name|-sn <name> ( --fingerprint|-fp <hex> | --corrupt )
-hkdfguard-v1-initialize status --service-name|-sn <name>
+hkdfguard retire --service-name|-sn <name> ( --fingerprint|-fp <hex> | --corrupt )
+hkdfguard status --service-name|-sn <name>
 ```
 
 `--help`, or no arguments, shows the summary above. Every command shares one usage text.
@@ -223,7 +223,7 @@ leaves the device: no backup or restore carries it.
 ### `provision`
 
 ```text
-hkdfguard-v1-initialize provision --service-name|-sn <name>
+hkdfguard provision --service-name|-sn <name>
 ```
 
 Creates the Secure Enclave KEK for the service if it doesn't exist yet, and prints the KEK's
@@ -234,7 +234,7 @@ in legacy mode the item is created in that account's login keychain.
 ### `wrap`
 
 ```text
-hkdfguard-v1-initialize wrap --key-file-path|-kf <path> --service-name|-sn <name> \
+hkdfguard wrap --key-file-path|-kf <path> --service-name|-sn <name> \
                           ( --dek-stdin | --dek-file <path> ) [--fingerprint|-fp <hex>] [--force|-f]
 ```
 
@@ -260,7 +260,7 @@ fingerprint of the KEK the payload was wrapped under.
 ### `retire`
 
 ```text
-hkdfguard-v1-initialize retire --service-name|-sn <name> ( --fingerprint|-fp <hex> | --corrupt )
+hkdfguard retire --service-name|-sn <name> ( --fingerprint|-fp <hex> | --corrupt )
 ```
 
 Deletes the KEK for the service, only if its fingerprint matches, or, with `--corrupt`, only if
@@ -272,7 +272,7 @@ unrecoverable**: migrate to a new service name first.
 ### `status`
 
 ```text
-hkdfguard-v1-initialize status --service-name|-sn <name>
+hkdfguard status --service-name|-sn <name>
 ```
 
 Read-only: never creates or deletes anything. Reports the keychain mode, whether a KEK exists for

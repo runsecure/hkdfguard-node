@@ -109,16 +109,16 @@ function probe(wrapper: NativeKeyWrapperV1): Promise<unknown> {
 }
 
 /**
- * Asks the installed hkdfguard-v1-initialize - beside the library the loader uses: the system install
+ * Asks the installed hkdfguard tool - beside the library the loader uses: the system install
  * when there is one, else the per-user one - whether the service's KEK exists. The tool created the
  * KEK, so it never prompts. Undefined when the tool can't say.
  */
 function darwinServiceProvisioned(service: string): boolean | undefined {
   const directory = ['/Library/Application Support/HkdfGuard/v1', join(homedir(), '.hkdfguard', 'v1')]
-    .find((d) => existsSync(join(d, 'libhkdfguard_v1.dylib')));
+    .find((d) => existsSync(join(d, 'libhkdfguard.dylib')));
   if (directory === undefined) return undefined;
   try {
-    const status = execFileSync(join(directory, 'hkdfguard-v1-initialize'), ['status', '--service-name', service], { encoding: 'utf8', timeout: NATIVE_ACCESS_TIMEOUT_MS });
+    const status = execFileSync(join(directory, 'hkdfguard'), ['status', '--service-name', service], { encoding: 'utf8', timeout: NATIVE_ACCESS_TIMEOUT_MS });
     if (status.includes('kek: present')) return true;
     if (status.includes('kek: absent')) return false;
   } catch {

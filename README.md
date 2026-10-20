@@ -8,7 +8,7 @@ Go ports, so values written by one port are read by the others.
 **Documentation:** start with [Getting started](docs/getting-started.md), which takes one Windows PC
 or Apple-silicon Mac from nothing to a TPM- or Secure-Enclave-protected key file. Key setup -
 installing the native package and provisioning, wrapping and retiring KEKs with the `hkdfguard`
-tool (`hkdfguard-v1-initialize` on macOS) - is in the [CLI reference](docs/reference/cli.md). The [docs index](docs/README.md)
+tool - is in the [CLI reference](docs/reference/cli.md). The [docs index](docs/README.md)
 lists every page.
 
 ## Packages
@@ -172,8 +172,8 @@ tests. To provision a test host, run from `packages/keywrapping-native-v1`:
   the KEK; a provisioning run also retires the legacy `com.hkdfguard.native.windows.test`, after
   asking - `-KeepLegacyKey` keeps it)
 
-Each checks the installed tool (`hkdfguard.exe`, `/usr/bin/hkdfguard`, or `hkdfguard-v1-initialize`
-on macOS) against the same pins the loader applies before
+Each checks the installed tool (`hkdfguard.exe`, `/usr/bin/hkdfguard`, or the macOS install directory's
+`hkdfguard`) against the same pins the loader applies before
 running it, and prints the `npm test` command to run next. Every platform's script provisions the
 same default test service, `com.hkdfguard.integration.test.221` (`DEFAULT_TEST_SERVICE` in the
 tests) - the KEKs every port's copy provisions, so one host serves all the ports' tests.
@@ -193,7 +193,7 @@ case skipped with its reason when what it needs is missing - never passed:
 | Suite | Runs | Needs, beyond its platform |
 |---|---|---|
 | Linux: `linux.test.ts` (loader against the real filesystem and dynamic linker; the library's contract: exact statuses, its own service-name and length checks, tampering, capacities, concurrency, the `hkdfguard` deployment path) | Linux | Path, `/proc` and libc checks: nothing. Installed-library checks: the `libhkdfguard1` package. Contract tests: the package and `HKDFGUARD_TEST_SERVICE`; some also `HKDFGUARD_TEST_SERVICE_OTHER`, `tpm.require_pinned_names = true` in `/etc/hkdfguard/policy.toml`, or `/usr/bin/hkdfguard` |
-| macOS: the `macOS loader` suite in `native.test.ts` (location and signature checks, the provisioning tool refused as a library, probes, the default test service found only when provisioned) | macOS | The library and `hkdfguard-v1-initialize` installed (system or per-user); the rest need nothing |
+| macOS: the `macOS loader` suite in `native.test.ts` (location and signature checks, the provisioning tool refused as a library, probes, the default test service found only when provisioned) | macOS | The library and `hkdfguard` installed (system or per-user); the rest need nothing |
 | Windows: `windows.test.ts` (loader: fixed path, planted file, junction, unsigned, tampered, not a PE image, the installed signer and mapped module, `hkdfguard.exe` refused as not a DLL, `hkdfguard_kek_exists`) and the key-file suite in `native.test.ts` | Windows | `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` (and `hkdfguard.exe`) installed; reading back a real key file also the test service |
 
 What every platform shares - loading once, round trips, direct binding calls, too-small buffers,
