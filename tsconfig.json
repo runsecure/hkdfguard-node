@@ -1,0 +1,32 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/test-support"
+    },
+    {
+      "path": "packages/diagnostics"
+    },
+    {
+      "path": "packages/abstractions"
+    },
+    {
+      "path": "packages/keywrapping-native-v1"
+    },
+    {
+      "path": "packages/dek"
+    },
+    {
+      "path": "packages/cache"
+    },
+    {
+      "path": "packages/encryptedconfig"
+    },
+    {
+      "path": "packages/cryptoprovider-aesgcm256"
+    },
+    {
+      "path": "packages/integration"
+    }
+  ]
+}
