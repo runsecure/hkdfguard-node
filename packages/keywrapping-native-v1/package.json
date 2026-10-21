@@ -1,6 +1,6 @@
 {
   "name": "@runsecure/hkdfguard-keywrapping-native-v1",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "description": "HkdfGuard KeyWrapper over the operating system's native HkdfGuard KMS library (TPM2, Secure Enclave, Platform Crypto Provider), loaded only after verification.",
   "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
@@ -18,7 +18,7 @@
     "test": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@runsecure/hkdfguard-abstractions": "0.1.0"
+    "@runsecure/hkdfguard-abstractions": "0.9.0"
   },
   "engines": {
     "node": ">=22"
