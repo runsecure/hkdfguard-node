@@ -52,7 +52,9 @@ export class InvalidKeyFileError extends HkdfGuardError {
  * file's wrapped bytes; for each ephemeral version, one around a DEK generated at build time.
  *
  * Key files are rotated by deployment. Ephemeral keys are rotated by the ring: one with any
- * ephemeral key adds a fresh one as its current version every ephemeralKeyRotationHours.
+ * ephemeral key adds a fresh one as its current version every ephemeralKeyRotationHours. A rotating
+ * ring must have its highest ephemeral version above every key file, or the first rotation would
+ * replace a key file as current with a key that doesn't survive a restart; buildKeyRing refuses it.
  */
 export interface KeyRingConfig {
   /** Reveals every key's DEK. */
@@ -69,7 +71,10 @@ export interface KeyRingConfig {
   refreshFailurePolicy?: RefreshFailurePolicy;
   /** Versions whose wrapped DEK is read from a file. */
   keyFiles?: Readonly<Record<number, string>> | ReadonlyMap<number, string>;
-  /** Versions whose DEK is generated at build time and never written to disk. The highest version overall becomes current. */
+  /**
+   * Versions whose DEK is generated at build time and never written to disk. The highest version
+   * overall becomes current. Unless rotation is disabled, the highest must be above every key file.
+   */
   ephemeralKeys?: readonly number[];
   /** Formats protected values; a DefaultFormatProvider when omitted. */
   formatProvider?: EncryptedFormatProvider;
@@ -77,7 +82,10 @@ export interface KeyRingConfig {
   serviceName?: string;
   /** Hours between ephemeral-key rotations (1-1193); 24 when omitted. A ring of key files never rotates. */
   ephemeralKeyRotationHours?: number;
-  /** Keeps the ephemeral key built at startup current until the process restarts. */
+  /**
+   * Keeps the ephemeral key built at startup current until the process restarts. Required when a key
+   * file's version is above every ephemeral version, so that key file stays current.
+   */
   disableEphemeralKeyRotation?: boolean;
   /** Minutes (at least 1) a superseded ephemeral key stays registered for decryption; 24 hours when omitted. */
   ephemeralKeyRetentionMinutes?: number;
@@ -129,7 +137,22 @@ function validate(config: KeyRingConfig): void {
   for (const [version, path] of keyFiles) {
     if (path.trim() === '') throw invalid(`Key file version ${version} is missing a path.`);
   }
+  const superseded = keyFileSupersededProblem(keyFiles.map(([version]) => version), config.ephemeralKeys ?? [], config.disableEphemeralKeyRotation, 'disableEphemeralKeyRotation');
+  if (superseded !== undefined) throw invalid(superseded);
   if (config.serviceName !== undefined) validateServiceName(config.serviceName);
+}
+
+/**
+ * Why a rotating ring's first rotation would supersede a key file, or undefined when it can't: a
+ * rotation adds its key at currentVersion + 1, so a key file above every ephemeral version would
+ * stop being current. `disableSetting` names the setting that turns rotation off.
+ * @internal Shared with validateKeyRingOptions.
+ */
+export function keyFileSupersededProblem(keyFileVersions: readonly number[], ephemeralVersions: readonly number[], rotationDisabled: boolean | undefined, disableSetting: string): string | undefined {
+  if (ephemeralVersions.length === 0 || rotationDisabled) return undefined;
+  const highestKeyFile = Math.max(...keyFileVersions);
+  if (!(highestKeyFile > Math.max(...ephemeralVersions))) return undefined;
+  return `Key file version ${highestKeyFile} is above every ephemeral version, so the first scheduled rotation would replace it as the current version and new values would be encrypted under a key that does not survive a restart. Configure the ephemeral key at a version above every key file, or set ${disableSetting}.`;
 }
 
 function entries(keyFiles: KeyRingConfig['keyFiles']): [number, string][] {
@@ -275,9 +298,11 @@ function keyFileDeadline(version: number, path: string, modifiedMs: number, maxA
 }
 
 /**
- * Reads each key file, creates each ephemeral key, and returns the populated key ring. If anything
- * fails partway - an unreadable file, an unwrap failure, a version registered twice, the signal
- * aborted - every key created so far is closed and the error rethrown.
+ * Reads each key file, creates each ephemeral key, and returns the populated key ring. A ring with
+ * ephemeral keys rotates them unless disableEphemeralKeyRotation is set; such a ring with a key file
+ * above every ephemeral version is refused, with the rest of the config, before anything is read or
+ * created. If anything fails partway - an unreadable file, an unwrap failure, a version registered
+ * twice, the signal aborted - every key created so far is closed and the error rethrown.
  */
 export async function buildKeyRing(config: KeyRingConfig, internals: BuildInternals = {}): Promise<KeyRing> {
   validate(config);
