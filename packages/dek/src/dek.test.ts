@@ -334,7 +334,7 @@ describe('buildKeyRing', () => {
     const factory = new RecordingFactory();
     const refusal = Object.assign(new Error("Key file 'k' was refused"), { code: 'EACCES' });
     const wrapper = Object.assign(new FakeKeyWrapper(), { readKeyFile: async () => { throw refusal; } });
-    await assert.rejects(buildKeyRing({ ...base(factory), keyWrapper: wrapper, keyFiles: { 1: keyFile('wrapped') }, ephemeralKeys: [0] }), (e: unknown) => e === refusal);
+    await assert.rejects(buildKeyRing({ ...base(factory), keyWrapper: wrapper, keyFiles: { 1: keyFile('wrapped') }, ephemeralKeys: [2] }), (e: unknown) => e === refusal);
     assert.equal(factory.created.length, 0);
   });
 
@@ -506,7 +506,7 @@ describe('buildKeyRing', () => {
   it('closes every key it created when it fails partway', async () => {
     const failing: Partial<KeyRingConfig>[] = [
       { keyFiles: { 1: keyFile('wrapped') }, ephemeralKeys: [2, 1] },
-      { ephemeralKeys: [2], keyFiles: { 1: keyFile('wrapped'), 3: join(tmpdir(), 'missing-hkdfguard-key') } },
+      { ephemeralKeys: [4], keyFiles: { 1: keyFile('wrapped'), 3: join(tmpdir(), 'missing-hkdfguard-key') } },
     ];
     for (const change of failing) {
       const factory = new RecordingFactory();
@@ -581,6 +581,33 @@ describe('ephemeral key rotation', () => {
     assert.equal(disabled.ephemeralKeyRotationIntervalMs, undefined);
     await files.close();
     await disabled.close();
+  });
+
+  it('refuses a key file above every ephemeral version before reading one, unless disabled', async () => {
+    const factory = new RecordingFactory();
+    const reads: string[] = [];
+    const wrapper = Object.assign(new FakeKeyWrapper(), {
+      async readKeyFile(path: string): Promise<Uint8Array> {
+        reads.push(path);
+        return utf8('wrapped');
+      },
+    });
+    const layout: KeyRingConfig = {
+      keyWrapper: wrapper, cryptoProviderFactory: factory, keyRefreshInterval: 60, keyFiles: { 1: keyFile('wrapped'), 3: keyFile('wrapped') }, ephemeralKeys: [2],
+    };
+    await assert.rejects(buildKeyRing(layout),
+      (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_CONFIG' && e.message.startsWith('Key file version 3 is above every ephemeral version'));
+    assert.deepEqual(reads, []);
+    assert.equal(factory.created.length, 0);
+
+    const disabled = await buildKeyRing({ ...layout, disableEphemeralKeyRotation: true });
+    try {
+      assert.equal(disabled.currentVersion, 3);
+      assert.equal(disabled.ephemeralKeyRotationIntervalMs, undefined);
+      assert.equal(reads.length, 2);
+    } finally {
+      await disabled.close();
+    }
   });
 
   it('keeps the current key through a failure, and the next interval succeeds', async () => {

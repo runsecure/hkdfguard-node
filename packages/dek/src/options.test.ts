@@ -22,7 +22,7 @@ function includesAll(list: string[], ...parts: string[]): boolean {
 
 describe('validateKeyRingOptions', () => {
   it('passes valid options, at every limit', () => {
-    assert.deepEqual(failures({ KeyFiles: [{ Version: 2, Path: '/etc/app/key.v2' }], MaxRefreshFailures: 10, EphemeralKeyRotationHours: 1193, EphemeralKeyRetentionHours: 24 * 365 }), []);
+    assert.deepEqual(failures({ KeyFiles: [{ Version: 2, Path: '/etc/app/key.v2' }], EphemeralKeys: [3], MaxRefreshFailures: 10, EphemeralKeyRotationHours: 1193, EphemeralKeyRetentionHours: 24 * 365 }), []);
     for (const interval of [1, 300]) assert.deepEqual(failures({ KeyRefreshInterval: interval }), []);
     assert.deepEqual(failures({ KeyRefreshInterval: undefined }), []);
     assert.deepEqual(failures({ DisableEphemeralKeyRotation: true }), []);
@@ -57,6 +57,12 @@ describe('validateKeyRingOptions', () => {
     assert.ok(includesAll(failures({ KeyFiles: [{ Version: 2, Path: ' ' }] }), 'KeyFiles version 2 is missing a path'));
     assert.ok(includesAll(failures({ KeyFiles: [{ Version: 1, Path: '/a' }, { Version: 2, Path: '/b' }, { Version: 2, Path: '/c' }] }),
       'Version 1 is registered more than once', 'Version 2 is registered more than once'));
+  });
+
+  it('refuses a key file above every ephemeral version unless rotation is disabled', () => {
+    const layout: Partial<KeyRingOptions> = { KeyFiles: [{ Version: 3, Path: '/etc/app/key.v3' }], EphemeralKeys: [2] };
+    assert.ok(includesAll(failures(layout), 'Key file version 3 is above every ephemeral version', 'or set DisableEphemeralKeyRotation'));
+    assert.deepEqual(failures({ ...layout, DisableEphemeralKeyRotation: true }), []);
   });
 
   it('accepts a key-file age at both limits, also from appsettings.json', () => {

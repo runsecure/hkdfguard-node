@@ -2,7 +2,7 @@ import {
   HkdfGuardError, InvalidArgumentError, jsonErrorLocation, jsonKind, RefreshFailurePolicy, serviceNameProblem,
   type CryptoProviderFactory, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
-import { MAX_EPHEMERAL_KEY_ROTATION_HOURS, MAX_KEY_FILE_MAX_AGE_DAYS, type KeyRingConfig } from './build.js';
+import { keyFileSupersededProblem, MAX_EPHEMERAL_KEY_ROTATION_HOURS, MAX_KEY_FILE_MAX_AGE_DAYS, type KeyRingConfig } from './build.js';
 
 /** Options that break one or more rules; the message lists every rule broken. */
 export class InvalidOptionsError extends HkdfGuardError {
@@ -34,7 +34,7 @@ export interface KeyRingOptions {
   FailOpenOnRefreshFailure?: boolean;
   /** Hours (1-1193) between ephemeral key rotations. Can't be combined with DisableEphemeralKeyRotation. */
   EphemeralKeyRotationHours?: number;
-  /** Keeps the ephemeral key built at startup current. */
+  /** Keeps the ephemeral key built at startup current. Required when a KeyFiles version is above every EphemeralKeys version. */
   DisableEphemeralKeyRotation?: boolean;
   /** Hours (at least 1) a superseded ephemeral key stays registered for decryption. */
   EphemeralKeyRetentionHours?: number;
@@ -54,7 +54,8 @@ const FIELDS: (keyof KeyRingOptions)[] = [
 /**
  * Every rule {@link keyRingConfigFromOptions} enforces, as the .NET port's validator words them - a
  * valid ServiceName, every range, no contradictory settings, at least one key, a path for every key
- * file, and no version registered twice. Empty when the options are valid.
+ * file, no version registered twice, and, unless rotation is disabled, no key file above every
+ * ephemeral version. Empty when the options are valid.
  */
 export function validateKeyRingOptions(options: KeyRingOptions): string[] {
   const failures: string[] = [];
@@ -85,6 +86,8 @@ export function validateKeyRingOptions(options: KeyRingOptions): string[] {
     seen.set(version, (seen.get(version) ?? 0) + 1);
     if (seen.get(version) === 2) failures.push(`Version ${version} is registered more than once across KeyFiles/EphemeralKeys.`);
   }
+  const superseded = keyFileSupersededProblem(keyFiles.map((k) => k.Version), ephemeral, options.DisableEphemeralKeyRotation, 'DisableEphemeralKeyRotation');
+  if (superseded !== undefined) failures.push(superseded);
   return failures;
 }
 
