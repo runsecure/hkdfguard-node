@@ -1,6 +1,6 @@
 {
   "name": "@runsecure/hkdfguard-dek",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "description": "HkdfGuard data encryption keys: key rings with rotation, data protectors, the enc::v<version>::<base64> format, and key ring building.",
   "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.1",
-    "@runsecure/hkdfguard-abstractions": "0.1.0",
-    "@runsecure/hkdfguard-diagnostics": "0.1.0"
+    "@runsecure/hkdfguard-abstractions": "0.9.0",
+    "@runsecure/hkdfguard-diagnostics": "0.9.0"
   },
   "devDependencies": {
     "@runsecure/hkdfguard-test-support": "0.0.0"

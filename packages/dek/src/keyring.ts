@@ -36,6 +36,8 @@ function isClosable(value: unknown): value is Closable {
  * creates a fresh ephemeral key and adds it at currentVersion + 1, so every later encrypt uses it. A
  * superseded ephemeral key stays registered for the retention, so values encrypted under it still
  * decrypt that long; then a later rotation closes and removes it. Key-file keys are never retired.
+ * A rotation supersedes whatever is current, so buildKeyRing refuses a rotating ring whose highest
+ * version is a key file.
  */
 export class KeyRing implements KeyRingContract {
   readonly #keys = new Map<number, DataEncryptionKey>();

@@ -1,6 +1,6 @@
 {
   "name": "@runsecure/hkdfguard-cryptoprovider-aesgcm256",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "description": "AES-256-GCM crypto provider and pipeline data protector for HkdfGuard - one interchangeable cipher.",
   "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
@@ -17,13 +17,13 @@
   },
   "devDependencies": {
     "@runsecure/hkdfguard-test-support": "0.0.0",
-    "@runsecure/hkdfguard-cache": "0.1.0",
-    "@runsecure/hkdfguard-dek": "0.1.0",
-    "@runsecure/hkdfguard-encryptedconfig": "0.1.0"
+    "@runsecure/hkdfguard-cache": "0.9.0",
+    "@runsecure/hkdfguard-dek": "0.9.0",
+    "@runsecure/hkdfguard-encryptedconfig": "0.9.0"
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.1",
-    "@runsecure/hkdfguard-abstractions": "0.1.0",
-    "@runsecure/hkdfguard-diagnostics": "0.1.0"
+    "@runsecure/hkdfguard-abstractions": "0.9.0",
+    "@runsecure/hkdfguard-diagnostics": "0.9.0"
   }
 }
