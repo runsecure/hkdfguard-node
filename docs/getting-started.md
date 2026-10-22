@@ -259,6 +259,23 @@ export async function createKeyFile(toolPath: string, serviceName: string, keyFi
 }
 ```
 
+Before you call it on Windows, prepare the folder it writes to. The native library refuses a key
+file anywhere under `C:\ProgramData`, where every user may create entries, and in a folder created
+directly under `C:\` with its default permissions. From an elevated PowerShell, give the key files
+a folder of their own, with inherited permissions removed:
+
+```powershell
+New-Item -ItemType Directory -Force C:\HkdfGuardKeys\myapp | Out-Null
+icacls C:\HkdfGuardKeys /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" "HkdfGuardDeployers:(OI)(CI)M"
+icacls C:\HkdfGuardKeys /setowner "*S-1-5-32-544" /T
+```
+
+Then make the call from an elevated prompt, or as a member of `HkdfGuardDeployers`. Under the
+production security model, the Windows default, `wrap` refuses any other account, and the library
+doesn't trust a key file that the application's own account wrote. The native library's
+[administration guide](https://github.com/runsecure/hkdfguard-native-windows/blob/main/docs/admin-guide.md#where-to-keep-key-files)
+explains both rules.
+
 Call it once. On Windows:
 
 ```ts
@@ -268,19 +285,23 @@ import { createKeyFile } from './keyfile.ts';
 await createKeyFile(
   join(process.env.ProgramFiles!, 'HkdfGuard', 'v1', 'hkdfguard.exe'),
   'com.example.myapp',
-  'C:\\ProgramData\\MyApp\\keys\\v1.key',
+  'C:\\HkdfGuardKeys\\myapp\\v1.key',
   'HkdfGuardUsers');
 ```
 
-On macOS:
+On macOS, as the account that provisioned the KEK, after creating the folder with
+`mkdir -p -m 0700 ~/Library/Application\ Support/MyApp/keys` (the native library trusts a key
+file in a folder owned by you or root that no one else can write):
 
 ```ts
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createKeyFile } from './keyfile.ts';
 
 await createKeyFile(
   '/Library/Application Support/HkdfGuard/v1/hkdfguard',
   'com.example.myapp',
-  '/Library/Application Support/MyApp/keys/v1.key');
+  join(homedir(), 'Library', 'Application Support', 'MyApp', 'keys', 'v1.key'));
 ```
 
 > **Security:** pass the DEK on standard input, as above. Never pass it as a command-line argument
