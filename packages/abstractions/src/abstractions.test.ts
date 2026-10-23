@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import {
   AuthenticationFailedError, CACHE_AAD_PREFIX, cacheAad, CONFIGURATION_PURPOSE_PREFIX, configurationAad, configurationPurpose,
   DEFAULT_MAX_REFRESH_FAILURES, HkdfGuardError, InvalidCacheNameError, InvalidConfigurationKeyError, InvalidServiceNameError,
-  isValidServiceName, isZero, jsonErrorLocation, jsonKind, KeyNotFoundError, MAX_SERVICE_NAME_LENGTH, MAX_WRAPPED_KEY_BYTES, RefreshFailurePolicy,
+  isValidServiceName, isZero, jsonErrorLocation, jsonKind, KeyNotFoundError, MAX_ALLOWED_REFRESH_FAILURES, MAX_SERVICE_NAME_LENGTH, MAX_WRAPPED_KEY_BYTES, RefreshFailurePolicy,
   serviceNameProblem, validateServiceName, wipe,
 } from './index.js';
 
@@ -107,9 +107,11 @@ describe('RefreshFailurePolicy', () => {
     assert.equal(String(RefreshFailurePolicy.default), 'fail closed after 3 consecutive failures');
   });
 
-  it('fails closed after a chosen count, of at least one', () => {
+  it('fails closed after a chosen count, from one to one hundred', () => {
     assert.equal(RefreshFailurePolicy.failClosedAfter(5).toString(), 'fail closed after 5 consecutive failures');
-    for (const n of [0, -1, 1.5, Number.NaN]) {
+    assert.equal(MAX_ALLOWED_REFRESH_FAILURES, 100);
+    assert.equal(RefreshFailurePolicy.failClosedAfter(100).maxFailures, 100);
+    for (const n of [0, -1, 1.5, Number.NaN, 101, 2 ** 31]) {
       assert.throws(() => RefreshFailurePolicy.failClosedAfter(n), (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_REFRESH_FAILURE_POLICY');
     }
   });

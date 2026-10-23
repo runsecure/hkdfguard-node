@@ -1,5 +1,5 @@
 import {
-  HkdfGuardError, InvalidArgumentError, jsonErrorLocation, jsonKind, RefreshFailurePolicy, serviceNameProblem,
+  HkdfGuardError, InvalidArgumentError, jsonErrorLocation, jsonKind, MAX_ALLOWED_REFRESH_FAILURES, RefreshFailurePolicy, serviceNameProblem,
   type CryptoProviderFactory, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
 import { keyFileSupersededProblem, MAX_EPHEMERAL_KEY_ROTATION_HOURS, MAX_KEY_FILE_MAX_AGE_DAYS, type KeyRingConfig } from './build.js';
@@ -28,7 +28,7 @@ export interface KeyRingOptions {
   ServiceName?: string;
   /** Seconds (1-300) between re-reveals of each key through the KEK. */
   KeyRefreshInterval?: number;
-  /** Consecutive failed refreshes before a key fails closed; at least 1. Can't be combined with FailOpenOnRefreshFailure. */
+  /** Consecutive failed refreshes before a key fails closed; 1-100. Can't be combined with FailOpenOnRefreshFailure. */
   MaxRefreshFailures?: number;
   /** Keeps the last good key in use however many refreshes fail. */
   FailOpenOnRefreshFailure?: boolean;
@@ -64,7 +64,7 @@ export function validateKeyRingOptions(options: KeyRingOptions): string[] {
 
   const outside = (value: number | undefined, min: number, max = Infinity) => value !== undefined && !(Number.isInteger(value) && value >= min && value <= max);
   if (outside(options.KeyRefreshInterval, 1, 300)) failures.push('KeyRefreshInterval must be between 1 and 300 seconds.');
-  if (outside(options.MaxRefreshFailures, 1)) failures.push('MaxRefreshFailures must be at least 1.');
+  if (outside(options.MaxRefreshFailures, 1, MAX_ALLOWED_REFRESH_FAILURES)) failures.push(`MaxRefreshFailures must be between 1 and ${MAX_ALLOWED_REFRESH_FAILURES}.`);
   if (outside(options.EphemeralKeyRotationHours, 1, MAX_EPHEMERAL_KEY_ROTATION_HOURS)) failures.push(`EphemeralKeyRotationHours must be between 1 and ${MAX_EPHEMERAL_KEY_ROTATION_HOURS}.`);
   if (outside(options.EphemeralKeyRetentionHours, 1)) failures.push('EphemeralKeyRetentionHours must be at least 1.');
   if (outside(options.KeyFileMaxAgeDays, 1, MAX_KEY_FILE_MAX_AGE_DAYS)) failures.push(`KeyFileMaxAgeDays must be between 1 and ${MAX_KEY_FILE_MAX_AGE_DAYS}.`);
