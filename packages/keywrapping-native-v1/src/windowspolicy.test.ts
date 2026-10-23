@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { UntrustedError } from './errors.js';
 import {
   ACE_FLAG_INHERIT_ONLY, AceType, PE_FILE_DLL, PeMachine, Rights, WIN_CODE_SIGNING_EKU, WIN_EXPECTED_PROFILE_EKU, WIN_EXPECTED_PUBLISHER,
-  WIN_EXPECTED_ROOT_SHA256, WIN_GUARDED_RIGHTS, WIN_GUARDED_ROOT_RIGHTS, winReadPeHeader, winVerifyImageKind, winVerifySignerIdentity,
+  WIN_EXPECTED_ROOT_SHA256, WIN_GUARDED_RIGHTS, WIN_GUARDED_ROOT_RIGHTS, winReadPeHeader, winRevocationDecision, winVerifyImageKind, winVerifySignerIdentity,
   winVerifyTrustedOnly, type WinAce, type WinSecurity,
 } from './windowspolicy.js';
 
@@ -110,3 +110,20 @@ describe('Windows image kind', () => {
     untrusted(() => winReadPeHeader('test', image), 'PE header');
   });
 });
+
+describe('winRevocationDecision', () => {
+  const path = 'C:\\Program Files\\HkdfGuard\\v1\\HkdfGuard.dll';
+
+  it('refuses only a definite revocation', () => {
+    assert.throws(() => winRevocationDecision(path, 0x800B010C), (e: unknown) => e instanceof UntrustedError && e.message.includes('revoked'));
+    // A signed 32-bit HRESULT, as a C LONG may arrive, is the same code.
+    assert.throws(() => winRevocationDecision(path, 0x800B010C | 0), UntrustedError);
+  });
+
+  it('lets every other result continue, so an offline host still starts', () => {
+    for (const status of [0, 0x80092013, 0x80092012, 0x800B010E, 0x80096010]) {
+      assert.doesNotThrow(() => winRevocationDecision(path, status), `status 0x${status.toString(16)}`);
+    }
+  });
+});
+

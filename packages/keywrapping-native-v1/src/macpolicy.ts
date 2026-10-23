@@ -11,12 +11,16 @@ import { ENOENT, ENOTDIR, FileType, PERM_GROUP_WRITE, PERM_OTHER_WRITE, type Fil
  *     write to the user's home, so a per-user file must never override a root-owned system one. If
  *     the system install exists but fails a check, loading fails; nor does it fall back when the
  *     system install merely can't be examined: only "nothing is there" counts as "not installed".
+ *     The home folder comes from the account database (getpwuid), never $HOME, so whoever sets the
+ *     process's environment can't choose where the library is loaded from.
  *  2. Path integrity. No component of the path, from the file up to /, may be a symbolic link, or
  *     writable by anyone but its owner - except that the system directories above an install
  *     (/, /Library, /Library/Application Support, /Users) may also be writable by the wheel or
  *     admin group when root owns them. Every component of a system install must be owned by root;
  *     of a user install, by root or the current user.
  *  3. Code signature. The file's signature must be valid and satisfy MAC_CODE_REQUIREMENT.
+ *     Its version - LC_ID_DYLIB's current_version, which the signature covers - must be at least
+ *     MAC_MINIMUM_LIBRARY_VERSION, so an older genuine release can't be planted in its place.
  *  4. What dyld loaded. dlopen of an absolute path first looks for its leaf name in every
  *     DYLD_LIBRARY_PATH directory, so the loader refuses before dlopen if one holds the library's
  *     name, and after dlopen asks dyld (dladdr) which file it mapped.
@@ -45,6 +49,21 @@ export const MAC_MINIMUM_MAJOR_VERSION = 13;
 
 /** An export every genuine build has; its address tells dladdr which file was loaded. */
 export const PROBE_EXPORT = 'hkdfguard_wrap_dek';
+
+/**
+ * The oldest native library release this package loads, in Mach-O's packed form
+ * (major << 16 | minor << 8 | patch): 0.9.0. A release that fixes a security problem in the library
+ * raises it, so an older, genuinely signed copy can't be put back in its place.
+ */
+export const MAC_MINIMUM_LIBRARY_VERSION = (0 << 16) | (9 << 8) | 0;
+/** How much of the file is read to find its version. */
+export const MAC_VERSION_READ_LIMIT = 64 * 1024;
+
+const MH_MAGIC_64 = 0xfeedfacf;
+const FAT_MAGIC = 0xcafebabe;
+const FAT_MAGIC_64 = 0xcafebabf;
+const CPU_TYPE_ARM64 = 0x0100000c;
+const LC_ID_DYLIB = 0xd;
 
 const ADMINISTRATIVE_GROUPS = [0, 80]; // wheel and admin
 const SHARED_SYSTEM_DIRECTORIES = ['/', '/Library', '/Library/Application Support', '/Users'];
@@ -184,3 +203,86 @@ export function macParentOf(path: string): string | undefined {
   const slash = path.replace(/\/+$/, '').lastIndexOf('/');
   return slash <= 0 ? '/' : path.slice(0, slash);
 }
+
+/** A packed Mach-O version as major.minor.patch. */
+export function macFormatVersion(version: number): string {
+  return `${version >>> 16}.${(version >>> 8) & 0xff}.${version & 0xff}`;
+}
+
+/**
+ * LC_ID_DYLIB's current_version, read from the start of a Mach-O file: a thin arm64 image, or the
+ * arm64 slice of a fat one. `data` is at most the first MAC_VERSION_READ_LIMIT bytes. Throws an
+ * Error describing what is wrong for anything malformed, truncated or not arm64.
+ */
+export function macDylibCurrentVersion(data: Uint8Array): number {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (data.length < 4) throw new Error('too short to be a Mach-O file');
+  const magic = view.getUint32(0, false);
+  if (magic === FAT_MAGIC || magic === FAT_MAGIC_64) return fatArm64Version(data, view, magic === FAT_MAGIC_64);
+  return thinArm64Version(data);
+}
+
+function fatArm64Version(data: Uint8Array, view: DataView, wide: boolean): number {
+  if (data.length < 8) throw new Error('truncated fat header');
+  const count = view.getUint32(4, false);
+  const entrySize = wide ? 32 : 20;
+  if (count * entrySize + 8 > data.length) throw new Error(`fat header lists ${count} architectures, more than were read`);
+  for (let i = 0; i < count; i++) {
+    const entry = 8 + i * entrySize;
+    if (view.getUint32(entry, false) !== CPU_TYPE_ARM64) continue;
+    const offset = wide ? Number(view.getBigUint64(entry + 8, false)) : view.getUint32(entry + 8, false);
+    if (offset >= data.length) throw new Error(`the arm64 slice starts at ${offset}, beyond the ${data.length} bytes read`);
+    return thinArm64Version(data.subarray(offset));
+  }
+  throw new Error('no arm64 slice');
+}
+
+function thinArm64Version(data: Uint8Array): number {
+  const headerSize = 32; // mach_header_64
+  if (data.length < headerSize) throw new Error('truncated Mach-O header');
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (view.getUint32(0, true) !== MH_MAGIC_64) throw new Error('not a 64-bit Mach-O file');
+  if (view.getUint32(4, true) !== CPU_TYPE_ARM64) throw new Error('not an arm64 image');
+  const ncmds = view.getUint32(16, true);
+  const end = headerSize + view.getUint32(20, true);
+  if (end > data.length) throw new Error('load commands run past the bytes read');
+  let at = headerSize;
+  for (let i = 0; i < ncmds; i++) {
+    if (at + 8 > end) throw new Error(`load command ${i} runs past the load commands`);
+    const cmd = view.getUint32(at, true);
+    const size = view.getUint32(at + 4, true);
+    if (size < 8 || size % 8 !== 0 || at + size > end) throw new Error(`load command ${i} has an invalid size ${size}`);
+    if (cmd === LC_ID_DYLIB) {
+      // cmd, cmdsize, name offset, timestamp, current_version, compatibility_version
+      if (size < 24) throw new Error('LC_ID_DYLIB is too short');
+      return view.getUint32(at + 16, true);
+    }
+    at += size;
+  }
+  throw new Error('no LC_ID_DYLIB load command');
+}
+
+/**
+ * Refuses a library whose version, read from `data` (the start of the verified file at `path`), is
+ * missing, unreadable or below MAC_MINIMUM_LIBRARY_VERSION.
+ */
+export function macRequireMinimumVersion(path: string, data: Uint8Array): void {
+  let version: number;
+  try {
+    version = macDylibCurrentVersion(data);
+  } catch (error) {
+    throw new UntrustedError(`Could not read the version of the HkdfGuard native library '${path}' (${(error as Error).message}); refusing to load it.`);
+  }
+  if (version < MAC_MINIMUM_LIBRARY_VERSION) {
+    throw new UntrustedError(`'${path}' is HkdfGuard native library version ${macFormatVersion(version)}, older than the minimum this package accepts (${macFormatVersion(MAC_MINIMUM_LIBRARY_VERSION)}); install a current release.`);
+  }
+}
+
+/**
+ * The per-user install's base: the home folder the account database gives this process's effective
+ * user, or '' - no per-user install - if the lookup failed or gave anything but an absolute path.
+ */
+export function macHomeFromAccount(home: string | null | undefined): string {
+  return typeof home === 'string' && home.startsWith('/') ? home : '';
+}
+

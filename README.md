@@ -84,6 +84,19 @@ loads and calls the library; every verification rule (path ownership, code signa
 macOS, the dynamic linker's environment, what was actually loaded) is TypeScript, and is tested on
 every platform. The Linux library is not content-pinned: verify a release with Sigstore/cosign
 (`gh attestation verify`) when you install it, and the loader enforces path integrity from there.
+On macOS the per-user location is found from the account database (the add-on's `getpwuid_r`),
+never `$HOME`, and the library must be at least version 0.9.0 - its `LC_ID_DYLIB` current version,
+covered by the signature - so an older signed release can't be planted in its place.
+
+Certificate revocation: on Windows, once the signature and its pins have passed, the loader asks
+WinVerifyTrust once more, now checking revocation across the signing chain and allowed to fetch
+revocation data over the network. It refuses the library only when a certificate is definitely
+revoked; if revocation can't be determined (offline, no data), it loads. A host whose network
+silently drops traffic, rather than refusing it, may stall once, on the first load, until that
+lookup times out. On macOS revocation isn't checked: the defences are the Developer ID and Team ID
+pins, the admin-only system install, and the minimum library version. A compromised signing
+identity is answered by a new release and a raised minimum version.
+
 KMS calls run on libuv's thread pool, so a TPM operation never blocks the event loop.
 
 The Windows library is `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll`, beside the `hkdfguard.exe`

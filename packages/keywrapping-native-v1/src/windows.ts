@@ -7,7 +7,7 @@ import { nativeAddon, type NativeAddon } from './native.js';
 import { windowsStatusDescriptions } from './status.js';
 import {
   WIN_EXPECTED_PUBLISHER, WIN_FILE_NAME, WIN_GUARDED_RIGHTS, WIN_GUARDED_ROOT_RIGHTS, winReadPeHeader, winVerifyImageKind,
-  winVerifySignerIdentity, winVerifyTrustedOnly, type WinSecurity,
+  winRevocationDecision, winVerifySignerIdentity, winVerifyTrustedOnly, type WinSecurity,
 } from './windowspolicy.js';
 
 // The steps of loadWindowsLibrary are exported for the tests against the real system
@@ -102,6 +102,8 @@ export function winLoadFrom(native: NativeAddon, path: string, expectedPublisher
   winVerifyLocation(native, path);
   winVerifySignature(native, path, expectedPublisher);
   winVerifyImageKindOf(path);
+  // A second, separate pass, now checking revocation (network allowed); only a definite revocation refuses.
+  winRevocationDecision(path, native.revocationStatus!(path));
 
   // Absolute path, so no probing for the library itself; its own imports come from System32 only.
   let handle;

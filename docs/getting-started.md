@@ -56,11 +56,14 @@ Check that it installed:
 Get-AuthenticodeSignature "$env:ProgramFiles\HkdfGuard\v1\HkdfGuard.dll" | Select-Object Status, SignerCertificate
 ```
 
-`Status` must be `Valid`.
+`Status` must be `Valid`. When it loads the library, the native key wrapper also checks whether the
+signing certificate has been revoked, fetching revocation data if the host can reach it. Only a
+definite revocation stops the load; an offline host still starts.
 
 **macOS:** install the native package system-wide, to `/Library/Application Support/HkdfGuard/v1`.
 (A per-user install at `~/.hkdfguard/v1` is also loaded, but only when there is no system-wide
-one.)
+one. Its home folder is your account's, from the account database; setting `$HOME` doesn't move
+it. Either install must be version 0.9.0 or later.)
 
 > **TODO (maintainer):** give the package's file name and where to download it.
 
