@@ -353,7 +353,7 @@ its meaning. The codes are the same on every platform (`Status` in
 | You see | Cause | Fix |
 |---|---|---|
 | `NotInstalledError` (`ERR_HKDFGUARD_NATIVE_NOT_INSTALLED`) | The native package isn't installed at its fixed location | Step 1 |
-| `UntrustedError` (`ERR_HKDFGUARD_NATIVE_UNTRUSTED`) | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
+| `UntrustedError` (`ERR_HKDFGUARD_NATIVE_UNTRUSTED`) | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it, or `DYLD_INSERT_LIBRARIES` or another dyld variable that injects or substitutes code is set | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
 | `UnsupportedPlatformError` (`ERR_HKDFGUARD_NATIVE_UNSUPPORTED_PLATFORM`) | An Intel Mac or an x64 `node` under Rosetta, an unsupported OS, or the add-on was never compiled | Use an arm64 `node` on Apple silicon; install Python 3 and a C compiler, then `npm rebuild @runsecure/hkdfguard-keywrapping-native-v1` |
 | `StatusError` `-17` | No KEK is provisioned for this service name | Step 2, with the same service name |
 | `StatusError` `-18` (Windows) | The KEK exists, but this account may not use it | Add the account to `HkdfGuardUsers`, then sign out and in |

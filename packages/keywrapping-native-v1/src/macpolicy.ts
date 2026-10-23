@@ -96,8 +96,30 @@ export function macChoosePath(probe: (path: string) => number, homeDirectory: st
   throw new NotInstalledError(`The HkdfGuard native KMS library is not installed. Install it at '${MAC_SYSTEM_PATH}' (system-wide) or '${user}' (this user); it is never loaded from anywhere else.`);
 }
 
-/** Refuses, before anything is loaded, if a DYLD_LIBRARY_PATH directory holds a file of the library's name. */
+/**
+ * The dyld variables whose presence alone refuses the load: each makes dyld inject code into this
+ * process, or load another file in place of a library it names - including the frameworks the
+ * HkdfGuard native library calls with every DEK. None is set on a production host.
+ */
+export const MAC_REFUSED_DYLD_VARIABLES: readonly string[] = [
+  'DYLD_INSERT_LIBRARIES', 'DYLD_FRAMEWORK_PATH', 'DYLD_VERSIONED_LIBRARY_PATH', 'DYLD_VERSIONED_FRAMEWORK_PATH', 'DYLD_IMAGE_SUFFIX',
+];
+
+/**
+ * Refuses, before anything is loaded, if one of {@link MAC_REFUSED_DYLD_VARIABLES} is set, or a
+ * DYLD_LIBRARY_PATH directory holds a file of the library's name.
+ *
+ * A guard against a misconfigured environment, not against whoever controls it: dyld acts on these
+ * variables when the process starts, so code they injected has already run - and can hide - by the
+ * time this looks. Running the host with the Hardened Runtime, which makes dyld ignore them, is what
+ * keeps that code out.
+ */
 export function macRefuseShadowing(getenv: (name: string) => string | undefined, exists: (path: string) => boolean): void {
+  for (const name of MAC_REFUSED_DYLD_VARIABLES) {
+    if ((getenv(name) ?? '') !== '') {
+      throw new UntrustedError(`${name} is set, so dyld may inject code into this process or substitute a library the HkdfGuard native library uses; refusing to load it. Unset ${name}.`);
+    }
+  }
   for (const directory of (getenv('DYLD_LIBRARY_PATH') ?? '').split(':')) {
     if (directory === '') continue;
     const candidate = `${directory.replace(/\/+$/, '')}/${MAC_FILE_NAME}`;
