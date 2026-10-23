@@ -9,10 +9,10 @@ import {
   type DataEncryptionKey as DataEncryptionKeyContract, type DataProtector, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
 import { capturingLogger, FakeKeyWrapper, RecordingFactory, TestProvider } from '@runsecure/hkdfguard-test-support';
-import { buildKeyRing, InvalidKeyFileError, type KeyRingConfig } from './build.js';
+import { buildKeyRing, InvalidKeyFileError, MAX_EPHEMERAL_KEY_ROTATION_HOURS, type KeyRingConfig } from './build.js';
 import { DefaultFormatProvider, InvalidFormatError } from './format.js';
 import { DataEncryptionKey } from './key.js';
-import { DuplicateVersionError, KeyRing } from './keyring.js';
+import { DuplicateVersionError, KeyRing, Rotation } from './keyring.js';
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
 const INT32_MAX = 2 ** 31 - 1, INT32_MIN = -(2 ** 31);
@@ -274,12 +274,30 @@ describe('protectors', () => {
 describe('buildKeyRing', () => {
   const base = (factory: RecordingFactory): KeyRingConfig => ({ keyWrapper: new FakeKeyWrapper(), cryptoProviderFactory: factory, keyRefreshInterval: 60 });
 
+  it('accepts the longest rotation a Node.js timer can honour, and nothing longer', async () => {
+    // A timer delay over 2^31-1 ms is clamped to 1 ms by Node, so every accepted interval must fit.
+    assert.equal(MAX_EPHEMERAL_KEY_ROTATION_HOURS, 596);
+    const ring = await buildKeyRing({ ...base(new RecordingFactory()), ephemeralKeys: [1], ephemeralKeyRotationHours: MAX_EPHEMERAL_KEY_ROTATION_HOURS });
+    try {
+      assert.ok(ring.ephemeralKeyRotationIntervalMs! <= 2 ** 31 - 1);
+    } finally {
+      await ring.close();
+    }
+  });
+
+  it('a rotation timer refuses an interval Node.js would clamp to 1 ms', () => {
+    const ring = new KeyRing();
+    for (const intervalMs of [0, 2 ** 31, 1193 * 60 * 60 * 1000]) {
+      assert.throws(() => new Rotation(ring, intervalMs, 60_000, [], async () => { throw new Error('unused'); }, undefined, true), InvalidArgumentError);
+    }
+  });
+
   it('refuses an incomplete or out-of-range config before creating anything', async () => {
     const factory = new RecordingFactory();
     const valid = { ...base(factory), ephemeralKeys: [1] };
     const cases: Partial<KeyRingConfig>[] = [
       { keyWrapper: undefined }, { cryptoProviderFactory: undefined }, { ephemeralKeys: [] }, { keyRefreshInterval: 0 },
-      { keyRefreshInterval: 301 }, { ephemeralKeyRotationHours: 0 }, { ephemeralKeyRotationHours: 1194 },
+      { keyRefreshInterval: 301 }, { ephemeralKeyRotationHours: 0 }, { ephemeralKeyRotationHours: 597 }, { ephemeralKeyRotationHours: 1193 },
       { ephemeralKeyRetentionMinutes: 0.5 }, { disableEphemeralKeyRotation: true, ephemeralKeyRotationHours: 6 }, { keyFiles: { 2: ' ' } },
       { keyFileMaxAgeDays: 0 }, { keyFileMaxAgeDays: 3651 }, { keyFileMaxAgeDays: 1.5 },
     ];

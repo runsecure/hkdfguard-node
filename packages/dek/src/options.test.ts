@@ -22,7 +22,7 @@ function includesAll(list: string[], ...parts: string[]): boolean {
 
 describe('validateKeyRingOptions', () => {
   it('passes valid options, at every limit', () => {
-    assert.deepEqual(failures({ KeyFiles: [{ Version: 2, Path: '/etc/app/key.v2' }], EphemeralKeys: [3], MaxRefreshFailures: 10, EphemeralKeyRotationHours: 1193, EphemeralKeyRetentionHours: 24 * 365 }), []);
+    assert.deepEqual(failures({ KeyFiles: [{ Version: 2, Path: '/etc/app/key.v2' }], EphemeralKeys: [3], MaxRefreshFailures: 10, EphemeralKeyRotationHours: 596, EphemeralKeyRetentionHours: 24 * 365 }), []);
     for (const interval of [1, 300]) assert.deepEqual(failures({ KeyRefreshInterval: interval }), []);
     assert.deepEqual(failures({ KeyRefreshInterval: undefined }), []);
     assert.deepEqual(failures({ DisableEphemeralKeyRotation: true }), []);
@@ -40,7 +40,8 @@ describe('validateKeyRingOptions', () => {
     const cases: [Partial<KeyRingOptions>, string][] = [
       [{ KeyRefreshInterval: 0 }, 'KeyRefreshInterval must be between 1 and 300'], [{ KeyRefreshInterval: 301 }, 'KeyRefreshInterval must be between 1 and 300'],
       [{ MaxRefreshFailures: 0 }, 'MaxRefreshFailures must be at least 1'],
-      [{ EphemeralKeyRotationHours: 0 }, 'EphemeralKeyRotationHours must be between 1 and 1193'], [{ EphemeralKeyRotationHours: 1194 }, 'EphemeralKeyRotationHours must be between 1 and 1193'],
+      [{ EphemeralKeyRotationHours: 0 }, 'EphemeralKeyRotationHours must be between 1 and 596'], [{ EphemeralKeyRotationHours: 597 }, 'EphemeralKeyRotationHours must be between 1 and 596'],
+      [{ EphemeralKeyRotationHours: 1193 }, 'EphemeralKeyRotationHours must be between 1 and 596'],
       [{ EphemeralKeyRetentionHours: -1 }, 'EphemeralKeyRetentionHours must be at least 1'],
       [{ KeyFileMaxAgeDays: 0 }, 'KeyFileMaxAgeDays must be between 1 and 3650'], [{ KeyFileMaxAgeDays: 3651 }, 'KeyFileMaxAgeDays must be between 1 and 3650'],
     ];

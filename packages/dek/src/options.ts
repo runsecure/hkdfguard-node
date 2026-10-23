@@ -32,7 +32,7 @@ export interface KeyRingOptions {
   MaxRefreshFailures?: number;
   /** Keeps the last good key in use however many refreshes fail. */
   FailOpenOnRefreshFailure?: boolean;
-  /** Hours (1-1193) between ephemeral key rotations. Can't be combined with DisableEphemeralKeyRotation. */
+  /** Hours (1-596) between ephemeral key rotations. Can't be combined with DisableEphemeralKeyRotation. */
   EphemeralKeyRotationHours?: number;
   /** Keeps the ephemeral key built at startup current. Required when a KeyFiles version is above every EphemeralKeys version. */
   DisableEphemeralKeyRotation?: boolean;

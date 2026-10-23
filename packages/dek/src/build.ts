@@ -5,7 +5,7 @@ import {
 } from '@runsecure/hkdfguard-abstractions';
 import { HkdfGuardLog, type Logger } from '@runsecure/hkdfguard-diagnostics';
 import { DataEncryptionKey, type EncryptionDeadline } from './key.js';
-import { KeyRing, Rotation } from './keyring.js';
+import { KeyRing, MAX_TIMER_DELAY_MS, Rotation } from './keyring.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -14,8 +14,13 @@ const DAY_MS = 24 * HOUR_MS;
 export const DEFAULT_EPHEMERAL_KEY_ROTATION_HOURS = 24;
 /** The shortest rotation accepted - rotating faster loads the KMS for no security. */
 export const MIN_EPHEMERAL_KEY_ROTATION_HOURS = 1;
-/** The longest rotation accepted - the .NET port's timer limit, kept so one configuration suits every port. */
-export const MAX_EPHEMERAL_KEY_ROTATION_HOURS = 1193;
+/**
+ * The longest rotation accepted: 596 hours, the most whole hours a Node.js timer can wait. A delay
+ * over 2^31-1 ms (about 596.5 hours) is not an error in Node - it is silently clamped to 1 ms, which
+ * would rotate keys back to back without end. The .NET port accepts up to 1193; a shared
+ * configuration above 596 is refused here rather than misbehaving.
+ */
+export const MAX_EPHEMERAL_KEY_ROTATION_HOURS = Math.floor(MAX_TIMER_DELAY_MS / HOUR_MS);
 /** How long a superseded ephemeral key stays registered, unless configured otherwise. */
 export const DEFAULT_EPHEMERAL_KEY_RETENTION_HOURS = 24;
 /** The shortest retention accepted, in minutes. */
@@ -77,7 +82,7 @@ export interface KeyRingConfig {
   formatProvider?: EncryptedFormatProvider;
   /** This ring's KEK identity, for callers to read back; validated when set. */
   serviceName?: string;
-  /** Hours between ephemeral-key rotations (1-1193); 24 when omitted. A ring of key files never rotates. */
+  /** Hours between ephemeral-key rotations (1-596); 24 when omitted. A ring of key files never rotates. */
   ephemeralKeyRotationHours?: number;
   /**
    * Keeps the ephemeral key built at startup current until the process restarts. Required when a key
