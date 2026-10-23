@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { chmodSync, mkdtempSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it, mock } from 'node:test';
@@ -9,7 +9,7 @@ import {
   type DataEncryptionKey as DataEncryptionKeyContract, type DataProtector, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
 import { capturingLogger, FakeKeyWrapper, RecordingFactory, TestProvider } from '@runsecure/hkdfguard-test-support';
-import { buildKeyRing, readKeyFile, verifyKeyFileLocation, type KeyFileSystem, type KeyRingConfig } from './build.js';
+import { buildKeyRing, InvalidKeyFileError, type KeyRingConfig } from './build.js';
 import { DefaultFormatProvider, InvalidFormatError } from './format.js';
 import { DataEncryptionKey } from './key.js';
 import { DuplicateVersionError, KeyRing } from './keyring.js';
@@ -309,6 +309,14 @@ describe('buildKeyRing', () => {
     }
   });
 
+  it('refuses a wrapped key that is empty or over the limit, whatever the key wrapper', async () => {
+    for (const length of [0, MAX_WRAPPED_KEY_BYTES + 1]) {
+      const factory = new RecordingFactory();
+      await assert.rejects(buildKeyRing({ ...base(factory), keyFiles: { 1: keyFile(new Uint8Array(length)) } }), InvalidKeyFileError);
+      assert.equal(factory.wrapped.length, 0);
+    }
+  });
+
   it('reads every key file through the key wrapper when it has readKeyFile', async () => {
     const factory = new RecordingFactory();
     const paths = { 1: keyFile('on disk one'), 2: keyFile('on disk two') };
@@ -336,18 +344,6 @@ describe('buildKeyRing', () => {
     const wrapper = Object.assign(new FakeKeyWrapper(), { readKeyFile: async () => { throw refusal; } });
     await assert.rejects(buildKeyRing({ ...base(factory), keyWrapper: wrapper, keyFiles: { 1: keyFile('wrapped') }, ephemeralKeys: [2] }), (e: unknown) => e === refusal);
     assert.equal(factory.created.length, 0);
-  });
-
-  it('reads key files with readKeyFile when the key wrapper has no readKeyFile', async () => {
-    const factory = new RecordingFactory();
-    const wrapper = new FakeKeyWrapper();
-    assert.equal((wrapper as KeyWrapper).readKeyFile, undefined);
-    const ring = await buildKeyRing({ ...base(factory), keyWrapper: wrapper, keyFiles: { 1: keyFile('read by the helper') } });
-    try {
-      assert.deepEqual(factory.wrapped.map((w) => new TextDecoder().decode(w)), ['read by the helper']);
-    } finally {
-      await ring.close();
-    }
   });
 
   it('limits each key file to its age from the time it was last written, 365 days by default', async () => {
@@ -433,30 +429,30 @@ describe('buildKeyRing', () => {
     }
   });
 
-  it('follows a symbolic link to a key file, as a Kubernetes secret mount uses', { skip: process.platform === 'win32' }, async () => {
-    const target = keyFile('wrapped');
-    const link = join(mkdtempSync(join(tmpdir(), 'hkdfguard-dek-')), 'key.link');
-    symlinkSync(target, link);
-    assert.equal(new TextDecoder().decode(await readKeyFile(link)), 'wrapped');
-  });
+  it('reads every key file through the key wrapper, and fails with what it refuses', async () => {
+    const refusal = Object.assign(new Error('untrusted key file'), { code: 'EACCES' });
+    const paths: string[] = [];
+    const wrapper = new FakeKeyWrapper();
+    wrapper.readKeyFile = async (path: string) => {
+      paths.push(path);
+      if (path.endsWith('refused')) throw refusal;
+      return utf8('wrapped');
+    };
+    const factory = new RecordingFactory();
+    const accepted = keyFile('ignored');
+    const ring = await buildKeyRing({ ...base(factory), keyWrapper: wrapper, keyFiles: { 1: accepted } });
+    await ring.close();
+    assert.deepEqual(paths, [accepted]);
 
-  it('refuses a key file under a folder its group or others can write, unless the folder is sticky', { skip: process.platform === 'win32' }, async () => {
-    const invalid = (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE' && e.message.includes('could replace');
-    for (const mode of [0o770, 0o707, 0o777]) {
-      const path = keyFile('wrapped');
-      chmodSync(dirname(path), mode);
-      await assert.rejects(readKeyFile(path), invalid, mode.toString(8));
-    }
-    const path = keyFile('wrapped');
-    chmodSync(dirname(path), 0o1777);
-    assert.equal((await readKeyFile(path)).length, 7);
+    const refused = join(dirname(accepted), 'refused');
+    writeFileSync(refused, 'wrapped');
+    await assert.rejects(buildKeyRing({ ...base(new RecordingFactory()), keyWrapper: wrapper, keyFiles: { 1: refused } }), refusal);
   });
 
   it('only reads a key file: its contents, mode and times are unchanged', { skip: process.platform === 'win32' }, async () => {
     const path = keyFile('wrapped', 100);
     chmodSync(path, 0o400);
     const before = statSync(path);
-    await readKeyFile(path);
     const ring = await buildKeyRing({ ...base(new RecordingFactory()), keyFiles: { 1: path } });
     await ring.close();
     const after = statSync(path);
@@ -464,34 +460,6 @@ describe('buildKeyRing', () => {
     assert.equal(after.mode, before.mode);
     assert.equal(after.mtimeMs, before.mtimeMs);
     assert.equal(after.uid, before.uid);
-  });
-
-  it("checks the owner of the key file, every folder above it, and any link to it", { skip: process.platform === 'win32' }, async () => {
-    // A simulated filesystem: tests can't create files owned by another user.
-    const me = 501, other = 502;
-    const tree = (entries: Record<string, { uid?: number; mode?: number; type?: 'dir' | 'file' | 'link'; to?: string }>): KeyFileSystem => ({
-      lstat: async (p) => {
-        const e = entries[p];
-        if (e === undefined) throw Object.assign(new Error(`ENOENT ${p}`), { code: 'ENOENT' });
-        const type = e.type ?? 'dir';
-        return { uid: e.uid ?? 0, mode: e.mode ?? 0o755, isDirectory: () => type === 'dir', isFile: () => type === 'file', isSymbolicLink: () => type === 'link' };
-      },
-      realpath: async (p) => entries[p]?.to ?? p,
-    });
-    const base = { '/': {}, '/etc': {}, '/etc/app': {}, '/etc/app/key.v1': { type: 'file' as const, mode: 0o600 } };
-    const refused = (fragment: string) => (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE' && e.message.includes(fragment);
-
-    assert.equal(await verifyKeyFileLocation('/etc/app/key.v1', me, tree(base)), '/etc/app/key.v1');
-    assert.equal(await verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc/app': { uid: me, mode: 0o700 }, '/etc/app/key.v1': { type: 'file', uid: me } })), '/etc/app/key.v1');
-    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc/app/key.v1': { type: 'file', uid: other } })), refused('owned by uid 502'));
-    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc/app': { uid: other } })), refused("under '/etc/app', which is owned by uid 502"));
-    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/etc': { uid: other } })), refused("under '/etc', which is owned by uid 502"));
-    await assert.rejects(verifyKeyFileLocation('/etc/app/key.v1', me, tree({ ...base, '/': { mode: 0o775 } })), refused("under '/'"));
-
-    const linked = { ...base, '/srv': {}, '/srv/key': { type: 'link' as const, to: '/etc/app/key.v1' } };
-    assert.equal(await verifyKeyFileLocation('/srv/key', me, tree(linked)), '/etc/app/key.v1');
-    await assert.rejects(verifyKeyFileLocation('/srv/key', me, tree({ ...linked, '/srv/key': { type: 'link', uid: other, to: '/etc/app/key.v1' } })), refused('symbolic link that is owned by uid 502'));
-    await assert.rejects(verifyKeyFileLocation('/srv/key', me, tree({ ...linked, '/srv': { mode: 0o777 } })), refused("under '/srv'"));
   });
 
   it('uses the configured format provider', async () => {
@@ -521,27 +489,6 @@ describe('buildKeyRing', () => {
     assert.equal(factory.created.length, 0);
   });
 
-  it('reads key files up to the limit whole, refusing empty or larger ones', async () => {
-    for (const length of [1, MAX_WRAPPED_KEY_BYTES]) assert.equal((await readKeyFile(keyFile(new Uint8Array(length).fill(7)))).length, length);
-    for (const length of [0, MAX_WRAPPED_KEY_BYTES + 1, 1 << 20]) {
-      await assert.rejects(readKeyFile(keyFile(new Uint8Array(length))), (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE');
-    }
-  });
-
-  it('refuses a key file that is not a regular file, or that its group or others can write', { skip: process.platform === 'win32' }, async () => {
-    const invalid = (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_KEY_FILE';
-    await assert.rejects(readKeyFile(mkdtempSync(join(tmpdir(), 'hkdfguard-dek-'))), invalid);
-    for (const mode of [0o620, 0o602, 0o666]) {
-      const path = keyFile('wrapped');
-      chmodSync(path, mode);
-      await assert.rejects(readKeyFile(path), invalid);
-    }
-    for (const mode of [0o600, 0o640, 0o400, 0o644]) {
-      const path = keyFile('wrapped');
-      chmodSync(path, mode);
-      assert.equal((await readKeyFile(path)).length, 7);
-    }
-  });
 });
 
 describe('ephemeral key rotation', () => {

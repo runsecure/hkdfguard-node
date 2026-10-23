@@ -71,16 +71,17 @@ call throws `StatusError`, whose message says what its status means - adding, on
 what to do about it there.
 
 **Key files are read through the native library.** `NativeKeyWrapperV1.readKeyFile`, which
-`buildKeyRing` uses for every key file whenever the key wrapper has one, reads the file with the
+`buildKeyRing` uses for every key file, reads the file with the
 library's `hkdfguard_open_file`. It returns the bytes still wrapped and never touches a KEK, but
 first refuses a file that is missing, unreadable, the wrong size, not a wrapped DEK, or that holds
 what looks like an unwrapped key (32 raw bytes, or their hex or base64: treat that as a key
 exposure) - and one whose path isn't trusted: a link, junction or other reparse point, an 8.3 short
 name, a network, mapped or SUBST drive, or a file or folder another account could write or replace.
 A refusal throws `KeyFileRefusedError`, with `status` and an fs-style `code`: `ENOENT`, `EACCES`
-(unreadable or untrusted), `ERR_HKDFGUARD_INVALID_KEY_FILE` (size or contents) or `EIO`. A key
-wrapper without `readKeyFile` has its key files read by `readKeyFile` in
-`@runsecure/hkdfguard-dek`, with Node's own file I/O.
+(unreadable or untrusted), `ERR_HKDFGUARD_INVALID_KEY_FILE` (size or contents) or `EIO`. Every key
+wrapper must implement `readKeyFile`: there is no fallback that reads key files with Node's own file
+I/O, because whoever can replace a key file chooses the key new data is encrypted under, and only
+the wrapper can say which files it trusts.
 
 ### Process hardening
 

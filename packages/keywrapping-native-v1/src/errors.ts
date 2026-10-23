@@ -49,8 +49,8 @@ export class StatusError extends HkdfGuardError {
 }
 
 /**
- * The `code` a key-file refusal carries, chosen as Node's fs errors and the managed key-file read
- * (readKeyFile in @runsecure/hkdfguard-dek) would report the same problem: 'ENOENT' for a missing
+ * The `code` a key-file refusal carries, chosen as Node's fs errors would report the same problem,
+ * and as KeyWrapper.readKeyFile documents: 'ENOENT' for a missing
  * file or folder, 'EACCES' for a file this account may not read or whose path is not trusted,
  * ERR_HKDFGUARD_INVALID_KEY_FILE for a file of the wrong size, one holding what looks like an
  * unwrapped key, or one that is not a wrapped DEK, ERR_HKDFGUARD_INVALID_ARGUMENT for a path the
