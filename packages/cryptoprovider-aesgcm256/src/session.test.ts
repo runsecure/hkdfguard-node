@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { AuthenticationFailedError, ClosedError, EncryptionLimitReachedError, InvalidArgumentError, isZero } from '@runsecure/hkdfguard-abstractions';
 import { HkdfGuardTelemetry } from '@runsecure/hkdfguard-diagnostics';
 import { useSpanRecorder } from '@runsecure/hkdfguard-test-support';
-import { AesGcmSession, budgetFor, EncryptionBudget, OVERHEAD } from './session.js';
+import { AesGcmSession, budgetFor, EncryptionBudget, OVERHEAD, sessionKeyForTests } from './session.js';
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
 const newSession = (key = new Uint8Array(randomBytes(32))) => new AesGcmSession(key, new EncryptionBudget());
@@ -85,7 +85,7 @@ describe('AesGcmSession', () => {
     const ciphertext = encrypt(session, 'x');
     session.close();
     session.close();
-    assert.ok(isZero(session.keyForTesting));
+    assert.ok(isZero(sessionKeyForTests(session)));
     const plaintext = utf8('still here');
     assert.throws(() => session.encrypt(plaintext, new Uint8Array(64)), ClosedError);
     assert.ok(isZero(plaintext), 'Encrypt zeroes its plaintext even when closed');

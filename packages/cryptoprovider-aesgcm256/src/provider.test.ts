@@ -7,7 +7,7 @@ import {
 } from '@runsecure/hkdfguard-abstractions';
 import { EventNames, SpanNames } from '@runsecure/hkdfguard-diagnostics';
 import { capturingLogger, FakeKeyWrapper, useSpanRecorder } from '@runsecure/hkdfguard-test-support';
-import { AesGcmCryptoProvider, AesGcmCryptoProviderFactory, type AesGcmProviderOptions } from './provider.js';
+import { AesGcmCryptoProvider, AesGcmCryptoProviderFactory, createProviderForTests, type AesGcmProviderOptions } from './provider.js';
 import { EncryptionBudget, OVERHEAD } from './session.js';
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
@@ -16,7 +16,7 @@ const open: AesGcmCryptoProvider[] = [];
 after(async () => { await Promise.all(open.map((p) => p.close())); });
 
 async function manual(wrapper: FakeKeyWrapper, options: Partial<AesGcmProviderOptions> = {}, budget?: EncryptionBudget): Promise<AesGcmCryptoProvider> {
-  const provider = await AesGcmCryptoProvider.create(wrapper, utf8('wrapped'), { expirySeconds: 60, ...options }, { budget, manualRefresh: true });
+  const provider = await createProviderForTests(wrapper, utf8('wrapped'), { expirySeconds: 60, ...options }, { budget, manualRefresh: true });
   open.push(provider);
   return provider;
 }
@@ -140,7 +140,7 @@ describe('AesGcmCryptoProvider', () => {
         return 0;
       },
     };
-    const provider = await AesGcmCryptoProvider.create(wrapper, utf8('wrapped'), { expirySeconds: 60, logger }, { manualRefresh: true });
+    const provider = await createProviderForTests(wrapper, utf8('wrapped'), { expirySeconds: 60, logger }, { manualRefresh: true });
     const refresh = provider.refresh();
     await refreshStarted;
     await provider.close();
@@ -309,7 +309,7 @@ describe('refresh failures the key wrapper or the logger cause', () => {
   it('counts each timed-out refresh while the key wrapper hangs, without piling up calls', async () => {
     const { logger, withEventId } = capturingLogger();
     const wrapper = new FakeKeyWrapper(new Uint8Array(randomBytes(32)));
-    const provider = await AesGcmCryptoProvider.create(wrapper, utf8('wrapped'),
+    const provider = await createProviderForTests(wrapper, utf8('wrapped'),
       { expirySeconds: 60, logger, refreshFailurePolicy: RefreshFailurePolicy.failClosedAfter(2) },
       { manualRefresh: true, refreshTimeoutMs: 50 });
     open.push(provider);
@@ -336,7 +336,7 @@ describe('refresh failures the key wrapper or the logger cause', () => {
 
   it('close does not wait for a key wrapper that hangs', async () => {
     const wrapper = new FakeKeyWrapper();
-    const provider = await AesGcmCryptoProvider.create(wrapper, utf8('wrapped'), { expirySeconds: 60 }, { manualRefresh: true });
+    const provider = await createProviderForTests(wrapper, utf8('wrapped'), { expirySeconds: 60 }, { manualRefresh: true });
     let release!: () => void;
     wrapper.hangUntil = new Promise<void>((resolve) => { release = resolve; });
     void provider.refresh(); // stuck in the key wrapper, for up to a minute

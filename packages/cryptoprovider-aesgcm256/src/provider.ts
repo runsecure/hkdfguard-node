@@ -20,7 +20,11 @@ export interface AesGcmProviderOptions extends CryptoProviderOptions {
   logger?: Logger;
 }
 
-/** @internal Test hooks: a budget of the test's own, and refreshes the test drives itself. */
+/**
+ * Test hooks: a budget of the test's own, refreshes the test drives itself, and a shorter refresh
+ * deadline. Reached only through {@link createProviderForTests}, which the package index does not
+ * export, so no consumer can turn the background refresh off.
+ */
 export interface ProviderInternals {
   budget?: EncryptionBudget;
   manualRefresh?: boolean;
@@ -61,6 +65,20 @@ async function reveal(wrapper: KeyWrapper, wrapped: Uint8Array, budget: Encrypti
     wipe(key);
     throw error;
   }
+}
+
+// Set by AesGcmCryptoProvider's static block: create with the test hooks, which only
+// createProviderForTests reaches.
+let createWithInternals: (wrapper: KeyWrapper, wrapped: Uint8Array, options: AesGcmProviderOptions,
+  internals: ProviderInternals) => Promise<AesGcmCryptoProvider>;
+
+/**
+ * Tests only: {@link AesGcmCryptoProvider.create} with test hooks. Exported from this module for the
+ * package's own tests, never from the package index - the exports map keeps it out of reach.
+ */
+export function createProviderForTests(wrapper: KeyWrapper, wrapped: Uint8Array, options: AesGcmProviderOptions,
+  internals: ProviderInternals): Promise<AesGcmCryptoProvider> {
+  return createWithInternals(wrapper, wrapped, options, internals);
 }
 
 /**
@@ -106,7 +124,15 @@ export class AesGcmCryptoProvider implements CryptoProvider {
    * refresh. The provider owns `wrapped` and zeroes it on close. Bad arguments, or an aborted
    * signal, are reported before the key wrapper is called.
    */
-  static async create(wrapper: KeyWrapper, wrapped: Uint8Array, options: AesGcmProviderOptions, internals: ProviderInternals = {}): Promise<AesGcmCryptoProvider> {
+  static create(wrapper: KeyWrapper, wrapped: Uint8Array, options: AesGcmProviderOptions): Promise<AesGcmCryptoProvider> {
+    return AesGcmCryptoProvider.#create(wrapper, wrapped, options, {});
+  }
+
+  static {
+    createWithInternals = (wrapper, wrapped, options, internals) => AesGcmCryptoProvider.#create(wrapper, wrapped, options, internals);
+  }
+
+  static async #create(wrapper: KeyWrapper, wrapped: Uint8Array, options: AesGcmProviderOptions, internals: ProviderInternals): Promise<AesGcmCryptoProvider> {
     validate(options.expirySeconds);
     // Don't rely on the key wrapper to honor a signal that's already aborted.
     options.signal?.throwIfAborted();

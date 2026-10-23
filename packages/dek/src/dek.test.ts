@@ -9,7 +9,7 @@ import {
   type DataEncryptionKey as DataEncryptionKeyContract, type DataProtector, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
 import { capturingLogger, FakeKeyWrapper, RecordingFactory, TestProvider } from '@runsecure/hkdfguard-test-support';
-import { buildKeyRing, InvalidKeyFileError, MAX_EPHEMERAL_KEY_ROTATION_HOURS, type KeyRingConfig } from './build.js';
+import { buildKeyRing, buildKeyRingForTests, InvalidKeyFileError, MAX_EPHEMERAL_KEY_ROTATION_HOURS, type KeyRingConfig } from './build.js';
 import { DefaultFormatProvider, InvalidFormatError } from './format.js';
 import { DataEncryptionKey } from './key.js';
 import { DuplicateVersionError, KeyRing, Rotation } from './keyring.js';
@@ -513,7 +513,7 @@ describe('ephemeral key rotation', () => {
   async function rotating(change: Partial<KeyRingConfig> = {}) {
     const factory = new RecordingFactory();
     const log = capturingLogger();
-    const ring = await buildKeyRing({ keyWrapper: new FakeKeyWrapper(), cryptoProviderFactory: factory, keyRefreshInterval: 60, ephemeralKeys: [1], logger: log.logger, ...change }, { manualRotation: true });
+    const ring = await buildKeyRingForTests({ keyWrapper: new FakeKeyWrapper(), cryptoProviderFactory: factory, keyRefreshInterval: 60, ephemeralKeys: [1], logger: log.logger, ...change }, { manualRotation: true });
     return { ring, factory, log, rotation: ring.rotation! };
   }
 

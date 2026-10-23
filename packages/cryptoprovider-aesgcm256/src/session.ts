@@ -82,6 +82,14 @@ export function budgetFor(key: Uint8Array): EncryptionBudget {
   return budget;
 }
 
+// Set by AesGcmSession's static block.
+let keyOf: (session: AesGcmSession) => Uint8Array;
+
+/** Tests only: a session's key buffer, to check it is zeroed. Never exported from the package index. */
+export function sessionKeyForTests(session: AesGcmSession): Uint8Array {
+  return keyOf(session);
+}
+
 /**
  * An AES-256-GCM cipher bound to one 32-byte key, held until it is closed - by a provider until its
  * next refresh, or by a pipeline protector for its whole life. Ciphertext is
@@ -113,9 +121,8 @@ export class AesGcmSession {
     return this.#closed;
   }
 
-  /** The key buffer, for tests to check it is zeroed. @internal */
-  get keyForTesting(): Uint8Array {
-    return this.#key;
+  static {
+    keyOf = (session) => session.#key;
   }
 
   /**

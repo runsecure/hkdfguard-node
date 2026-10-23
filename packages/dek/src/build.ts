@@ -104,7 +104,7 @@ export interface KeyRingConfig {
   signal?: AbortSignal;
 }
 
-/** @internal Test hooks. */
+/** Test hooks, reached only through {@link buildKeyRingForTests}. */
 export interface BuildInternals {
   manualRotation?: boolean;
 }
@@ -206,7 +206,20 @@ function keyFileDeadline(version: number, path: string, modifiedMs: number, maxA
  * created. If anything fails partway - an unreadable file, an unwrap failure, a version registered
  * twice, the signal aborted - every key created so far is closed and the error rethrown.
  */
-export async function buildKeyRing(config: KeyRingConfig, internals: BuildInternals = {}): Promise<KeyRing> {
+export function buildKeyRing(config: KeyRingConfig): Promise<KeyRing> {
+  return build(config, {});
+}
+
+/**
+ * Tests only: {@link buildKeyRing} with test hooks, such as rotation the test drives itself.
+ * Exported from this module for the package's own tests, never from the package index - the
+ * exports map keeps it out of reach.
+ */
+export function buildKeyRingForTests(config: KeyRingConfig, internals: BuildInternals): Promise<KeyRing> {
+  return build(config, internals);
+}
+
+async function build(config: KeyRingConfig, internals: BuildInternals): Promise<KeyRing> {
   validate(config);
   const { keyWrapper, cryptoProviderFactory: factory, signal } = config;
   const providerOptions = { expirySeconds: config.keyRefreshInterval, refreshFailurePolicy: config.refreshFailurePolicy ?? RefreshFailurePolicy.default, signal };
