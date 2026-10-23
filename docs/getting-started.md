@@ -329,6 +329,12 @@ The number you give `keyFiles` is the version that appears as `v1` in every valu
 rotate, add a `v2.key` as `keyFiles: { 1: v1Path, 2: v2Path }`. New values use the highest
 version, and older values still decrypt as long as their key file stays registered.
 
+> This step makes the key file the key your program encrypts with, so you can watch a value survive
+> a restart. In an application, key files hold what your deployment pipeline encrypted, and are
+> read at runtime to decrypt it. For values the application encrypts while it runs, add an
+> ephemeral key at a higher version (`ephemeralKeys: [2]`): its encryption budget is counted exactly, in the one
+> process that holds it. See the README's encryption budget section.
+
 Rotate at least yearly. AES-GCM is only safe for a limited number of encryptions under one key,
 and a key file outlives the process that counts them. So a key file stops encrypting 365 days
 after it was last written (`keyFileMaxAgeDays`, or `KeyFileMaxAgeDays` in `appsettings.json`, sets
