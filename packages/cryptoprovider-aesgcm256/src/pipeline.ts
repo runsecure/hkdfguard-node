@@ -8,6 +8,23 @@ import { AesGcmSession, EncryptionBudget, KEY_SIZE, OVERHEAD } from './session.j
 
 const encoder = new TextEncoder();
 
+// What pipelineForTests hands the next constructor call: a key and budget of the test's own.
+let pendingInternals: { key?: Uint8Array; budget?: EncryptionBudget } | undefined;
+
+/**
+ * Tests only: a pipeline protector over a given key and budget. Exported from this module for the
+ * package's own tests, never from the package index - the exports map keeps it out of reach.
+ */
+export function pipelineForTests(formatProvider: EncryptedFormatProvider, keyVersion: number,
+  internals: { key?: Uint8Array; budget?: EncryptionBudget }): AesGcmPipelineDataProtector {
+  pendingInternals = internals;
+  try {
+    return new AesGcmPipelineDataProtector(formatProvider, keyVersion);
+  } finally {
+    pendingInternals = undefined;
+  }
+}
+
 /**
  * The AES-256-GCM {@link PipelineDataProtector}: generates a random 32-byte key in memory and uses
  * it for its whole life - no key wrapper, no key ring, no refresh. Each value is bound to its secret
@@ -27,9 +44,10 @@ export class AesGcmPipelineDataProtector implements PipelineDataProtector {
   constructor(
     private readonly formatProvider: EncryptedFormatProvider,
     readonly keyVersion: number,
-    /** @internal Tests supply their own key and budget. */
-    internals: { key?: Uint8Array; budget?: EncryptionBudget } = {},
   ) {
+    // Set only by pipelineForTests, for the length of this synchronous constructor call.
+    const internals = pendingInternals ?? {};
+    pendingInternals = undefined;
     if (formatProvider === undefined || formatProvider === null) {
       throw new InvalidArgumentError('A format provider is required.');
     }

@@ -1,13 +1,13 @@
 import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
-import { after, describe, it } from 'node:test';
+import { after, afterEach, beforeEach, describe, it } from 'node:test';
 import {
   ClosedError, EncryptionLimitReachedError, InvalidArgumentError, isZero, KeyAccessSuspendedError, RefreshFailurePolicy,
   type CryptoProvider, type CryptoProviderFactory,
 } from '@runsecure/hkdfguard-abstractions';
 import { EventNames, SpanNames } from '@runsecure/hkdfguard-diagnostics';
 import { capturingLogger, FakeKeyWrapper, useSpanRecorder } from '@runsecure/hkdfguard-test-support';
-import { AesGcmCryptoProvider, AesGcmCryptoProviderFactory, type AesGcmProviderOptions } from './provider.js';
+import { AesGcmCryptoProvider, AesGcmCryptoProviderFactory, createProviderForTests, type AesGcmProviderOptions } from './provider.js';
 import { EncryptionBudget, OVERHEAD } from './session.js';
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
@@ -16,7 +16,7 @@ const open: AesGcmCryptoProvider[] = [];
 after(async () => { await Promise.all(open.map((p) => p.close())); });
 
 async function manual(wrapper: FakeKeyWrapper, options: Partial<AesGcmProviderOptions> = {}, budget?: EncryptionBudget): Promise<AesGcmCryptoProvider> {
-  const provider = await AesGcmCryptoProvider.create(wrapper, utf8('wrapped'), { expirySeconds: 60, ...options }, { budget, manualRefresh: true });
+  const provider = await createProviderForTests(wrapper, utf8('wrapped'), { expirySeconds: 60, ...options }, { budget, manualRefresh: true });
   open.push(provider);
   return provider;
 }
@@ -132,6 +132,7 @@ describe('AesGcmCryptoProvider', () => {
     const wrapper = {
       wrap: async () => 0,
       generateAndWrap: async () => 0,
+      readKeyFile: async () => new Uint8Array(0),
       unwrap: async (_w: Uint8Array, result: Uint8Array, signal?: AbortSignal) => {
         if (++calls === 1) { result.set(randomBytes(32)); return 32; }
         started();
@@ -139,7 +140,7 @@ describe('AesGcmCryptoProvider', () => {
         return 0;
       },
     };
-    const provider = await AesGcmCryptoProvider.create(wrapper, utf8('wrapped'), { expirySeconds: 60, logger }, { manualRefresh: true });
+    const provider = await createProviderForTests(wrapper, utf8('wrapped'), { expirySeconds: 60, logger }, { manualRefresh: true });
     const refresh = provider.refresh();
     await refreshStarted;
     await provider.close();
@@ -279,6 +280,72 @@ describe('refresh-failure policy', () => {
     await provider.close();
     assert.ok(!provider.keyAccessSuspended);
     assert.throws(() => encrypt(provider, 'x'), ClosedError);
+  });
+});
+
+describe('refresh failures the key wrapper or the logger cause', () => {
+  // The provider's own timers are unref'd, so a test waiting only on them must hold the event loop open.
+  let keepAlive: NodeJS.Timeout;
+  beforeEach(() => { keepAlive = setInterval(() => undefined, 1000); });
+  afterEach(() => { clearInterval(keepAlive); });
+
+  it('still suspends at the limit when the logger throws', async () => {
+    const throwing = { debug: boom, info: boom, warn: boom, error: boom };
+    function boom(): never { throw new Error('logging sink is down'); }
+    const wrapper = new FakeKeyWrapper(new Uint8Array(randomBytes(32)));
+    const provider = await manual(wrapper, { logger: throwing, refreshFailurePolicy: RefreshFailurePolicy.failClosedAfter(2) });
+
+    wrapper.unwrapError = kekDown;
+    await provider.refresh();
+    await provider.refresh();
+    assert.ok(provider.keyAccessSuspended);
+
+    // A throwing "resumed" log can't turn a successful refresh into a failure either.
+    wrapper.unwrapError = undefined;
+    await provider.refresh();
+    assert.ok(!provider.keyAccessSuspended);
+  });
+
+  it('counts each timed-out refresh while the key wrapper hangs, without piling up calls', async () => {
+    const { logger, withEventId } = capturingLogger();
+    const wrapper = new FakeKeyWrapper(new Uint8Array(randomBytes(32)));
+    const provider = await createProviderForTests(wrapper, utf8('wrapped'),
+      { expirySeconds: 60, logger, refreshFailurePolicy: RefreshFailurePolicy.failClosedAfter(2) },
+      { manualRefresh: true, refreshTimeoutMs: 50 });
+    open.push(provider);
+    const ciphertext = encrypt(provider, 'survives');
+    let release!: () => void;
+    wrapper.hangUntil = new Promise<void>((resolve) => { release = resolve; });
+    const callsBefore = wrapper.unwrapCalls;
+
+    await provider.refresh(); // hangs, times out: failure 1
+    assert.ok(!provider.keyAccessSuspended);
+    await provider.refresh(); // the abandoned reveal is still running: failure 2, no second call
+    assert.ok(provider.keyAccessSuspended);
+    assert.equal(wrapper.unwrapCalls, callsBefore + 1);
+    assert.equal(withEventId(3).length, 2);
+
+    // The key wrapper recovers: the abandoned call settles, its key discarded, and the next refresh resumes.
+    wrapper.hangUntil = undefined;
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+    await provider.refresh();
+    assert.ok(!provider.keyAccessSuspended);
+    assert.equal(decrypt(provider, ciphertext), 'survives');
+  });
+
+  it('close does not wait for a key wrapper that hangs', async () => {
+    const wrapper = new FakeKeyWrapper();
+    const provider = await createProviderForTests(wrapper, utf8('wrapped'), { expirySeconds: 60 }, { manualRefresh: true });
+    let release!: () => void;
+    wrapper.hangUntil = new Promise<void>((resolve) => { release = resolve; });
+    void provider.refresh(); // stuck in the key wrapper, for up to a minute
+
+    const started = Date.now();
+    await provider.close();
+    release();
+    assert.ok(Date.now() - started < 500, `close took ${Date.now() - started} ms`);
+    assert.throws(() => provider.encrypt(utf8('x'), new Uint8Array(64)), ClosedError);
   });
 });
 

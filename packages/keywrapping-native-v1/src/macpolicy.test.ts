@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { NotInstalledError, UnsupportedPlatformError, UntrustedError } from './errors.js';
 import {
-  MAC_CODE_REQUIREMENT, MAC_SYSTEM_DIRECTORY, MAC_SYSTEM_PATH, MAC_TEAM_ID, macChoosePath, macParentOf, macRefuseShadowing,
+  MAC_CODE_REQUIREMENT, MAC_REFUSED_DYLD_VARIABLES, MAC_SYSTEM_DIRECTORY, MAC_SYSTEM_PATH, MAC_TEAM_ID, macChoosePath, macParentOf, macRefuseShadowing,
   macRequireSupportedPlatform, macUserPath, macVerifyLoadedImage, macVerifyLocation, macVerifySignature, PROBE_EXPORT,
 } from './macpolicy.js';
 import { ENOENT, ENOTDIR, FileType, type FileStatus } from './unixpath.js';
@@ -187,15 +187,24 @@ describe('macOS code signature and dyld', () => {
     for (const status of [-67050, -67062]) untrusted(() => macVerifySignature('/x.dylib', () => status), 'MFW3T8R8J3', String(status));
   });
 
-  it('refuses a library of the same name on DYLD_LIBRARY_PATH, consulting only that variable', () => {
-    for (const searchPath of [undefined, '', '/opt/lib:/usr/local/lib']) macRefuseShadowing(() => searchPath, () => false);
+  it('refuses a library of the same name on DYLD_LIBRARY_PATH, and reads only the dyld variables it checks', () => {
+    const only = (searchPath: string | undefined) => (name: string) => (name === 'DYLD_LIBRARY_PATH' ? searchPath : undefined);
+    for (const searchPath of [undefined, '', '/opt/lib:/usr/local/lib']) macRefuseShadowing(only(searchPath), () => false);
     const decoy = '/tmp/decoy/libhkdfguard.dylib';
     for (const searchPath of ['/tmp/decoy', '/opt/lib:/tmp/decoy/:/usr/local/lib']) {
-      untrusted(() => macRefuseShadowing(() => searchPath, (p) => p === decoy), decoy, 'DYLD_LIBRARY_PATH');
+      untrusted(() => macRefuseShadowing(only(searchPath), (p) => p === decoy), decoy, 'DYLD_LIBRARY_PATH');
     }
     const asked: string[] = [];
     macRefuseShadowing((name) => { asked.push(name); return undefined; }, () => true);
-    assert.deepEqual(asked, ['DYLD_LIBRARY_PATH']);
+    assert.deepEqual(asked, [...MAC_REFUSED_DYLD_VARIABLES, 'DYLD_LIBRARY_PATH']);
+  });
+
+  it('refuses to load while a dyld variable that injects or substitutes code is set', () => {
+    for (const variable of ['DYLD_INSERT_LIBRARIES', 'DYLD_FRAMEWORK_PATH', 'DYLD_VERSIONED_LIBRARY_PATH', 'DYLD_VERSIONED_FRAMEWORK_PATH', 'DYLD_IMAGE_SUFFIX']) {
+      untrusted(() => macRefuseShadowing((name) => (name === variable ? '/tmp/inject.dylib' : undefined), () => false), variable);
+      // Set but empty is the same as unset.
+      macRefuseShadowing((name) => (name === variable ? '' : undefined), () => false);
+    }
   });
 
   it('accepts only the verified file as what dyld loaded', () => {

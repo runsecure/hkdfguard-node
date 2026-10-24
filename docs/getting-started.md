@@ -56,11 +56,14 @@ Check that it installed:
 Get-AuthenticodeSignature "$env:ProgramFiles\HkdfGuard\v1\HkdfGuard.dll" | Select-Object Status, SignerCertificate
 ```
 
-`Status` must be `Valid`.
+`Status` must be `Valid`. When it loads the library, the native key wrapper also checks whether the
+signing certificate has been revoked, fetching revocation data if the host can reach it. Only a
+definite revocation stops the load; an offline host still starts.
 
 **macOS:** install the native package system-wide, to `/Library/Application Support/HkdfGuard/v1`.
 (A per-user install at `~/.hkdfguard/v1` is also loaded, but only when there is no system-wide
-one.)
+one. Its home folder is your account's, from the account database; setting `$HOME` doesn't move
+it. Either install must be version 0.9.0 or later.)
 
 > **TODO (maintainer):** give the package's file name and where to download it.
 
@@ -329,6 +332,12 @@ The number you give `keyFiles` is the version that appears as `v1` in every valu
 rotate, add a `v2.key` as `keyFiles: { 1: v1Path, 2: v2Path }`. New values use the highest
 version, and older values still decrypt as long as their key file stays registered.
 
+> This step makes the key file the key your program encrypts with, so you can watch a value survive
+> a restart. In an application, key files hold what your deployment pipeline encrypted, and are
+> read at runtime to decrypt it. For values the application encrypts while it runs, add an
+> ephemeral key at a higher version (`ephemeralKeys: [2]`): its encryption budget is counted exactly, in the one
+> process that holds it. See the README's encryption budget section.
+
 Rotate at least yearly. AES-GCM is only safe for a limited number of encryptions under one key,
 and a key file outlives the process that counts them. So a key file stops encrypting 365 days
 after it was last written (`keyFileMaxAgeDays`, or `KeyFileMaxAgeDays` in `appsettings.json`, sets
@@ -353,7 +362,7 @@ its meaning. The codes are the same on every platform (`Status` in
 | You see | Cause | Fix |
 |---|---|---|
 | `NotInstalledError` (`ERR_HKDFGUARD_NATIVE_NOT_INSTALLED`) | The native package isn't installed at its fixed location | Step 1 |
-| `UntrustedError` (`ERR_HKDFGUARD_NATIVE_UNTRUSTED`) | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
+| `UntrustedError` (`ERR_HKDFGUARD_NATIVE_UNTRUSTED`) | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it, or `DYLD_INSERT_LIBRARIES` or another dyld variable that injects or substitutes code is set | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
 | `UnsupportedPlatformError` (`ERR_HKDFGUARD_NATIVE_UNSUPPORTED_PLATFORM`) | An Intel Mac or an x64 `node` under Rosetta, an unsupported OS, or the add-on was never compiled | Use an arm64 `node` on Apple silicon; install Python 3 and a C compiler, then `npm rebuild @runsecure/hkdfguard-keywrapping-native-v1` |
 | `StatusError` `-17` | No KEK is provisioned for this service name | Step 2, with the same service name |
 | `StatusError` `-18` (Windows) | The KEK exists, but this account may not use it | Add the account to `HkdfGuardUsers`, then sign out and in |
@@ -365,7 +374,6 @@ its meaning. The codes are the same on every platform (`Status` in
 | `KeyFileRefusedError` `-37` (`ERR_HKDFGUARD_INVALID_KEY_FILE`) | The file holds what looks like an **unwrapped** key | Treat the key as exposed: delete the file, rotate, and wrap a new key file |
 | `KeyFileRefusedError` `-35`, `-36` or `-38` (`ERR_HKDFGUARD_INVALID_KEY_FILE`) | The file is the wrong size, or isn't a wrapped key | Recreate it with `wrap` |
 | `InvalidServiceNameError` | The name breaks the rule in step 2 | Use letters, digits and dots only |
-| `InvalidKeyFileError` (`ERR_HKDFGUARD_INVALID_KEY_FILE`), from a key wrapper that doesn't read key files itself | The key file is empty, too large, or not a regular file. Or someone other than the application could replace it: the file is writable by its group or others, it or a folder above it is owned by a user other than root or the application's own, or a folder above it is writable by its group or others without the sticky bit | Fix the permissions (`0600` or `0640` on the file, owned by root or the application's account, in folders only those can write), or recreate it with `wrap` |
 | `KeyAccessSuspendedError` | The KEK stopped answering for three refreshes in a row | Restore access to the KEK; operations resume on the next successful refresh |
 | `EncryptionLimitReachedError` (`ERR_HKDFGUARD_ENCRYPTION_LIMIT_REACHED`) naming a key file | The current key file is older than `keyFileMaxAgeDays` (365 by default) | Wrap a new key file and register it at a higher version (step 6); old values keep decrypting |
 

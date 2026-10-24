@@ -8,6 +8,18 @@ export const DEK_LENGTH = 32;
 
 const INT32_MAX = 2 ** 31 - 1;
 
+// Set by NativeKeyWrapperV1's static block.
+let withLibrary: (serviceName: string, library: KmsLibrary) => NativeKeyWrapperV1;
+
+/**
+ * Tests only: a wrapper over a given library binding - the tests' fakes, never a verified load.
+ * Exported from this module for the package's own tests, never from the package index - the
+ * exports map keeps it out of reach.
+ */
+export function wrapperForTests(serviceName: string, library: KmsLibrary): NativeKeyWrapperV1 {
+  return withLibrary(serviceName, library);
+}
+
 /**
  * A {@link KeyWrapper} over the current OS's native HkdfGuard KMS library, under the KEK its service
  * name identifies - a TPM2, Secure Enclave or Platform Crypto Provider key held entirely outside
@@ -39,10 +51,11 @@ export class NativeKeyWrapperV1 implements KeyWrapper {
     return new NativeKeyWrapperV1(serviceName, hostLibrary());
   }
 
-  /** @internal A wrapper over a given library binding - the tests' fakes. */
-  static withLibrary(serviceName: string, library: KmsLibrary): NativeKeyWrapperV1 {
-    validateServiceName(serviceName);
-    return new NativeKeyWrapperV1(serviceName, library);
+  static {
+    withLibrary = (serviceName, library) => {
+      validateServiceName(serviceName);
+      return new NativeKeyWrapperV1(serviceName, library);
+    };
   }
 
   /** Wraps a DEK_LENGTH-byte key under this service's KEK; MAX_WRAPPED_KEY_BYTES is always room enough. */
@@ -157,7 +170,21 @@ const HARDENING_OPTIONS: ReadonlySet<string> = new Set(['requireProtectedSignatu
  * @throws StatusError if the hardening failed, or the process can't meet
  *   `requireProtectedSignature` - treat that as a reason not to start.
  */
-export function hardenProcess(options: ProcessHardeningOptions = {}, library?: KmsLibrary): void {
+export function hardenProcess(options: ProcessHardeningOptions = {}): void {
+  hardenProcessWith(options, hostLibrary);
+}
+
+/**
+ * Tests only: {@link hardenProcess} through a given library binding - the tests' fakes. Exported
+ * from this module for the package's own tests, never from the package index - the exports map
+ * keeps it out of reach.
+ */
+export function hardenProcessForTests(options: ProcessHardeningOptions | undefined, library: KmsLibrary): void {
+  hardenProcessWith(options === undefined ? {} : options, () => library);
+}
+
+// The library is fetched only after the options are checked, so a bad option never loads it.
+function hardenProcessWith(options: ProcessHardeningOptions, library: () => KmsLibrary): void {
   // Checked here so an unknown option never reaches native code, which would refuse it anyway.
   if (typeof options !== 'object' || options === null || Array.isArray(options)) {
     throw new InvalidArgumentError('Process hardening options must be an object.');
@@ -170,7 +197,7 @@ export function hardenProcess(options: ProcessHardeningOptions = {}, library?: K
   }
   const flags = options.requireProtectedSignature === true ? HARDEN_REQUIRE_PROTECTED_SIGNATURE : 0;
 
-  const kms = library ?? hostLibrary();
+  const kms = library();
   const status = kms.hardenProcess(flags);
   if (status !== 0) {
     throw new StatusError('process hardening', undefined, status, kms.describeStatus(status));

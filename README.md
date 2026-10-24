@@ -53,6 +53,28 @@ const secrets = new EncryptedConfigurationReader(ring, mapLookup(flattenJson(app
 const n = await secrets.decrypt('ConnectionStrings:Admin', buffer);
 ```
 
+## Encryption budget
+
+With random 96-bit nonces, AES-GCM is safe for about 2^32 encryptions under one key (NIST
+SP 800-38D). Each crypto provider counts the encryptions under its key, warns at 2^28, and
+refuses to encrypt past 2^31 (`MAX_ENCRYPTIONS_PER_KEY`). Decryption is never limited.
+
+That count is kept per process, by design. It is exact for the key an application should encrypt
+with at runtime: an ephemeral key, generated at startup and held only in that process's memory, so
+no other process or restart ever adds to its use. Key files are different. They carry what the
+deployment pipeline encrypted and are meant to be decrypted at runtime; every process that loads a
+key file, and every restart, starts a fresh count for it.
+
+**For encrypt operations, add an ephemeral key** at a version above every key file
+(`ephemeralKeys: [2]` beside `keyFiles: { 1: ... }`). New values are then encrypted under it, while the pipeline's values still decrypt
+under their key files. A value encrypted under an ephemeral key can't be decrypted once the process
+exits, which suits caches and other in-process data; never persist it.
+
+If an application does encrypt values that must outlive the process under a key file, its
+encryptions under that file are not counted together across instances and restarts. Bound them by
+deploying a new key file at a higher version regularly. `keyFileMaxAgeDays` (365 days by default) enforces this: a
+current key file stops encrypting at that age, and decryption under it never stops.
+
 ## The native add-on
 
 `@runsecure/hkdfguard-keywrapping-native-v1` calls the native KMS library through its own small C
@@ -62,6 +84,19 @@ loads and calls the library; every verification rule (path ownership, code signa
 macOS, the dynamic linker's environment, what was actually loaded) is TypeScript, and is tested on
 every platform. The Linux library is not content-pinned: verify a release with Sigstore/cosign
 (`gh attestation verify`) when you install it, and the loader enforces path integrity from there.
+On macOS the per-user location is found from the account database (the add-on's `getpwuid_r`),
+never `$HOME`, and the library must be at least version 0.9.0 - its `LC_ID_DYLIB` current version,
+covered by the signature - so an older signed release can't be planted in its place.
+
+Certificate revocation: on Windows, once the signature and its pins have passed, the loader asks
+WinVerifyTrust once more, now checking revocation across the signing chain and allowed to fetch
+revocation data over the network. It refuses the library only when a certificate is definitely
+revoked; if revocation can't be determined (offline, no data), it loads. A host whose network
+silently drops traffic, rather than refusing it, may stall once, on the first load, until that
+lookup times out. On macOS revocation isn't checked: the defences are the Developer ID and Team ID
+pins, the admin-only system install, and the minimum library version. A compromised signing
+identity is answered by a new release and a raised minimum version.
+
 KMS calls run on libuv's thread pool, so a TPM operation never blocks the event loop.
 
 The Windows library is `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll`, beside the `hkdfguard.exe`
@@ -71,16 +106,17 @@ call throws `StatusError`, whose message says what its status means - adding, on
 what to do about it there.
 
 **Key files are read through the native library.** `NativeKeyWrapperV1.readKeyFile`, which
-`buildKeyRing` uses for every key file whenever the key wrapper has one, reads the file with the
+`buildKeyRing` uses for every key file, reads the file with the
 library's `hkdfguard_open_file`. It returns the bytes still wrapped and never touches a KEK, but
 first refuses a file that is missing, unreadable, the wrong size, not a wrapped DEK, or that holds
 what looks like an unwrapped key (32 raw bytes, or their hex or base64: treat that as a key
 exposure) - and one whose path isn't trusted: a link, junction or other reparse point, an 8.3 short
 name, a network, mapped or SUBST drive, or a file or folder another account could write or replace.
 A refusal throws `KeyFileRefusedError`, with `status` and an fs-style `code`: `ENOENT`, `EACCES`
-(unreadable or untrusted), `ERR_HKDFGUARD_INVALID_KEY_FILE` (size or contents) or `EIO`. A key
-wrapper without `readKeyFile` has its key files read by `readKeyFile` in
-`@runsecure/hkdfguard-dek`, with Node's own file I/O.
+(unreadable or untrusted), `ERR_HKDFGUARD_INVALID_KEY_FILE` (size or contents) or `EIO`. Every key
+wrapper must implement `readKeyFile`: there is no fallback that reads key files with Node's own file
+I/O, because whoever can replace a key file chooses the key new data is encrypted under, and only
+the wrapper can say which files it trusts.
 
 ### Process hardening
 

@@ -1,9 +1,10 @@
-import { existsSync, lstatSync } from 'node:fs';
-import { constants, homedir } from 'node:os';
+import { closeSync, existsSync, lstatSync, openSync, readSync } from 'node:fs';
+import { constants } from 'node:os';
 import { UntrustedError } from './errors.js';
 import { NativeKmsLibrary } from './library.js';
 import {
-  macChoosePath, macRefuseShadowing, macRequireSupportedPlatform, macVerifyLoadedImage, macVerifyLocation, macVerifySignature, PROBE_EXPORT,
+  MAC_VERSION_READ_LIMIT, macChoosePath, macHomeFromAccount, macRefuseShadowing, macRequireMinimumVersion, macRequireSupportedPlatform,
+  macVerifyLoadedImage, macVerifyLocation, macVerifySignature, PROBE_EXPORT,
 } from './macpolicy.js';
 import { nativeAddon } from './native.js';
 import { macStatusDescriptions } from './status.js';
@@ -39,9 +40,12 @@ export function loadDarwinLibrary(): NativeKmsLibrary {
   const native = nativeAddon();
   macRequireSupportedPlatform(process.arch, native.productVersion!());
 
-  const { path, isSystem } = macChoosePath(unixProbe, homedir());
+  // The home folder from the account database, never $HOME: whoever sets the environment must not
+  // choose where the library is loaded from.
+  const { path, isSystem } = macChoosePath(unixProbe, macHomeFromAccount(native.accountHome!()));
   macVerifyLocation(path, lstatStatus, isSystem ? [0] : [0, process.geteuid!()]);
   macVerifySignature(path, native.checkCodeSignature!);
+  macRequireMinimumVersion(path, readStart(path));
   macRefuseShadowing((name) => process.env[name], existsSync);
 
   // dyld may still map a different file than the path asks for, so the loaded image is checked and,
@@ -60,3 +64,27 @@ export function loadDarwinLibrary(): NativeKmsLibrary {
     throw error;
   }
 }
+
+/** Up to MAC_VERSION_READ_LIMIT bytes from the start of the verified file, for its version. */
+function readStart(path: string): Uint8Array {
+  let fd: number;
+  try {
+    fd = openSync(path, 'r');
+  } catch (error) {
+    throw new UntrustedError(`could not open '${path}' to read its version (errno ${errnoOf(error)}).`, { cause: error });
+  }
+  try {
+    const buffer = new Uint8Array(MAC_VERSION_READ_LIMIT);
+    let total = 0;
+    for (;;) {
+      const read = readSync(fd, buffer, total, buffer.length - total, null);
+      if (read === 0) break;
+      total += read;
+      if (total === buffer.length) break;
+    }
+    return buffer.subarray(0, total);
+  } finally {
+    closeSync(fd);
+  }
+}
+

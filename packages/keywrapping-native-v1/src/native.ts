@@ -20,11 +20,15 @@ export interface NativeAddon {
   loadedPath?(soname: string): string | null;
   checkCodeSignature?(path: string, requirement: string): number;
   productVersion?(): string;
+  /** macOS: the effective user's home folder from the account database, never $HOME; null if none. */
+  accountHome?(): string | null;
   programFilesPath?(): string;
   fileAttributes?(path: string): number;
   securityDescriptor?(path: string): { owner: string; daclAbsent: boolean; aces: { type: number; flags: number; mask: number; sid: string }[] };
   describeSid?(sid: string): string;
   verifiedSigner?(path: string): { subject: string; ekus: string[]; rootCertificate: Uint8Array } | { status: number } | { error: string };
+  /** WinVerifyTrust's HRESULT for a revocation-checking pass over `path` (network allowed). */
+  revocationStatus?(path: string): number;
 }
 
 let addon: NativeAddon | undefined;

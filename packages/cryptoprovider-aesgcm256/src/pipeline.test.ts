@@ -6,7 +6,7 @@ import {
   KeyNotFoundError, type EncryptedFormatProvider,
 } from '@runsecure/hkdfguard-abstractions';
 import { TestFormatProvider } from '@runsecure/hkdfguard-test-support';
-import { AesGcmPipelineDataProtector, base64Bytes } from './pipeline.js';
+import { AesGcmPipelineDataProtector, base64Bytes, pipelineForTests } from './pipeline.js';
 import { EncryptionBudget } from './session.js';
 
 const id = 'Pipeline:Secret';
@@ -75,7 +75,7 @@ describe('AesGcmPipelineDataProtector', () => {
 
   it('exposes its key as base64 in one reused buffer', () => {
     const key = new Uint8Array(randomBytes(32));
-    const p = new AesGcmPipelineDataProtector(new TestFormatProvider(), 1, { key: Uint8Array.from(key) });
+    const p = pipelineForTests(new TestFormatProvider(), 1, { key: Uint8Array.from(key) });
     const first = p.keyBase64();
     assert.equal(new TextDecoder().decode(first), Buffer.from(key).toString('base64'));
     assert.equal(p.keyBase64(), first);
@@ -93,7 +93,7 @@ describe('AesGcmPipelineDataProtector', () => {
   });
 
   it("counts against the key's budget", () => {
-    const p = new AesGcmPipelineDataProtector(new TestFormatProvider(), 1, { budget: new EncryptionBudget(1, 2) });
+    const p = pipelineForTests(new TestFormatProvider(), 1, { budget: new EncryptionBudget(1, 2) });
     const formatted = p.encrypt('one', id);
     p.encrypt('two', id);
     assert.throws(() => p.encrypt('three', id), EncryptionLimitReachedError);
@@ -103,7 +103,7 @@ describe('AesGcmPipelineDataProtector', () => {
 
   it('close zeroes the key and its base64 form, and fails later use', () => {
     const key = new Uint8Array(randomBytes(32));
-    const p = new AesGcmPipelineDataProtector(new TestFormatProvider(), 1, { key });
+    const p = pipelineForTests(new TestFormatProvider(), 1, { key });
     const formatted = p.encrypt('hello', id);
     const encoded = p.keyBase64();
     p.close();

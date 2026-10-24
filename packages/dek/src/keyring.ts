@@ -14,6 +14,8 @@ export class DuplicateVersionError extends HkdfGuardError {
 
 const INT32_MIN = -(2 ** 31);
 const INT32_MAX = 2 ** 31 - 1;
+/** The longest delay a Node.js timer honours; anything longer fires after 1 ms instead. @internal */
+export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 const encoder = new TextEncoder();
 
 /** Anything a ring owns that can be closed - a DataEncryptionKey closes its provider. */
@@ -177,6 +179,10 @@ export class Rotation {
     manual = false,
   ) {
     this.ephemeral = new Set(ephemeralVersions);
+    // Node clamps a longer delay to 1 ms rather than failing, which would rotate without end.
+    if (!Number.isInteger(intervalMs) || intervalMs < 1 || intervalMs > MAX_TIMER_DELAY_MS) {
+      throw new InvalidArgumentError(`A rotation interval must be 1 to ${MAX_TIMER_DELAY_MS} ms; it is ${intervalMs}.`, 'ERR_HKDFGUARD_INVALID_ROTATION');
+    }
     if (!manual) {
       this.#timer = setInterval(() => void this.rotate().catch(() => undefined), intervalMs).unref();
     }

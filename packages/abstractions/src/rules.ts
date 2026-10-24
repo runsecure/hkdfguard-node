@@ -5,6 +5,12 @@ export const MAX_WRAPPED_KEY_BYTES = 512;
 
 /** Consecutive failed refreshes tolerated before a provider fails closed, unless configured otherwise. */
 export const DEFAULT_MAX_REFRESH_FAILURES = 3;
+/**
+ * The largest fail-closed limit accepted. 100 failures at the longest, 300-second refresh interval is
+ * about 8 h 20 min before a revoked KEK suspends key access; a larger value would quietly turn
+ * fail-closed into fail-open. To fail open, say so explicitly with RefreshFailurePolicy.failOpen.
+ */
+export const MAX_ALLOWED_REFRESH_FAILURES = 100;
 
 /** The prefix every configuration purpose starts with. */
 export const CONFIGURATION_PURPOSE_PREFIX = 'HkdfGuard.EncryptedConfiguration';

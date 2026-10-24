@@ -1,4 +1,5 @@
 import { randomFillSync } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import type { EncryptedFormatProvider, KeyTrackingValue, KeyWrapper } from '@runsecure/hkdfguard-abstractions';
 
 /**
@@ -11,6 +12,8 @@ export class FakeKeyWrapper implements KeyWrapper {
   generateCalls = 0;
   unwrapError: unknown;
   writtenOverride: number | undefined;
+  /** When set, unwrap waits for it before answering: a key wrapper that hangs rather than failing. */
+  hangUntil: Promise<void> | undefined;
 
   constructor(public fixedKey?: Uint8Array) {}
 
@@ -20,6 +23,9 @@ export class FakeKeyWrapper implements KeyWrapper {
 
   async unwrap(_wrapped: Uint8Array, result: Uint8Array): Promise<number> {
     this.unwrapCalls++;
+    if (this.hangUntil !== undefined) {
+      await this.hangUntil;
+    }
     if (this.unwrapError !== undefined) {
       throw this.unwrapError;
     }
@@ -31,6 +37,11 @@ export class FakeKeyWrapper implements KeyWrapper {
       target.set(this.fixedKey.subarray(0, target.length));
     }
     return written;
+  }
+
+  /** Reads a key file with plain file I/O and no trust checks: a test double, never a model for a real wrapper. */
+  async readKeyFile(path: string): Promise<Uint8Array> {
+    return new Uint8Array(await readFile(path));
   }
 
   async generateAndWrap(result: Uint8Array): Promise<number> {
