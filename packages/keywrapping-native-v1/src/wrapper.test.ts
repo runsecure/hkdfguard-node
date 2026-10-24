@@ -8,7 +8,7 @@ import type { LibraryHandle, NativeAddon } from './native.js';
 import {
   linuxStatusDescriptions, macStatusDescriptions, sharedStatusDescriptions, Status, windowsStatusDescriptions, WRAPPED_DEK_LENGTHS,
 } from './status.js';
-import { DEK_LENGTH, hardenProcess, NativeKeyWrapperV1 } from './wrapper.js';
+import { DEK_LENGTH, hardenProcess, hardenProcessForTests, NativeKeyWrapperV1, wrapperForTests } from './wrapper.js';
 
 /** A KmsLibrary that records its calls and answers as configured. */
 class FakeLibrary implements KmsLibrary {
@@ -66,7 +66,7 @@ class FakeLibrary implements KmsLibrary {
   }
 }
 
-const wrapper = (service: string, library: FakeLibrary) => NativeKeyWrapperV1.withLibrary(service, library);
+const wrapper = (service: string, library: FakeLibrary) => wrapperForTests(service, library);
 
 describe('NativeKeyWrapperV1', () => {
   it('is a KeyWrapper', () => {
@@ -161,16 +161,16 @@ describe('NativeKeyWrapperV1', () => {
 describe('hardenProcess', () => {
   it('succeeds when the library reports 0, passing no flags by default', () => {
     const library = new FakeLibrary();
-    hardenProcess(undefined, library);
-    hardenProcess({}, library);
-    hardenProcess({ requireProtectedSignature: false }, library);
-    hardenProcess({ requireProtectedSignature: undefined }, library);
+    hardenProcessForTests(undefined, library);
+    hardenProcessForTests({}, library);
+    hardenProcessForTests({ requireProtectedSignature: false }, library);
+    hardenProcessForTests({ requireProtectedSignature: undefined }, library);
     assert.deepEqual(library.hardenFlags, [0, 0, 0, 0]);
   });
 
   it('passes the native flag for requireProtectedSignature', () => {
     const library = new FakeLibrary();
-    hardenProcess({ requireProtectedSignature: true }, library);
+    hardenProcessForTests({ requireProtectedSignature: true }, library);
     assert.deepEqual(library.hardenFlags, [HARDEN_REQUIRE_PROTECTED_SIGNATURE]);
     assert.equal(HARDEN_REQUIRE_PROTECTED_SIGNATURE, 0x1); // HKDFGUARD_HARDEN_REQUIRE_PROTECTED_SIGNATURE, the same bit on every platform
   });
@@ -185,7 +185,7 @@ describe('hardenProcess', () => {
         { requireProtectedSignature: 1 }, { requireProtectedSignature: null }, null, [], 1, 'strict', true,
       ];
       for (const options of invalid) {
-        assert.throws(() => hardenProcess(options as never, library), InvalidArgumentError, JSON.stringify(options));
+        assert.throws(() => hardenProcessForTests(options as never, library), InvalidArgumentError, JSON.stringify(options));
         assert.throws(() => hardenProcess(options as never), InvalidArgumentError, JSON.stringify(options));
       }
       assert.throws(() => hardenProcess({ strict: true } as never), { message: "Unknown process hardening option 'strict'." });
@@ -212,12 +212,12 @@ describe('hardenProcess', () => {
     const library = new FakeLibrary();
     library.harden = () => -20;
     library.describe = () => 'process hardening failed';
-    assert.throws(() => hardenProcess({}, library), (e: unknown) => e instanceof StatusError && e.status === Status.processHardeningFailed
+    assert.throws(() => hardenProcessForTests({}, library), (e: unknown) => e instanceof StatusError && e.status === Status.processHardeningFailed
       && e.operation === 'process hardening' && e.service === undefined
       && e.message === 'Native process hardening failed with status -20 (process hardening failed).');
     const unknown = new FakeLibrary();
     unknown.harden = () => -99;
-    assert.throws(() => hardenProcess({ requireProtectedSignature: true }, unknown), (e: unknown) => e instanceof StatusError && e.message.endsWith('status -99.'));
+    assert.throws(() => hardenProcessForTests({ requireProtectedSignature: true }, unknown), (e: unknown) => e instanceof StatusError && e.message.endsWith('status -99.'));
   });
 
   it("describes a hardening failure in each platform's own terms", () => {
@@ -251,7 +251,7 @@ describe('NativeKmsLibrary', () => {
     assert.equal(library.hardenProcess(0), 0);
     assert.equal(library.hardenProcess(HARDEN_REQUIRE_PROTECTED_SIGNATURE), Status.processHardeningFailed);
     assert.deepEqual(hardenCalls, [0, 1]);
-    assert.throws(() => hardenProcess({ requireProtectedSignature: true }, library), { message: /status -20 \(process hardening failed: .*access lists/ });
+    assert.throws(() => hardenProcessForTests({ requireProtectedSignature: true }, library), { message: /status -20 \(process hardening failed: .*access lists/ });
   });
 });
 

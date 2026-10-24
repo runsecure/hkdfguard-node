@@ -5,6 +5,13 @@
   "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": ["dist", "!dist/**/*.test*"],
   "scripts": {
     "test": "node --test \"dist/**/*.test.js\""

@@ -18,6 +18,17 @@ export interface ProtectedCacheOptions {
  * stored and bound to their names; names match ignoring ASCII case only. Nothing here holds
  * plaintext beyond a single call. The key ring is the caller's: the cache never closes keys.
  */
+// Set by ProtectedCache's static block.
+let entriesOf: (cache: ProtectedCache) => Map<string, KeyTrackingValue>;
+
+/**
+ * Tests only: a cache's entries, for tests that tamper with them. Exported from this module for the
+ * package's own tests, never from the package index - the exports map keeps it out of reach.
+ */
+export function cacheEntriesForTests(cache: ProtectedCache): Map<string, KeyTrackingValue> {
+  return entriesOf(cache);
+}
+
 export class ProtectedCache implements ProtectedCacheContract {
   readonly #store: Store;
   readonly #logger: Logger | undefined;
@@ -79,9 +90,8 @@ export class ProtectedCache implements ProtectedCacheContract {
     return this.#store.maxDecryptedLength(name, signal);
   }
 
-  /** @internal The entries, for tests that tamper with them. */
-  get entriesForTesting(): Map<string, KeyTrackingValue> {
-    return this.#store.entries;
+  static {
+    entriesOf = (cache) => cache.#store.entries;
   }
 }
 

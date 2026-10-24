@@ -108,6 +108,21 @@ export function winVerifyTrustedOnly(security: WinSecurity, displayPath: string,
 }
 
 /** The signer policy: the expected publisher, the Code Signing and profile EKUs, and the pinned root. */
+/** CERT_E_REVOKED: WinVerifyTrust's answer when a certificate in the signer's chain has definitely been revoked. */
+export const WIN_CERT_E_REVOKED = 0x800B010C;
+
+/**
+ * The rule for the revocation pass: refuse only a definite revocation. Every other result - success,
+ * revocation servers offline (CRYPT_E_REVOCATION_OFFLINE), no revocation check possible
+ * (CRYPT_E_NO_REVOCATION_CHECK), CERT_E_REVOCATION_FAILURE, or anything else - lets the load continue:
+ * the first pass already validated the signature and its pins, and an offline host must still start.
+ */
+export function winRevocationDecision(path: string, status: number): void {
+  if ((status >>> 0) === WIN_CERT_E_REVOKED) {
+    throw new UntrustedError(`'${path}' is signed with a certificate that has been revoked; refusing to load it. Install a current release.`);
+  }
+}
+
 export function winVerifySignerIdentity(path: string, leafSubject: string, leafEkus: readonly string[], rootSha256: string, expectedPublisher: string): void {
   if (leafSubject !== expectedPublisher) {
     throw new UntrustedError(`'${path}' is signed by '${leafSubject}', not the expected HkdfGuard publisher '${expectedPublisher}'.`);

@@ -12,6 +12,7 @@
  *   - symbolImagePath (Unix): which file the dynamic linker mapped an export from (dladdr).
  *   - loadedPath (Linux): which file an already-loaded soname is bound to (RTLD_NOLOAD + dlinfo).
  *   - checkCodeSignature / productVersion (macOS): SecStaticCodeCheckValidity; kern.osproductversion.
+ *   - accountHome (macOS): the effective user's home from the account database (getpwuid_r).
  *   - programFilesPath / fileAttributes / securityDescriptor / describeSid / verifiedSigner (Windows):
  *     the known folder, reparse-point attributes, owner and DACL, account names, and the signer of the
  *     chain WinVerifyTrust itself validated.
@@ -48,6 +49,9 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 #include <sys/sysctl.h>
+#include <errno.h>
+#include <pwd.h>
+#include <unistd.h>
 #endif
 #endif
 
@@ -600,6 +604,28 @@ static napi_value product_version(napi_env env, napi_callback_info info) {
   version[sizeof version - 1] = '\0';
   return js_string(env, version);
 }
+
+/* accountHome(): the effective user's home folder from the account database (getpwuid_r), never
+   from $HOME; null if there is no entry or the lookup fails. */
+static napi_value account_home(napi_env env, napi_callback_info info) {
+  (void)info;
+  struct passwd pwd;
+  struct passwd* result = NULL;
+  size_t size = 16 * 1024;
+  for (;;) {
+    char* buf = malloc(size);
+    if (buf == NULL) return js_null(env);
+    int rc = getpwuid_r(geteuid(), &pwd, buf, size, &result);
+    if (rc == ERANGE && size < 1024 * 1024) {
+      free(buf);
+      size *= 2;
+      continue;
+    }
+    napi_value home = (rc == 0 && result != NULL && pwd.pw_dir != NULL) ? js_string(env, pwd.pw_dir) : js_null(env);
+    free(buf);
+    return home;
+  }
+}
 #endif
 
 /* --- Windows ------------------------------------------------------------------------------------- */
@@ -832,6 +858,40 @@ close:
   }
   return result;
 }
+/* revocationStatus(path): a second, separate WinVerifyTrust pass, run once every other check has
+ * passed: the same generic Authenticode policy, checking revocation across the whole chain except
+ * the root, with network retrieval of revocation data allowed (not cache-only) and no state kept.
+ * Returns WinVerifyTrust's HRESULT; the caller refuses only CERT_E_REVOKED. Lifetime signing is
+ * deliberately not requested: Artifact Signing certificates live about three days, and it would make
+ * every timestamped signature expire with them. */
+static napi_value revocation_status(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  CHECK(napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  char* path = utf8_arg(env, argv[0]);
+  if (path == NULL) return NULL;
+  wchar_t* wide = to_wide(path);
+  free(path);
+  if (wide == NULL) {
+    napi_throw_error(env, NULL, "revocationStatus: invalid path");
+    return NULL;
+  }
+
+  WINTRUST_FILE_INFO file = { sizeof file };
+  file.pcwszFilePath = wide;
+  WINTRUST_DATA data = { sizeof data };
+  data.dwUIChoice = WTD_UI_NONE;
+  data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+  data.dwUnionChoice = WTD_CHOICE_FILE;
+  data.pFile = &file;
+  data.dwStateAction = WTD_STATEACTION_IGNORE;
+  data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT;
+  GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+
+  LONG status = WinVerifyTrust((HWND)INVALID_HANDLE_VALUE, &action, &data);
+  free(wide);
+  return js_int(env, (uint32_t)status);
+}
 #endif
 
 /* --- Module -------------------------------------------------------------------------------------- */
@@ -856,6 +916,7 @@ NAPI_MODULE_INIT() {
 #if defined(__APPLE__)
     { "checkCodeSignature", NULL, check_code_signature, NULL, NULL, NULL, napi_enumerable, NULL },
     { "productVersion", NULL, product_version, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "accountHome", NULL, account_home, NULL, NULL, NULL, napi_enumerable, NULL },
 #endif
 #if defined(_WIN32)
     { "programFilesPath", NULL, program_files_path, NULL, NULL, NULL, napi_enumerable, NULL },
@@ -863,6 +924,7 @@ NAPI_MODULE_INIT() {
     { "securityDescriptor", NULL, security_descriptor, NULL, NULL, NULL, napi_enumerable, NULL },
     { "describeSid", NULL, describe_sid, NULL, NULL, NULL, napi_enumerable, NULL },
     { "verifiedSigner", NULL, verified_signer, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "revocationStatus", NULL, revocation_status, NULL, NULL, NULL, napi_enumerable, NULL },
 #endif
   };
   if (napi_define_properties(env, exports, sizeof properties / sizeof properties[0], properties) != napi_ok) {

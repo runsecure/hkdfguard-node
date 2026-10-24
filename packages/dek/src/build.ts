@@ -1,28 +1,26 @@
-import { constants as fsConstants } from 'node:fs';
-import { lstat, open, realpath, stat } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { stat } from 'node:fs/promises';
 import {
   HkdfGuardError, InvalidArgumentError, MAX_WRAPPED_KEY_BYTES, RefreshFailurePolicy, validateServiceName,
   type CryptoProvider, type CryptoProviderFactory, type EncryptedFormatProvider, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
 import { HkdfGuardLog, type Logger } from '@runsecure/hkdfguard-diagnostics';
 import { DataEncryptionKey, type EncryptionDeadline } from './key.js';
-import { KeyRing, Rotation } from './keyring.js';
+import { KeyRing, MAX_TIMER_DELAY_MS, Rotation } from './keyring.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-
-// Group- and other-write: anyone with either could choose the key new data is encrypted under.
-const KEY_FILE_FORBIDDEN_MODE = 0o022;
-// A sticky directory (/tmp) lets others create entries, but not rename or delete anyone else's.
-const STICKY_BIT = 0o1000;
 
 /** How often a ring with ephemeral keys rotates them, unless configured otherwise. */
 export const DEFAULT_EPHEMERAL_KEY_ROTATION_HOURS = 24;
 /** The shortest rotation accepted - rotating faster loads the KMS for no security. */
 export const MIN_EPHEMERAL_KEY_ROTATION_HOURS = 1;
-/** The longest rotation accepted - the .NET port's timer limit, kept so one configuration suits every port. */
-export const MAX_EPHEMERAL_KEY_ROTATION_HOURS = 1193;
+/**
+ * The longest rotation accepted: 596 hours, the most whole hours a Node.js timer can wait. A delay
+ * over 2^31-1 ms (about 596.5 hours) is not an error in Node - it is silently clamped to 1 ms, which
+ * would rotate keys back to back without end. The .NET port accepts up to 1193; a shared
+ * configuration above 596 is refused here rather than misbehaving.
+ */
+export const MAX_EPHEMERAL_KEY_ROTATION_HOURS = Math.floor(MAX_TIMER_DELAY_MS / HOUR_MS);
 /** How long a superseded ephemeral key stays registered, unless configured otherwise. */
 export const DEFAULT_EPHEMERAL_KEY_RETENTION_HOURS = 24;
 /** The shortest retention accepted, in minutes. */
@@ -39,7 +37,11 @@ export const MAX_KEY_FILE_MAX_AGE_DAYS = 3650;
 /** The fraction of the maximum age after which a warning is logged: 90%, about five weeks of a year. */
 export const KEY_FILE_AGE_WARNING_FRACTION = 0.9;
 
-/** A key file that is empty, larger than MAX_WRAPPED_KEY_BYTES, or in a location someone else could replace it in. */
+/**
+ * A key file that is not a wrapped key, or that the key wrapper does not trust - for a custom key
+ * wrapper's readKeyFile to throw. The native key wrapper reports its own KeyFileRefusedError, with
+ * the same code.
+ */
 export class InvalidKeyFileError extends HkdfGuardError {
   constructor(message: string) {
     super('ERR_HKDFGUARD_INVALID_KEY_FILE', message);
@@ -80,7 +82,7 @@ export interface KeyRingConfig {
   formatProvider?: EncryptedFormatProvider;
   /** This ring's KEK identity, for callers to read back; validated when set. */
   serviceName?: string;
-  /** Hours between ephemeral-key rotations (1-1193); 24 when omitted. A ring of key files never rotates. */
+  /** Hours between ephemeral-key rotations (1-596); 24 when omitted. A ring of key files never rotates. */
   ephemeralKeyRotationHours?: number;
   /**
    * Keeps the ephemeral key built at startup current until the process restarts. Required when a key
@@ -102,7 +104,7 @@ export interface KeyRingConfig {
   signal?: AbortSignal;
 }
 
-/** @internal Test hooks. */
+/** Test hooks, reached only through {@link buildKeyRingForTests}. */
 export interface BuildInternals {
   manualRotation?: boolean;
 }
@@ -162,117 +164,17 @@ function entries(keyFiles: KeyRingConfig['keyFiles']): [number, string][] {
 }
 
 /**
- * Reads a wrapped DEK with Node's own file I/O - how buildKeyRing reads key files for a key wrapper
- * with no readKeyFile of its own (a remote KMS, say, or a test double). A wrapper backed by the
- * native KMS library reads through that library instead, which makes its own checks.
- *
- * Refuses anything that isn't a regular file, one its group or other users can
- * write, or - outside Windows, whose ACLs the native tool sets - one in a location anyone but root
- * or this process's user could replace it in (see {@link verifyKeyFileLocation}), an empty file, or one over
- * MAX_WRAPPED_KEY_BYTES - never reading more than one byte past the limit, so a wrong path (a log, a
- * device) can't make startup read without bound. The checks are made on the opened file, so they
- * describe what is read, not a path that may have changed in between.
- */
-export async function readKeyFile(path: string): Promise<Uint8Array> {
-  return (await readKeyFileWithTime(path)).wrapped;
-}
-
-/** The parts of lstat and realpath the location check uses; replaced in tests. @internal */
-export interface KeyFileSystem {
-  lstat(path: string): Promise<{ uid: number; mode: number; isDirectory(): boolean; isSymbolicLink(): boolean; isFile(): boolean }>;
-  realpath(path: string): Promise<string>;
-}
-
-const nodeFileSystem: KeyFileSystem = { lstat, realpath };
-
-function ownerProblem(uid: number, euid: number): string | undefined {
-  return uid === 0 || uid === euid ? undefined : `is owned by uid ${uid}; only root or this process's user (uid ${euid}) may own a key file and the folders above it`;
-}
-
-/**
- * Checks where a key file lives, outside Windows, and returns its real path. Anyone who can replace
- * a key file chooses the key new data is encrypted under, so the file and every folder above it, up
- * to /, must be owned by root or by this process's user, and no folder may be writable by its
- * group or by others unless it is sticky (as /tmp is). A symbolic link is followed - Kubernetes
- * mounts secrets through them - but must itself be owned by root or this user, and the folders
- * holding it are held to the same rule. Only reads: nothing about the file is changed.
- * @internal Exported for tests.
- */
-export async function verifyKeyFileLocation(path: string, euid: number, fs: KeyFileSystem = nodeFileSystem): Promise<string> {
-  const absolute = resolve(path);
-  const link = await fs.lstat(absolute);
-  if (link.isSymbolicLink()) {
-    const problem = ownerProblem(link.uid, euid);
-    if (problem !== undefined) throw new InvalidKeyFileError(`Key file '${path}' is a symbolic link that ${problem}.`);
-  }
-  const real = await fs.realpath(absolute);
-  const target = real === absolute ? link : await fs.lstat(real);
-  const problem = ownerProblem(target.uid, euid);
-  if (problem !== undefined) throw new InvalidKeyFileError(`Key file '${path}' ${problem}.`);
-
-  await verifyFolders(dirname(real), path, euid, fs);
-  if (link.isSymbolicLink()) await verifyFolders(await fs.realpath(dirname(absolute)), path, euid, fs);
-  return real;
-}
-
-async function verifyFolders(directory: string, path: string, euid: number, fs: KeyFileSystem): Promise<void> {
-  for (let folder = directory; ; folder = dirname(folder)) {
-    const status = await fs.lstat(folder);
-    if (!status.isDirectory()) throw new InvalidKeyFileError(`Key file '${path}' is under '${folder}', which is not a folder.`);
-    const problem = ownerProblem(status.uid, euid);
-    if (problem !== undefined) throw new InvalidKeyFileError(`Key file '${path}' is under '${folder}', which ${problem}.`);
-    if ((status.mode & KEY_FILE_FORBIDDEN_MODE) !== 0 && (status.mode & STICKY_BIT) === 0) {
-      const mode = (status.mode & 0o7777).toString(8).padStart(4, '0');
-      throw new InvalidKeyFileError(`Key file '${path}' is under '${folder}', which its group or others can write (mode ${mode}), so they could replace the key file.`);
-    }
-    if (dirname(folder) === folder) return;
-  }
-}
-
-/**
- * A key file's wrapped DEK and its modification time - the key file's age. Read through the key
- * wrapper when it has readKeyFile (its own checks on who could have written the file), otherwise
- * with {@link readKeyFile}.
+ * A key file's wrapped DEK, read through the key wrapper - whose own checks decide whether anyone but
+ * a trusted account could have written or replaced it - and its modification time, the key file's age.
  */
 async function readKeyFileFor(wrapper: KeyWrapper, path: string, signal: AbortSignal | undefined): Promise<{ wrapped: Uint8Array; modifiedMs: number }> {
-  if (wrapper.readKeyFile === undefined) return readKeyFileWithTime(path);
   const wrapped = await wrapper.readKeyFile(path, signal);
-  return { wrapped, modifiedMs: (await stat(path)).mtimeMs };
-}
-
-/** {@link readKeyFile}, with the opened file's modification time - the key file's age. */
-async function readKeyFileWithTime(path: string): Promise<{ wrapped: Uint8Array; modifiedMs: number }> {
-  const unix = process.platform !== 'win32';
-  // Outside Windows the real path is checked, then opened without following a link, so what is read
-  // is the file that was checked. Windows ACLs are not checked here (see the getting-started guide).
-  const file = unix
-    ? await open(await verifyKeyFileLocation(path, process.geteuid!()), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
-    : await open(path, 'r');
-  try {
-    const stats = await file.stat();
-    if (!stats.isFile()) throw new InvalidKeyFileError(`Key file '${path}' is not a regular file.`);
-    if (unix && (stats.mode & KEY_FILE_FORBIDDEN_MODE) !== 0) {
-      const mode = (stats.mode & 0o777).toString(8).padStart(4, '0');
-      throw new InvalidKeyFileError(`Key file '${path}' is writable by its group or by others (mode ${mode}); only its owner may write it.`);
-    }
-    const owner = unix ? ownerProblem(stats.uid, process.geteuid!()) : undefined;
-    if (owner !== undefined) throw new InvalidKeyFileError(`Key file '${path}' ${owner}.`);
-    const buffer = new Uint8Array(MAX_WRAPPED_KEY_BYTES + 1);
-    let total = 0;
-    for (;;) {
-      const { bytesRead } = await file.read(buffer, total, buffer.length - total, null);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-      if (total === buffer.length) break;
-    }
-    if (total === 0) throw new InvalidKeyFileError(`Key file '${path}' is empty.`);
-    if (total > MAX_WRAPPED_KEY_BYTES) {
-      throw new InvalidKeyFileError(`Key file '${path}' is larger than ${MAX_WRAPPED_KEY_BYTES} bytes (MAX_WRAPPED_KEY_BYTES); a wrapped key never is.`);
-    }
-    return { wrapped: buffer.slice(0, total), modifiedMs: stats.mtimeMs };
-  } finally {
-    await file.close();
+  // Whatever the key wrapper, a wrapped key is never empty and never over the limit.
+  if (wrapped.length === 0) throw new InvalidKeyFileError(`Key file '${path}' is empty.`);
+  if (wrapped.length > MAX_WRAPPED_KEY_BYTES) {
+    throw new InvalidKeyFileError(`Key file '${path}' is larger than ${MAX_WRAPPED_KEY_BYTES} bytes (MAX_WRAPPED_KEY_BYTES); a wrapped key never is.`);
   }
+  return { wrapped, modifiedMs: (await stat(path)).mtimeMs };
 }
 
 async function addOwned(ring: KeyRing, version: number, provider: CryptoProvider, deadline?: EncryptionDeadline): Promise<void> {
@@ -304,7 +206,20 @@ function keyFileDeadline(version: number, path: string, modifiedMs: number, maxA
  * created. If anything fails partway - an unreadable file, an unwrap failure, a version registered
  * twice, the signal aborted - every key created so far is closed and the error rethrown.
  */
-export async function buildKeyRing(config: KeyRingConfig, internals: BuildInternals = {}): Promise<KeyRing> {
+export function buildKeyRing(config: KeyRingConfig): Promise<KeyRing> {
+  return build(config, {});
+}
+
+/**
+ * Tests only: {@link buildKeyRing} with test hooks, such as rotation the test drives itself.
+ * Exported from this module for the package's own tests, never from the package index - the
+ * exports map keeps it out of reach.
+ */
+export function buildKeyRingForTests(config: KeyRingConfig, internals: BuildInternals): Promise<KeyRing> {
+  return build(config, internals);
+}
+
+async function build(config: KeyRingConfig, internals: BuildInternals): Promise<KeyRing> {
   validate(config);
   const { keyWrapper, cryptoProviderFactory: factory, signal } = config;
   const providerOptions = { expirySeconds: config.keyRefreshInterval, refreshFailurePolicy: config.refreshFailurePolicy ?? RefreshFailurePolicy.default, signal };

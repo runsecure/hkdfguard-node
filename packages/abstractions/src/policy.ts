@@ -1,5 +1,5 @@
 import { InvalidArgumentError } from './errors.js';
-import { DEFAULT_MAX_REFRESH_FAILURES } from './rules.js';
+import { DEFAULT_MAX_REFRESH_FAILURES, MAX_ALLOWED_REFRESH_FAILURES } from './rules.js';
 
 /**
  * What a crypto provider does when re-revealing its key through the KEK keeps failing. Failing
@@ -20,11 +20,11 @@ export class RefreshFailurePolicy {
   /**
    * Fails closed once `maxFailures` consecutive refreshes have failed.
    *
-   * @throws InvalidArgumentError maxFailures is not an integer of at least 1.
+   * @throws InvalidArgumentError maxFailures is not an integer from 1 to {@link MAX_ALLOWED_REFRESH_FAILURES}.
    */
   static failClosedAfter(maxFailures: number): RefreshFailurePolicy {
-    if (!Number.isInteger(maxFailures) || maxFailures < 1) {
-      throw new InvalidArgumentError(`MaxRefreshFailures must be at least 1, got ${maxFailures}.`, 'ERR_HKDFGUARD_INVALID_REFRESH_FAILURE_POLICY');
+    if (!Number.isInteger(maxFailures) || maxFailures < 1 || maxFailures > MAX_ALLOWED_REFRESH_FAILURES) {
+      throw new InvalidArgumentError(`MaxRefreshFailures must be between 1 and ${MAX_ALLOWED_REFRESH_FAILURES}, got ${maxFailures}.`, 'ERR_HKDFGUARD_INVALID_REFRESH_FAILURE_POLICY');
     }
     return new RefreshFailurePolicy(maxFailures);
   }
