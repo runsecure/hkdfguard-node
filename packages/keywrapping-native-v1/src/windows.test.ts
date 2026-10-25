@@ -11,7 +11,9 @@ import { NativeKmsLibrary } from './library.js';
 import { nativeAddon, type NativeAddon } from './native.js';
 import { Status } from './status.js';
 import { winInstalledPath, winLoadFrom, winVerifyImageKindOf, winVerifyLocation, winVerifyNotReparsePoint, winVerifySignature } from './windows.js';
-import { WIN_CODE_SIGNING_EKU, WIN_EXPECTED_PROFILE_EKU, WIN_EXPECTED_PUBLISHER, WIN_EXPECTED_ROOT_SHA256, WIN_FILE_NAME } from './windowspolicy.js';
+import {
+  WIN_CODE_SIGNING_EKU, WIN_EXPECTED_PROFILE_EKU, WIN_EXPECTED_PUBLISHER, WIN_EXPECTED_ROOT_SHA256, WIN_FILE_NAME, winRequireMinimumVersion,
+} from './windowspolicy.js';
 import { UNPROVISIONED_SERVICE_NAME } from './testservices.test-support.js';
 
 /*
@@ -159,6 +161,36 @@ describe('the Windows loader against the real system', { skip: process.platform 
     const mapped = mappedModules().filter((m) => win32.basename(m).toLowerCase() === WIN_FILE_NAME.toLowerCase());
     assert.equal(mapped.length, 1, `HkdfGuard.dll is mapped from: ${mapped.join(', ')}`);
     assert.ok(sameFile(mapped[0]!, path), `mapped from ${mapped[0]}, not ${path}`);
+  });
+
+  it('reads a version of at least the minimum from the installed library, and none from a plain file', (t) => {
+    const path = installedPath(t);
+    if (path === undefined) return;
+    const native = nativeAddon();
+    const version = native.fileVersion!(path);
+    assert.ok(version !== null, `${path} carries no readable version resource`);
+    winRequireMinimumVersion(path, version);
+    const folder = mkdtempSync(join(tmpdir(), 'hkdfguard-version-'));
+    try {
+      const plain = join(folder, 'plain.dll');
+      writeFileSync(plain, 'MZ not really a PE image');
+      assert.equal(native.fileVersion!(plain), null);
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('reads back the installed file as the module the probe export lives in', (t) => {
+    const path = installedPath(t);
+    if (path === undefined) return;
+    const native = nativeAddon();
+    const handle = native.load(path);
+    try {
+      const loaded = native.symbolImagePath!(handle, 'hkdfguard_wrap_dek');
+      assert.ok(loaded !== null && sameFile(loaded, path), `the probe export is in ${loaded}, not ${path}`);
+    } finally {
+      native.unload(handle);
+    }
   });
 
   it('answers kekExists for an unprovisioned service', (t) => {

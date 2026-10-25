@@ -86,7 +86,9 @@ every platform. The Linux library is not content-pinned: verify a release with S
 (`gh attestation verify`) when you install it, and the loader enforces path integrity from there.
 On macOS the per-user location is found from the account database (the add-on's `getpwuid_r`),
 never `$HOME`, and the library must be at least version 0.9.0 - its `LC_ID_DYLIB` current version,
-covered by the signature - so an older signed release can't be planted in its place.
+covered by the signature - so an older signed release can't be planted in its place. On Windows
+the same 0.9.0 floor applies to `HkdfGuard.dll`'s signed version resource, and a DLL with none is
+refused.
 
 Certificate revocation: on Windows, once the signature and its pins have passed, the loader asks
 WinVerifyTrust once more, now checking revocation across the signing chain and allowed to fetch

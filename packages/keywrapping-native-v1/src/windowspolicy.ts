@@ -14,6 +14,11 @@ import { UntrustedError } from './errors.js';
  *     HkdfGuard's Artifact Signing profile, whose chain - as WinVerifyTrust validated it - ends at
  *     the pinned root.
  *  5. Its PE header marks it a DLL for this process's architecture.
+ *  6. Its version resource - also covered by the signature - is at least
+ *     WIN_MINIMUM_LIBRARY_VERSION, so an older genuine release can't be put back in its place.
+ *
+ * After loading, the module Windows actually mapped must be the file that was verified
+ * (winVerifyLoadedModule).
  */
 
 export const WIN_FILE_NAME = 'HkdfGuard.dll';
@@ -121,6 +126,52 @@ export function winRevocationDecision(path: string, status: number): void {
   if ((status >>> 0) === WIN_CERT_E_REVOKED) {
     throw new UntrustedError(`'${path}' is signed with a certificate that has been revoked; refusing to load it. Install a current release.`);
   }
+}
+
+/**
+ * The oldest Windows native library release this package loads ([major, minor, patch]): 0.9.0, the
+ * first to carry a version resource. Raise it when a release fixes a security issue.
+ */
+export const WIN_MINIMUM_LIBRARY_VERSION: readonly [number, number, number] = [0, 9, 0];
+
+/**
+ * Refuses a library whose file version - [major, minor, patch] from its signed version resource, or
+ * null if it has none or it can't be read - is below WIN_MINIMUM_LIBRARY_VERSION. The fourth
+ * (revision) field is not compared. Run after the signature check, whose hash covers the resource.
+ */
+export function winRequireMinimumVersion(path: string, version: readonly [number, number, number] | null): void {
+  const minimum = WIN_MINIMUM_LIBRARY_VERSION.join('.');
+  if (version === null) {
+    throw new UntrustedError(
+      `'${path}' carries no readable version resource, so it predates ${minimum}, the oldest HkdfGuard native library this package accepts; install a current release.`);
+  }
+  const order = version.findIndex((part, i) => part !== WIN_MINIMUM_LIBRARY_VERSION[i]);
+  if (order !== -1 && version[order]! < WIN_MINIMUM_LIBRARY_VERSION[order]!) {
+    throw new UntrustedError(
+      `'${path}' is HkdfGuard native library version ${version.join('.')}, older than the minimum this package accepts (${minimum}); install a current release.`);
+  }
+}
+
+/**
+ * Requires the file Windows mapped the loaded module from (`loaded`, null if it couldn't be read) to
+ * be the verified path. LoadLibraryExW returns an already-loaded module of the same name, and honours
+ * loader redirection (.local, manifests), without mapping the path it was given; this is the Windows
+ * counterpart of the dladdr check on Linux and macOS. The comparison is case-insensitive, as NTFS
+ * names are, and ignores a \\?\ prefix.
+ */
+export function winVerifyLoadedModule(verified: string, loaded: string | null): void {
+  if (loaded === null) {
+    throw new UntrustedError(`Could not read which file Windows loaded for '${verified}'; refusing to use it.`);
+  }
+  if (stripLongPathPrefix(loaded).toLowerCase() !== stripLongPathPrefix(verified).toLowerCase()) {
+    throw new UntrustedError(
+      `'${verified}' passed verification, but Windows loaded '${loaded}' instead (a module of the same name was already loaded, or the load was redirected); refusing to use it.`);
+  }
+}
+
+function stripLongPathPrefix(path: string): string {
+  if (path.slice(0, 8).toUpperCase() === '\\\\?\\UNC\\') return `\\\\${path.slice(8)}`;
+  return path.startsWith('\\\\?\\') ? path.slice(4) : path;
 }
 
 export function winVerifySignerIdentity(path: string, leafSubject: string, leafEkus: readonly string[], rootSha256: string, expectedPublisher: string): void {
