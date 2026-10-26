@@ -81,9 +81,13 @@ current key file stops encrypting at that age, and decryption under it never sto
 add-on, `native/hkdfguard_native.c`, compiled by node-gyp when the package is installed - so
 installing it needs Python 3 and a C compiler (Visual Studio Build Tools on Windows). The add-on only
 loads and calls the library; every verification rule (path ownership, code signature on Windows and
-macOS, the dynamic linker's environment, what was actually loaded) is TypeScript, and is tested on
-every platform. The Linux library is not content-pinned: verify a release with Sigstore/cosign
-(`gh attestation verify`) when you install it, and the loader enforces path integrity from there.
+macOS, the dynamic linker's environment, what would be and what was actually loaded) is TypeScript,
+and is tested on every platform. On Linux, before loading, the process's own dynamic linker is asked
+in list mode (`ld.so --list`, what `ldd` uses) where it would find every library
+`libhkdfguard.so.1` pulls in; each must pass the same ownership checks, so a dependency found
+somewhere writable is refused before any of its code runs. The Linux library is not
+content-pinned: verify a release with Sigstore/cosign (`gh attestation verify`) when you install it,
+and the loader enforces path integrity from there.
 On macOS the per-user location is found from the account database (the add-on's `getpwuid_r`),
 never `$HOME`, and the library must be at least version 0.9.0 - its `LC_ID_DYLIB` current version,
 covered by the signature - so an older signed release can't be planted in its place. On Windows
@@ -115,7 +119,8 @@ what looks like an unwrapped key (32 raw bytes, or their hex or base64: treat th
 exposure) - and one whose path isn't trusted: a link, junction or other reparse point, an 8.3 short
 name, a network, mapped or SUBST drive, or a file or folder another account could write or replace.
 A refusal throws `KeyFileRefusedError`, with `status` and an fs-style `code`: `ENOENT`, `EACCES`
-(unreadable or untrusted), `ERR_HKDFGUARD_INVALID_KEY_FILE` (size or contents) or `EIO`. Every key
+(unreadable or untrusted), `ERR_HKDFGUARD_INVALID_KEY_FILE` (size or contents),
+`ERR_HKDFGUARD_INVALID_ARGUMENT` (status -1: a path the library rejects as an argument) or `EIO`. Every key
 wrapper must implement `readKeyFile`: there is no fallback that reads key files with Node's own file
 I/O, because whoever can replace a key file chooses the key new data is encrypted under, and only
 the wrapper can say which files it trusts.

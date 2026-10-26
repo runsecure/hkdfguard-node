@@ -3,8 +3,9 @@ import { UntrustedError } from './errors.js';
 
 /*
  * Reads the DT_NEEDED entries - the shared libraries an ELF object asks the dynamic linker to load -
- * from a 64-bit little-endian ELF file (x64 and arm64 Linux). Only the ELF header, the program
- * headers, the dynamic segment and its string table are read, each bounded. Anything malformed is
+ * and the PT_INTERP path - the dynamic linker an executable names - from a 64-bit little-endian ELF
+ * file (x64 and arm64 Linux). Only the ELF header, the program headers, the interpreter path, the
+ * dynamic segment and its string table are read, each bounded. Anything malformed is
  * refused: the caller is deciding whether to trust what the file pulled into the process.
  */
 
@@ -15,6 +16,9 @@ const MAX_PROGRAM_HEADERS = 4096;
 const MAX_SEGMENT_BYTES = 1 << 20;
 const PT_LOAD = 1;
 const PT_DYNAMIC = 2;
+const PT_INTERP = 3;
+/** PT_INTERP is a path: PATH_MAX. */
+const MAX_INTERPRETER_BYTES = 4096;
 const DT_NULL = 0n;
 const DT_NEEDED = 1n;
 const DT_STRTAB = 5n;
@@ -45,8 +49,8 @@ function sizeOf(path: string, value: bigint, what: string): number {
   return Number(value);
 }
 
-/** The DT_NEEDED names of an ELF image read through `readAt`, in file order. `path` names it in errors. */
-export function elfReadNeeded(path: string, readAt: ReadAt): string[] {
+/** Validates the ELF header and returns the program header table, the size of one entry and the number of entries. */
+function readProgramHeaders(path: string, readAt: ReadAt): { headers: DataView; size: number; count: number } {
   const header = read(path, readAt, 0, HEADER_SIZE, 'ELF header');
   if (header.getUint32(0) !== 0x7f454c46) throw malformed(path, 'it is not an ELF file');
   if (header.getUint8(4) !== 2 || header.getUint8(5) !== 1) throw malformed(path, 'it is not a 64-bit little-endian ELF file');
@@ -58,7 +62,37 @@ export function elfReadNeeded(path: string, readAt: ReadAt): string[] {
     throw malformed(path, 'its program header table is malformed');
   }
 
-  const headers = read(path, readAt, programHeaderOffset, programHeaderSize * programHeaderCount, 'program headers');
+  // Both fields are 16-bit; bound the table like every other region read, before reading it.
+  const tableBytes = sizeOf(path, BigInt(programHeaderSize * programHeaderCount), 'program header table');
+  return { headers: read(path, readAt, programHeaderOffset, tableBytes, 'program headers'), size: programHeaderSize, count: programHeaderCount };
+}
+
+/**
+ * The PT_INTERP path of an ELF image read through `readAt` - for an executable, the dynamic linker
+ * the kernel started it with - or undefined if it has none. `path` names it in errors.
+ */
+export function elfReadInterpreter(path: string, readAt: ReadAt): string | undefined {
+  const { headers, size: programHeaderSize, count: programHeaderCount } = readProgramHeaders(path, readAt);
+  for (let i = 0; i < programHeaderCount; i++) {
+    const at = i * programHeaderSize;
+    if (headers.getUint32(at, true) !== PT_INTERP) continue;
+    const offset = offsetOf(path, headers.getBigUint64(at + 8, true));
+    const fileSize = headers.getBigUint64(at + 32, true);
+    if (fileSize === 0n || fileSize > BigInt(MAX_INTERPRETER_BYTES)) {
+      throw malformed(path, 'its interpreter path is empty or implausibly long');
+    }
+    const raw = read(path, readAt, offset, Number(fileSize), 'interpreter path');
+    const bytes = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+    const end = bytes.indexOf(0);
+    if (end <= 0) throw malformed(path, 'its interpreter path is not a NUL-terminated string');
+    return new TextDecoder().decode(bytes.subarray(0, end));
+  }
+  return undefined;
+}
+
+/** The DT_NEEDED names of an ELF image read through `readAt`, in file order. `path` names it in errors. */
+export function elfReadNeeded(path: string, readAt: ReadAt): string[] {
+  const { headers, size: programHeaderSize, count: programHeaderCount } = readProgramHeaders(path, readAt);
   const loads: { virtualAddress: bigint; fileSize: bigint; offset: number }[] = [];
   let dynamic: { offset: number; size: number } | undefined;
   for (let i = 0; i < programHeaderCount; i++) {
@@ -105,11 +139,11 @@ export function elfReadNeeded(path: string, readAt: ReadAt): string[] {
   });
 }
 
-/** The DT_NEEDED names of the ELF file at `path`. */
-export function elfReadNeededFile(path: string): string[] {
+/** Opens `path` and parses it through `parse`, which reads it with a {@link ReadAt}. */
+function withFile<T>(path: string, parse: (path: string, readAt: ReadAt) => T): T {
   const fd = openSync(path, 'r');
   try {
-    return elfReadNeeded(path, (offset, count) => {
+    return parse(path, (offset, count) => {
       const buffer = new Uint8Array(count);
       let total = 0;
       while (total < count) {
@@ -122,4 +156,14 @@ export function elfReadNeededFile(path: string): string[] {
   } finally {
     closeSync(fd);
   }
+}
+
+/** The DT_NEEDED names of the ELF file at `path`. */
+export function elfReadNeededFile(path: string): string[] {
+  return withFile(path, elfReadNeeded);
+}
+
+/** The PT_INTERP path of the ELF file at `path`, or undefined if it has none. */
+export function elfReadInterpreterFile(path: string): string | undefined {
+  return withFile(path, elfReadInterpreter);
 }

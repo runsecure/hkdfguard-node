@@ -239,7 +239,7 @@ hkdfguard wrap --key-file-path|-kf <path> --service-name|-sn <name> \
 ```
 
 Wraps the pipeline's 32-byte DEK under the already-provisioned KEK and writes the wrapped payload
-(156 bytes) to the key file. Never creates a KEK: fails if none exists for the service. Prints the
+(125 bytes) to the key file. Never creates a KEK: fails if none exists for the service. Prints the
 fingerprint of the KEK the payload was wrapped under.
 
 | Option | Short | Required | Meaning |

@@ -2,19 +2,19 @@ import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
 import { isValidServiceName, isZero, MAX_SERVICE_NAME_LENGTH, MAX_WRAPPED_KEY_BYTES } from '@runsecure/hkdfguard-abstractions';
 import { keyFileDirectory, linuxKeyFileRoot, untrustedDirectoryChain } from '@runsecure/hkdfguard-test-support';
 import { unixProbe } from './darwin.js';
-import { elfReadNeededFile } from './elf.js';
+import { elfReadInterpreterFile, elfReadNeededFile } from './elf.js';
 import { NotInstalledError, StatusError, UntrustedError } from './errors.js';
 import { hostLibrary } from './host.js';
 import type { KmsLibrary } from './library.js';
-import { linuxReadLink, linuxStatus, linuxTrustedFile } from './linux.js';
+import { linuxListDependencies, linuxReadLink, linuxStatus, linuxTrustedFile, linuxVerifyBeforeLoading } from './linux.js';
 import {
-  ENV_AUDIT, ENV_LIBRARY_PATH, ENV_PRELOAD, linuxReadEnvironment, linuxResolveTrusted, linuxVerifyDependencies, linuxVerifyEnvironment,
-  linuxVerifyLoadedImage,
+  ENV_AUDIT, ENV_LIBRARY_PATH, ENV_PRELOAD, linuxParseListing, linuxReadEnvironment, linuxResolveTrusted, linuxVerifyDependencies,
+  linuxVerifyEnvironment, linuxVerifyListing, linuxVerifyLoadedImage,
 } from './linuxpolicy.js';
 import { PROBE_EXPORT } from './macpolicy.js';
 import { nativeAddon } from './native.js';
@@ -242,6 +242,83 @@ describe('the Linux loader against the real system', { skip: process.platform !=
       native.unload(handle);
     }
     linuxVerifyDependencies(expected, elfReadNeededFile, (soname) => native.loadedPath!(soname), linuxTrustedFile);
+  });
+});
+
+describe("the Linux dynamic linker's list mode, before loading", { skip: process.platform !== 'linux' && 'Linux only' }, () => {
+  // The real dynamic linker in list mode, against files every Linux system has: what the loader
+  // asks it before dlopen.
+
+  function interpreter(): string {
+    const path = elfReadInterpreterFile('/proc/self/exe');
+    assert.ok(path !== undefined, 'node has no PT_INTERP');
+    return path;
+  }
+
+  function listing(target: string, environment: Record<string, string> = {}): string[] {
+    const output = linuxListDependencies(interpreter(), target, environment);
+    return linuxParseListing(target, output);
+  }
+
+  function libcOf(paths: readonly string[]): string | undefined {
+    return paths.find((p) => basename(p).startsWith('libc.so'));
+  }
+
+  it("runs under node's own dynamic linker, a trusted file", () => {
+    assert.ok(linuxTrustedFile(interpreter()).startsWith('/'));
+  });
+
+  it('lists a system binary naming libc, and every file passes the path checks', () => {
+    const paths = listing('/bin/sh');
+    assert.ok(libcOf(paths) !== undefined, `the listing of /bin/sh names no libc: ${paths.join(', ')}`);
+    linuxVerifyListing('/bin/sh', paths, linuxTrustedFile);
+  });
+
+  it('refuses a dependency found in a writable folder before anything loads', (t) => {
+    // The real dynamic linker, told by LD_LIBRARY_PATH to look in a folder anyone can write, finds a
+    // copy of libc there; the check refuses it whoever owns it, since the folder is 0777.
+    const libc = libcOf(listing('/bin/sh'));
+    if (libc === undefined) {
+      t.skip("no libc in /bin/sh's listing");
+      return;
+    }
+    const folder = temporaryDirectory('hkdfguard-ldlist-');
+    try {
+      chmodSync(folder, 0o777);
+      const planted = join(folder, basename(libc));
+      writeFileSync(planted, readFileSync(libc), { mode: 0o755 });
+
+      const paths = listing('/bin/sh', { [ENV_LIBRARY_PATH]: folder });
+      assert.ok(paths.includes(planted), `the linker did not pick up the planted copy: ${paths.join(', ')}`);
+      assert.throws(() => linuxVerifyListing('/bin/sh', paths, linuxTrustedFile),
+        (e: unknown) => e instanceof UntrustedError && e.message.includes(planted) && e.message.includes('nothing was loaded'));
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('fails to list a file that does not exist', () => {
+    assert.throws(() => linuxListDependencies(interpreter(), '/nonexistent/libhkdfguard.so.1', {}),
+      (e: unknown) => e instanceof UntrustedError && e.message.includes('/nonexistent/libhkdfguard.so.1'));
+  });
+
+  it('lists a shared library, naming the dynamic linker', (t) => {
+    // libhkdfguard.so.1 is a shared object, not an executable; list mode works on those too.
+    const libc = libcOf(listing('/bin/sh'));
+    if (libc === undefined) {
+      t.skip("no libc in /bin/sh's listing");
+      return;
+    }
+    const paths = listing(libc);
+    assert.ok(paths.some((p) => basename(p).includes('ld-linux')), `the listing of ${libc} names no dynamic linker: ${paths.join(', ')}`);
+    linuxVerifyListing(libc, paths, linuxTrustedFile);
+  });
+
+  it('passes the pre-load check for a system library under this process', () => {
+    // The loader's whole pre-load step, against libc and this process's startup environment.
+    const libc = libcOf(listing('/bin/sh'));
+    assert.ok(libc !== undefined);
+    linuxVerifyBeforeLoading(linuxTrustedFile(libc), readFileSync('/proc/self/environ'));
   });
 });
 
