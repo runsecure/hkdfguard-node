@@ -34,8 +34,9 @@
 #     GitHub Release: `gh attestation verify <file> --repo runsecure/hkdfguard-node`.
 #
 # Nothing here is Authenticode- or codesign-signed, because nothing shipped is a binary: the
-# native add-on is compiled from its C source on each consumer's machine at install, and the
-# native KMS library it loads is installed, signed and verified separately. If prebuilt add-on
+# native add-ons (keywrapping-native-v1's, and securefile's on Windows) are compiled from their C
+# source on each consumer's machine at install, and the native KMS library keywrapping-native-v1
+# loads is installed, signed and verified separately. If prebuilt add-on
 # binaries (prebuildify and the like) are ever shipped, they need a sign job between build and
 # pack, like the .NET release's: Authenticode for the Windows .node files (Artifact Signing, with
 # an Azure federated credential for the "release" environment), and codesign plus notarization for
