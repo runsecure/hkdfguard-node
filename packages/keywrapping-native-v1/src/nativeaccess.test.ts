@@ -24,8 +24,8 @@ function standIn(name: string, body: string): string {
 
 describe('the deadline on the first native call (test support)', () => {
   it('resolves once the call returns, whatever it answers', async () => {
-    await probeNativeAccess('service.answers', standIn('answers', 'return Promise.resolve(output.length);'), 30_000);
-    await probeNativeAccess('service.refuses', standIn('refuses', 'return Promise.reject(new Error("KEK access denied"));'), 30_000);
+    await assert.doesNotReject(probeNativeAccess('service.answers', standIn('answers', 'return Promise.resolve(output.length);'), 30_000));
+    await assert.doesNotReject(probeNativeAccess('service.refuses', standIn('refuses', 'return Promise.reject(new Error("KEK access denied"));'), 30_000));
   });
 
   it('fails, explaining the keychain dialog, when the call never returns - and does not hang', async () => {

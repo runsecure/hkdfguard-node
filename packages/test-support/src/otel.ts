@@ -32,7 +32,11 @@ export function useMetricRecorder(): { collect(): Promise<Map<string, number>>; 
       for (const scope of resourceMetrics.scopeMetrics) {
         for (const metric of scope.metrics) {
           for (const point of metric.dataPoints) {
-            const attributes = Object.entries(point.attributes).map(([k, v]) => `${k}=${String(v)}`).sort().join(',');
+            // Code-unit order, not localeCompare: the key must be the same on every machine.
+            const attributes = Object.entries(point.attributes)
+              .map(([k, v]) => `${k}=${String(v)}`)
+              .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+              .join(',');
             points.set(`${scope.scope.name}|${metric.descriptor.name}|${metric.descriptor.unit}|${attributes}`, point.value as number);
           }
         }

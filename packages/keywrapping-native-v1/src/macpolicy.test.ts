@@ -47,7 +47,7 @@ function untrusted(fn: () => unknown, ...contains: string[]): void {
 
 describe('macOS platform', () => {
   it('accepts arm64 on macOS 13 or later', () => {
-    for (const version of ['13.0', '15.4', '26.6.2']) macRequireSupportedPlatform('arm64', version);
+    for (const version of ['13.0', '15.4', '26.6.2']) assert.doesNotThrow(() => macRequireSupportedPlatform('arm64', version), version);
   });
 
   it('refuses x64, naming Rosetta, and every other architecture', () => {
@@ -101,6 +101,17 @@ describe('macOS locations', () => {
     assert.equal(macParentOf('/a/b/'), '/a');
     assert.equal(macParentOf('/a'), '/');
     assert.equal(macParentOf('/'), undefined);
+  });
+
+  it('trim any run of trailing slashes, in linear time however long it is', () => {
+    assert.equal(macParentOf('/a/b///'), '/a');
+    assert.equal(macUserPath('/Users/dev///'), '/Users/dev/.hkdfguard/v1/libhkdfguard.dylib');
+    // A regex like /\/+$/ takes quadratic time on a long run of '/' that isn't at the end.
+    const slashes = '/'.repeat(200_000);
+    const started = Date.now();
+    assert.equal(macParentOf(`${slashes}x`), '/'.repeat(199_999));
+    assert.equal(macUserPath(`${slashes}x`), `${slashes}x/.hkdfguard/v1/libhkdfguard.dylib`);
+    assert.ok(Date.now() - started < 1_000, `took ${Date.now() - started} ms`);
   });
 });
 

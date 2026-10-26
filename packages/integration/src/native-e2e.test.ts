@@ -99,7 +99,8 @@ function unprotect(protector: DataProtector, formatted: string): string {
 
 /** Runs `body` against the test service, or skips. */
 function native(name: string, body: (service: string, t: TestContext) => Promise<void>): void {
-  it(name, async (t) => {
+  // The assertions are in each caller's body, which S2699 can't follow into.
+  it(name, async (t) => { // NOSONAR
     const service = await testServiceName(t);
     if (service !== undefined) await body(service, t);
   });

@@ -59,8 +59,11 @@ done
 echo "node $(node --version), npm $(npm --version)"
 
 if [[ ${HKDFGUARD_CHECK_INSTALL:-1} == 1 ]]; then
-    note "clean install from package-lock.json (compiles the native add-ons)"
-    npm ci
+    note "clean install from package-lock.json, then compile the native add-ons"
+    # --ignore-scripts: no dependency's lifecycle script runs. The only install scripts in the
+    # lockfile are this repository's own add-on builds, run by name next.
+    npm ci --ignore-scripts
+    npm run install --workspace packages/keywrapping-native-v1 --workspace packages/securefile
 fi
 
 note "build: every package, type-checked for every platform"
