@@ -18,12 +18,16 @@
 #   HKDFGUARD_CHECK_AUDIT   0 skips npm audit (no network).
 #   HKDFGUARD_TEST_SERVICE  a provisioned native service: the native round trips then run too.
 #   HKDFGUARD_TEST_AWS_KMS_KEY_ID  a symmetric AWS KMS key: the AWS KMS integration tests then run too.
+#   HKDFGUARD_TEST_AZURE_WRAP_KEY_ID, HKDFGUARD_TEST_AZURE_SIGN_KEY_ID  an RSA and an EC P-256 Azure Key
+#                                  Vault key (or azure.test.properties): the Azure integration tests run too.
 #
 # The native round trips (keywrapping-native-v1, and the end-to-end tests in packages/integration)
 # are reported as skipped unless this host has a provisioned test service; see
 # packages/keywrapping-native-v1/scripts. The AWS KMS integration tests (packages/keywrapping-awskms)
 # are reported as skipped unless HKDFGUARD_TEST_AWS_KMS_KEY_ID names a KMS key; see
-# docs/how-to/run-aws-kms-integration-tests.md.
+# docs/how-to/run-aws-kms-integration-tests.md. The Azure Key Vault integration tests
+# (packages/keywrapping-azurekeyvault) are reported as skipped unless both Azure keys are named, in
+# the environment or azure.test.properties; see docs/how-to/run-azure-key-vault-integration-tests.md.
 
 set -euo pipefail
 
@@ -44,6 +48,7 @@ readonly PUBLISHED_PACKAGES=(
     packages/cryptoprovider-aesgcm256
     packages/keywrapping-native-v1
     packages/keywrapping-awskms
+    packages/keywrapping-azurekeyvault
     packages/dek
     packages/cache
     packages/encryptedconfig

@@ -11,6 +11,7 @@
     "packages/cryptoprovider-aesgcm256",
     "packages/keywrapping-native-v1",
     "packages/keywrapping-awskms",
+    "packages/keywrapping-azurekeyvault",
     "packages/dek",
     "packages/cache",
     "packages/encryptedconfig",
