@@ -12,6 +12,7 @@
     "packages/keywrapping-native-v1",
     "packages/keywrapping-awskms",
     "packages/keywrapping-azurekeyvault",
+    "packages/keywrapping-googlekms",
     "packages/dek",
     "packages/cache",
     "packages/encryptedconfig",

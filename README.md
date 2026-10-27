@@ -15,7 +15,8 @@ lists every page.
 
 Each package is published separately. Implementations depend only on the abstractions, never on each
 other, so the key wrapper, the cipher and the cache can each be swapped for another implementation.
-(The AWS KMS and Azure Key Vault key wrappers use `securefile`, a helper that implements no interface.)
+(The AWS KMS, Azure Key Vault and Google Cloud KMS key wrappers use `securefile`, a helper that
+implements no interface.)
 
 | Package | Port of | What it is |
 |---|---|---|
@@ -24,6 +25,7 @@ other, so the key wrapper, the cipher and the cache can each be swapped for anot
 | `@runsecure/hkdfguard-keywrapping-native-v1` | HkdfGuard.KeyWrapping.V1 | `KeyWrapper` over the OS's native KMS library (TPM2, Secure Enclave, Platform Crypto Provider) |
 | `@runsecure/hkdfguard-keywrapping-awskms` | HkdfGuard.KeyWrapping.AwsKms | `KeyWrapper` over one symmetric AWS KMS key, through the AWS SDK for JavaScript v3 (`KMSClient`) |
 | `@runsecure/hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault | `KeyWrapper` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through `@azure/keyvault-keys` |
+| `@runsecure/hkdfguard-keywrapping-googlekms` | HkdfGuard.KeyWrapping.GoogleKms | `KeyWrapper` over one symmetric Google Cloud KMS key, through `@google-cloud/kms` (`KeyManagementServiceClient`) |
 | `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through |
 | `@runsecure/hkdfguard-cryptoprovider-aesgcm256` | HkdfGuard.CryptoProvider.AesGcm256 | The AES-256-GCM `CryptoProviderFactory` and `PipelineDataProtector` |
 | `@runsecure/hkdfguard-dek` | HkdfGuard.DataEncryptionKey, HkdfGuard.Options | Key rings with rotation, data protectors, the stored format, `buildKeyRing`, and options read from an `appsettings.json` section |
@@ -267,6 +269,52 @@ files through `@runsecure/hkdfguard-securefile`.
 [Wrap keys with Azure Key Vault](docs/how-to/use-azure-key-vault.md) covers the two keys, the
 permissions for each identity, credentials, key files and troubleshooting.
 
+## Wrapping under Google Cloud KMS instead
+
+`@runsecure/hkdfguard-keywrapping-googlekms` puts the KEK in Google Cloud KMS: one symmetric key
+(purpose `ENCRYPT_DECRYPT`), used through `Encrypt` and `Decrypt` with a `KeyManagementServiceClient`
+(`@google-cloud/kms`) the application creates, owns and closes.
+
+```ts
+import { KeyManagementServiceClient } from '@google-cloud/kms';
+import { GoogleKmsKeyWrapper } from '@runsecure/hkdfguard-keywrapping-googlekms';
+
+const kms = new KeyManagementServiceClient();  // Application Default Credentials
+const ring = await buildKeyRing({
+  keyWrapper: new GoogleKmsKeyWrapper(kms, 'projects/my-project/locations/us-east1/keyRings/orders/cryptoKeys/orders-wrap',
+    { context: 'com.example.orders' }),        // bound into every wrapped DEK; not secret
+  cryptoProviderFactory: new AesGcmCryptoProviderFactory(),
+  keyRefreshInterval: 300,
+  keyFiles: { 1: '/etc/hkdfguard/keys/orders/v1.key' },
+});
+```
+
+The key is pinned: `Decrypt` always names the key given, never a version, and Cloud KMS refuses a
+ciphertext made under any other key; a ciphertext names its own key version, so rotation needs
+nothing here. Every wrapped DEK binds a fixed HkdfGuard label and the context as additional
+authenticated data, and every request and response carries a CRC32C checksum, as Google recommends.
+Symmetric encryption needs no secret beyond permission to use the key, so give the application
+decrypt only and the pipeline that creates key files encrypt only; key files are read through
+`@runsecure/hkdfguard-securefile`, as for AWS KMS. Key files are byte for byte those of the .NET, Java
+and Python wrappers, about 113 bytes. `generateAndWrap` generates the DEK in the process, since Cloud
+KMS has no "generate data key". A failure rejects with `GoogleKmsError` (`ERR_HKDFGUARD_GOOGLE_KMS`),
+naming the operation, the key and the gRPC status (`INVALID_ARGUMENT: Decryption failed.`), with the
+client's error as its `cause`.
+
+The wrapper zeroes its own copies of keys, and the buffer the client decodes `Decrypt`'s plaintext
+into, but not the request the client serializes. Two things about Google's client matter here:
+
+- **Keep its debug logging off.** With `GOOGLE_SDK_NODE_LOGGING` naming it, the client logs every
+  request and response - plaintext keys included.
+- **It can't cancel a call.** A `signal` that aborts stops the wrapper waiting; the request runs on
+  until it completes or the client's timeout passes, and a key it then reveals is zeroed unused.
+
+The wrapper awaits the client's `initialize` before every call, so a missing credential rejects that
+call. Called directly, the client would also raise an unhandled rejection, which ends the process.
+
+[Wrap keys with Google Cloud KMS](docs/how-to/use-google-kms.md) covers the key, the IAM roles for
+each identity, credentials, key files and troubleshooting.
+
 ## Development
 
 Node.js 22 or later (see `.nvmrc`), with Python 3 and a C compiler for the add-on.
@@ -299,8 +347,14 @@ HTTP requests - really wrapping with RSA-OAEP-256 and signing ES256 digests - an
 tests against real keys are reported as skipped unless `HKDFGUARD_TEST_AZURE_WRAP_KEY_ID` and
 `HKDFGUARD_TEST_AZURE_SIGN_KEY_ID` name them, in the environment or a git-ignored
 `azure.test.properties` at the repository root - see
-[Run the Azure Key Vault integration tests](docs/how-to/run-azure-key-vault-integration-tests.md). The securefile
-package's rules are tested against simulated filesystems and security descriptors on every
+[Run the Azure Key Vault integration tests](docs/how-to/run-azure-key-vault-integration-tests.md). The
+Google Cloud KMS key wrapper's tests run a real `KeyManagementServiceClient` against a fake Cloud KMS,
+a gRPC server on the loopback address that really encrypts (AES-GCM, binding the key, its version
+and the additional authenticated data) and checks the request's checksums; its integration tests
+against a real key are reported as skipped unless `HKDFGUARD_TEST_GOOGLE_KMS_KEY_NAME` names one, in
+the environment or a git-ignored `google.test.properties` at the repository root - see
+[Run the Google Cloud KMS integration tests](docs/how-to/run-google-kms-integration-tests.md). The
+securefile package's rules are tested against simulated filesystems and security descriptors on every
 platform, and against real files on Windows, Linux and macOS (each platform's suite skipped on the
 others); on Linux the real-file tests use `keyFileDirectory`'s private folder, so run them as a
 non-root user to cover the refusals root would pass.
