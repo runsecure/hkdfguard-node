@@ -7,8 +7,9 @@ import { nativeAddon, type NativeAddon } from './native.js';
 import { windowsStatusDescriptions } from './status.js';
 import {
   WIN_EXPECTED_PUBLISHER, WIN_FILE_NAME, WIN_GUARDED_RIGHTS, WIN_GUARDED_ROOT_RIGHTS, winReadPeHeader, winVerifyImageKind,
-  winRevocationDecision, winVerifySignerIdentity, winVerifyTrustedOnly, type WinSecurity,
+  winRequireMinimumVersion, winRevocationDecision, winVerifyLoadedModule, winVerifySignerIdentity, winVerifyTrustedOnly, type WinSecurity,
 } from './windowspolicy.js';
+import { PROBE_EXPORT } from './macpolicy.js';
 
 // The steps of loadWindowsLibrary are exported for the tests against the real system
 // (windows.test.ts); the package's index exports none of them.
@@ -102,6 +103,7 @@ export function winLoadFrom(native: NativeAddon, path: string, expectedPublisher
   winVerifyLocation(native, path);
   winVerifySignature(native, path, expectedPublisher);
   winVerifyImageKindOf(path);
+  winRequireMinimumVersion(path, native.fileVersion!(path));
   // A second, separate pass, now checking revocation (network allowed); only a definite revocation refuses.
   winRevocationDecision(path, native.revocationStatus!(path));
 
@@ -113,6 +115,7 @@ export function winLoadFrom(native: NativeAddon, path: string, expectedPublisher
     throw untrustedCause(error, `'${path}' passed verification but could not be loaded`);
   }
   try {
+    winVerifyLoadedModule(path, native.symbolImagePath!(handle, PROBE_EXPORT));
     return NativeKmsLibrary.bind(native, handle, path, windowsStatusDescriptions);
   } catch (error) {
     native.unload(handle);

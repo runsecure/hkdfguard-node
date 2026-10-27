@@ -15,8 +15,16 @@ import { ENOENT, ENOTDIR, FileType, PERM_GROUP_WRITE, PERM_OTHER_WRITE, type Fil
  *     itself must be owned by root, and no directory or file may be writable by group or others.
  *  3. Environment. Every location LD_LIBRARY_PATH, LD_PRELOAD or LD_AUDIT names must pass the same
  *     path checks, in both the environment the process started with and the current one.
- *  4. What was loaded. After dlopen, dladdr must place the export in the verified file, and every
- *     object in its dependency closure must be bound to a file that passes the path checks.
+ *  4. What would be loaded. Before dlopen, the process's own dynamic linker is asked, in list mode
+ *     (ld.so --list, the mechanism ldd uses), where it would find every object the library pulls
+ *     in, under the LD_LIBRARY_PATH and LD_PRELOAD the process started with. List mode resolves
+ *     exactly as dlopen would - RUNPATH, ld.so.cache and all - but runs none of the libraries'
+ *     code, so every path it reports must pass the path checks before any of it can run here. A
+ *     name it can't find refuses the load.
+ *  5. What was loaded. After dlopen, dladdr must place the export in the verified file, and every
+ *     object in its dependency closure must be bound to a file that passes the path checks. This
+ *     catches what list mode can't see: a dependency name the process had already bound to some
+ *     other object before the library was loaded.
  *
  * The library is not content-pinned: a release's authenticity is verified with Sigstore/cosign when
  * the package is installed, so path integrity is what the loader enforces.
@@ -197,6 +205,68 @@ export function linuxVerifyEnvironment(environment: ReadonlyMap<string, readonly
           verifyVariableLocation(variable, value, entry, FileType.Regular, resolveTrusted);
         }
       }
+    }
+  }
+}
+
+/**
+ * The whole environment the dynamic linker's list mode runs with: the LD_LIBRARY_PATH and
+ * LD_PRELOAD the process started with (`initialEnvironment`, /proc/self/environ's block) - what
+ * dlopen itself uses, since the linker reads them once at startup - and nothing else. LD_AUDIT is
+ * left out: an audit module is code the list run would execute, and its locations were already
+ * checked before this runs.
+ */
+export function linuxListingEnvironment(initialEnvironment: Uint8Array | undefined): Record<string, string> {
+  const environment: Record<string, string> = {};
+  if (initialEnvironment === undefined) return environment;
+  for (const entry of new TextDecoder().decode(initialEnvironment).split('\0')) {
+    const equals = entry.indexOf('=');
+    const name = equals < 0 ? '' : entry.slice(0, equals);
+    if (name === ENV_LIBRARY_PATH || name === ENV_PRELOAD) environment[name] = entry.slice(equals + 1);
+  }
+  return environment;
+}
+
+/**
+ * Every file path in the output of the dynamic linker's list mode, in order. Its lines are
+ * "\tname => /path (0xaddress)", "\t/path (0xaddress)" (the linker itself and preloaded objects) and
+ * "\tname (0xaddress)" (the vDSO, which has no file). A name it couldn't find ("=> not found"), or
+ * any line in another form, refuses: what can't be read can't be checked.
+ */
+export function linuxParseListing(library: string, output: string): string[] {
+  const paths: string[] = [];
+  for (const raw of output.split('\n')) {
+    const line = raw.trim();
+    if (line === '') continue;
+    if (line.endsWith(' => not found')) {
+      throw new UntrustedError(`The dynamic linker can't find '${line.slice(0, -' => not found'.length)}', which '${library}' needs; refusing to load it.`);
+    }
+    const open = line.lastIndexOf(' (0x');
+    if (open < 0 || !line.endsWith(')')) {
+      throw new UntrustedError(`The dynamic linker's list of what '${library}' would load has a line this loader doesn't understand ('${line}'); refusing to load it.`);
+    }
+    let entry = line.slice(0, open);
+    const arrow = entry.indexOf(' => ');
+    if (arrow >= 0) entry = entry.slice(arrow + ' => '.length);
+    if (!entry.startsWith('/')) {
+      if (entry.includes('/') || entry.includes(' ')) {
+        throw new UntrustedError(`The dynamic linker would load '${entry}' for '${library}', which is not an absolute path; refusing to load it.`);
+      }
+      continue; // the vDSO: in the kernel, not a file
+    }
+    paths.push(entry);
+  }
+  return paths;
+}
+
+/** Requires every path the dynamic linker's list mode reported to pass the path checks (`resolveTrusted`, as linuxTrustedFile). */
+export function linuxVerifyListing(library: string, paths: readonly string[], resolveTrusted: (path: string) => string): void {
+  for (const path of paths) {
+    try {
+      resolveTrusted(path);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new UntrustedError(`Loading '${library}' would also load '${path}', which is not trusted; nothing was loaded: ${reason}`, { cause: error });
     }
   }
 }

@@ -203,9 +203,10 @@ describe('the macOS loader against the real system', { skip: process.platform !=
       t.skip('the native library is not installed');
       return;
     }
-    macVerifyLocation(chosen.path, (p) => { const s = lstatSync(p); return statusFromMode(s.uid, s.gid, s.mode); },
-      chosen.isSystem ? [0] : [0, process.geteuid!()]);
-    macVerifySignature(chosen.path, nativeAddon().checkCodeSignature!);
+    const { path, isSystem } = chosen;
+    assert.doesNotThrow(() => macVerifyLocation(path, (p) => { const s = lstatSync(p); return statusFromMode(s.uid, s.gid, s.mode); },
+      isSystem ? [0] : [0, process.geteuid!()]));
+    assert.doesNotThrow(() => macVerifySignature(path, nativeAddon().checkCodeSignature!));
   });
 
   it('refuses the provisioning tool - signed by the team, but not the library', (t) => {

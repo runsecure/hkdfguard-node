@@ -24,6 +24,8 @@ export interface NativeAddon {
   accountHome?(): string | null;
   programFilesPath?(): string;
   fileAttributes?(path: string): number;
+  /** Windows: [major, minor, patch] from the file's version resource, or null if it has none. */
+  fileVersion?(path: string): [number, number, number] | null;
   securityDescriptor?(path: string): { owner: string; daclAbsent: boolean; aces: { type: number; flags: number; mask: number; sid: string }[] };
   describeSid?(sid: string): string;
   verifiedSigner?(path: string): { subject: string; ekus: string[]; rootCertificate: Uint8Array } | { status: number } | { error: string };

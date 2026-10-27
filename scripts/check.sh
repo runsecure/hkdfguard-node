@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Every check CI runs, in one place, so a developer runs exactly what a pull request will: a clean
-# install from the lockfile (which compiles the native add-on), a forced build of every package -
+# install from the lockfile (which compiles the native add-ons), a forced build of every package -
 # one tsc build type-checks every platform's loader, whatever this host is - each package's tests,
 # npm audit of the runtime dependencies, and a dry-run pack of each published package to check what
 # it would ship. Stops at the first failure.
@@ -17,10 +17,13 @@
 #   HKDFGUARD_CHECK_INSTALL 0 skips the clean install (npm ci), keeping node_modules as it is.
 #   HKDFGUARD_CHECK_AUDIT   0 skips npm audit (no network).
 #   HKDFGUARD_TEST_SERVICE  a provisioned native service: the native round trips then run too.
+#   HKDFGUARD_TEST_AWS_KMS_KEY_ID  a symmetric AWS KMS key: the AWS KMS integration tests then run too.
 #
 # The native round trips (keywrapping-native-v1, and the end-to-end tests in packages/integration)
 # are reported as skipped unless this host has a provisioned test service; see
-# packages/keywrapping-native-v1/scripts.
+# packages/keywrapping-native-v1/scripts. The AWS KMS integration tests (packages/keywrapping-awskms)
+# are reported as skipped unless HKDFGUARD_TEST_AWS_KMS_KEY_ID names a KMS key; see
+# docs/how-to/run-aws-kms-integration-tests.md.
 
 set -euo pipefail
 
@@ -37,8 +40,10 @@ node_major="$(node -p 'process.versions.node.split(".")[0]')"
 readonly PUBLISHED_PACKAGES=(
     packages/diagnostics
     packages/abstractions
+    packages/securefile
     packages/cryptoprovider-aesgcm256
     packages/keywrapping-native-v1
+    packages/keywrapping-awskms
     packages/dek
     packages/cache
     packages/encryptedconfig
@@ -54,8 +59,12 @@ done
 echo "node $(node --version), npm $(npm --version)"
 
 if [[ ${HKDFGUARD_CHECK_INSTALL:-1} == 1 ]]; then
-    note "clean install from package-lock.json (compiles the native add-on)"
-    npm ci
+    note "clean install from package-lock.json, then compile the native add-ons"
+    # --ignore-scripts: no dependency's lifecycle script runs. The only install scripts in the
+    # lockfile are this repository's own add-on builds, run by name next - npm still runs a script
+    # named on the command line under --ignore-scripts, but not its pre- or post- scripts.
+    npm ci --ignore-scripts
+    npm run install --ignore-scripts --workspace packages/keywrapping-native-v1 --workspace packages/securefile
 fi
 
 note "build: every package, type-checked for every platform"

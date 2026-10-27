@@ -11,7 +11,13 @@
       "path": "packages/abstractions"
     },
     {
+      "path": "packages/securefile"
+    },
+    {
       "path": "packages/keywrapping-native-v1"
+    },
+    {
+      "path": "packages/keywrapping-awskms"
     },
     {
       "path": "packages/dek"

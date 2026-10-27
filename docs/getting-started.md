@@ -189,6 +189,8 @@ What happened:
   being available (it was deleted, or your account lost access), encryption and decryption stop
   after three failed checks, about three minutes, until access returns. That is the default
   `refreshFailurePolicy`; `RefreshFailurePolicy.failOpen()` keeps the last good key instead.
+  The interval is also each check's deadline: a check that takes longer counts as failed, so
+  don't go below about 10 seconds on a TPM, which can be slow to answer when it is busy.
 - KMS calls run on libuv's thread pool, so a slow TPM never blocks the event loop.
 - Plaintext travels as a `Uint8Array`, so it can be zeroed: `wipe` clears the buffer when you are
   done. `encrypt` also accepts a `string` for convenience, but a JavaScript string can't be

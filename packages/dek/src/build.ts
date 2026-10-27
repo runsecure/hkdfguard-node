@@ -67,6 +67,13 @@ export interface KeyRingConfig {
    * How often, in seconds (1-300), each key is re-revealed to confirm the KEK is still available.
    * With the refresh-failure policy it sets how fast a revoked KEK stops a running process: about
    * maxFailures × keyRefreshInterval.
+   *
+   * It is also each refresh's deadline: a reveal that takes longer than one interval counts as a
+   * failed refresh, so a hung key wrapper can't keep a revoked KEK's key in use. A short interval
+   * is therefore a short deadline. A TPM-backed KEK can take more than a second to answer, longer
+   * while other processes share the TPM, and a locked macOS keychain stalls the call; under the
+   * default fail-closed policy, maxFailures slow answers in a row suspend the key though the KEK
+   * is healthy. Keep it at 10 seconds or more for TPM-backed keys.
    */
   keyRefreshInterval: number;
   /** Handed to every provider; fails closed after 3 failures unless set. */

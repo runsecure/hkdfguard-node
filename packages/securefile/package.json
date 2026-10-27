@@ -1,0 +1,36 @@
+{
+  "name": "@runsecure/hkdfguard-securefile",
+  "version": "0.9.0",
+  "description": "Reads a wrapped-key file only from where no untrusted account could have written or replaced it: the native library's key-file checks, in TypeScript, for key wrappers with no native library to read through.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "gypfile": true,
+  "files": [
+    "dist",
+    "!dist/**/*.test*",
+    "native",
+    "binding.gyp",
+    "scripts"
+  ],
+  "scripts": {
+    "install": "node scripts/build-addon.js",
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@runsecure/hkdfguard-abstractions": "0.9.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@runsecure/hkdfguard-test-support": "0.0.0"
+  }
+}

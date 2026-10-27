@@ -26,7 +26,10 @@ export interface KeyFileOptions {
 export interface KeyRingOptions {
   /** Identifies this ring's KEK to the native KMS library. Required. */
   ServiceName?: string;
-  /** Seconds (1-300) between re-reveals of each key through the KEK. */
+  /**
+   * Seconds (1-300) between re-reveals of each key through the KEK, and each reveal's deadline (see
+   * KeyRingConfig.keyRefreshInterval: 10 or more for TPM-backed keys).
+   */
   KeyRefreshInterval?: number;
   /** Consecutive failed refreshes before a key fails closed; 1-100. Can't be combined with FailOpenOnRefreshFailure. */
   MaxRefreshFailures?: number;

@@ -504,10 +504,10 @@ static napi_value kek_exists(napi_env env, napi_callback_info info) {
   return result;
 }
 
-/* --- Unix: what the dynamic linker loaded ------------------------------------------------------- */
+/* --- What the loader actually mapped ------------------------------------------------------------ */
 
-#if !defined(_WIN32)
-/* symbolImagePath(library, symbol): the file dladdr says the export was mapped from, or null. */
+/* symbolImagePath(library, symbol): the file the export was mapped from (dladdr on Unix; the module
+ * containing its address, then GetModuleFileNameW, on Windows), or null. */
 static napi_value symbol_image_path(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value argv[2];
@@ -517,13 +517,28 @@ static napi_value symbol_image_path(napi_env env, napi_callback_info info) {
   char* symbol = utf8_arg(env, argv[1]);
   if (symbol == NULL) return NULL;
 
-  void* address = dlsym(library->handle, symbol);
+  void* address = find_symbol(library->handle, symbol);
   free(symbol);
+  if (address == NULL) return js_null(env);
+#if defined(_WIN32)
+  HMODULE module;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          (LPCWSTR)address, &module)) {
+    return js_null(env);
+  }
+  const DWORD capacity = 32768; /* the longest path Windows supports, plus its terminator */
+  wchar_t* name = malloc(sizeof(wchar_t) * capacity);
+  if (name == NULL) return js_null(env);
+  DWORD length = GetModuleFileNameW(module, name, capacity);
+  napi_value result = (length == 0 || length >= capacity) ? js_null(env) : js_wide(env, name);
+  free(name);
+  return result;
+#else
   Dl_info dl;
-  if (address == NULL || dladdr(address, &dl) == 0 || dl.dli_fname == NULL) return js_null(env);
+  if (dladdr(address, &dl) == 0 || dl.dli_fname == NULL) return js_null(env);
   return js_string(env, dl.dli_fname);
-}
 #endif
+}
 
 #if defined(__linux__)
 /* loadedPath(soname): the path the linker recorded for the loaded object it would bind soname to,
@@ -642,6 +657,42 @@ static napi_value program_files_path(napi_env env, napi_callback_info info) {
   }
   napi_value result = js_wide(env, path);
   CoTaskMemFree(path);
+  return result;
+}
+
+/* fileVersion(path): [major, minor, patch] from the file's version resource (VS_FIXEDFILEINFO), or
+ * null if it has none or it can't be read. */
+static napi_value file_version(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  CHECK(napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  char* path = utf8_arg(env, argv[0]);
+  if (path == NULL) return NULL;
+  wchar_t* wide = to_wide(path);
+  free(path);
+  if (wide == NULL) return js_null(env);
+
+  int found = 0;
+  uint32_t parts[3] = { 0, 0, 0 };
+  DWORD size = GetFileVersionInfoSizeW(wide, NULL);
+  void* block = size == 0 ? NULL : malloc(size);
+  VS_FIXEDFILEINFO* fixed = NULL;
+  UINT length = 0;
+  if (block != NULL && GetFileVersionInfoW(wide, 0, size, block) &&
+      VerQueryValueW(block, L"\\", (void**)&fixed, &length) && fixed != NULL &&
+      length >= sizeof(VS_FIXEDFILEINFO) && fixed->dwSignature == 0xFEEF04BD) {
+    parts[0] = fixed->dwFileVersionMS >> 16;
+    parts[1] = fixed->dwFileVersionMS & 0xFFFF;
+    parts[2] = fixed->dwFileVersionLS >> 16;
+    found = 1;
+  }
+  free(block);
+  free(wide);
+  if (!found) return js_null(env);
+
+  napi_value result;
+  CHECK(napi_create_array_with_length(env, 3, &result));
+  for (uint32_t i = 0; i < 3; i++) CHECK(napi_set_element(env, result, i, js_int(env, parts[i])));
   return result;
 }
 
@@ -907,9 +958,7 @@ NAPI_MODULE_INIT() {
     { "openFile", NULL, open_file, NULL, NULL, NULL, napi_enumerable, NULL },
     { "hardenProcess", NULL, harden_process, NULL, NULL, NULL, napi_enumerable, NULL },
     { "kekExists", NULL, kek_exists, NULL, NULL, NULL, napi_enumerable, NULL },
-#if !defined(_WIN32)
     { "symbolImagePath", NULL, symbol_image_path, NULL, NULL, NULL, napi_enumerable, NULL },
-#endif
 #if defined(__linux__)
     { "loadedPath", NULL, loaded_path, NULL, NULL, NULL, napi_enumerable, NULL },
 #endif
@@ -921,6 +970,7 @@ NAPI_MODULE_INIT() {
 #if defined(_WIN32)
     { "programFilesPath", NULL, program_files_path, NULL, NULL, NULL, napi_enumerable, NULL },
     { "fileAttributes", NULL, file_attributes, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "fileVersion", NULL, file_version, NULL, NULL, NULL, napi_enumerable, NULL },
     { "securityDescriptor", NULL, security_descriptor, NULL, NULL, NULL, napi_enumerable, NULL },
     { "describeSid", NULL, describe_sid, NULL, NULL, NULL, napi_enumerable, NULL },
     { "verifiedSigner", NULL, verified_signer, NULL, NULL, NULL, napi_enumerable, NULL },

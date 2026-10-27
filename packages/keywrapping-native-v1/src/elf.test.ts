@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { elfReadNeeded, elfReadNeededFile } from './elf.js';
+import { elfReadInterpreter, elfReadInterpreterFile, elfReadNeeded, elfReadNeededFile } from './elf.js';
 import { UntrustedError } from './errors.js';
 
 const LOAD_ADDRESS = 0x40_0000n;
@@ -100,5 +100,58 @@ describe('ELF DT_NEEDED', () => {
     assert.deepEqual(elfReadNeededFile(path), ['libc.so.6']);
     writeFileSync(path, syntheticElf(['libc.so.6']).slice(0, 100));
     assert.throws(() => elfReadNeededFile(path), UntrustedError);
+  });
+});
+
+/** A minimal 64-bit little-endian ELF executable: one program header, a PT_INTERP holding `interpreter` (raw bytes), or a PT_LOAD when undefined. */
+function syntheticExecutable(interpreter: Uint8Array | undefined, size = interpreter?.length ?? 0): Uint8Array {
+  const header = 64, phdrs = 56;
+  const image = new Uint8Array(header + phdrs + (interpreter?.length ?? 0));
+  const view = new DataView(image.buffer);
+  image.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
+  view.setBigUint64(32, BigInt(header), true);
+  view.setUint16(54, 56, true);
+  view.setUint16(56, 1, true);
+  view.setUint32(header, interpreter === undefined ? 1 : 3, true);
+  view.setBigUint64(header + 8, BigInt(header + phdrs), true);
+  view.setBigUint64(header + 32, BigInt(size), true);
+  if (interpreter !== undefined) image.set(interpreter, header + phdrs);
+  return image;
+}
+
+const encode = (s: string) => new TextEncoder().encode(s);
+const parseInterpreter = (image: Uint8Array) => elfReadInterpreter('test', (offset, count) => (offset + count <= image.length ? image.slice(offset, offset + count) : undefined));
+
+describe('ELF PT_INTERP', () => {
+  it('reads the interpreter path, or none', () => {
+    assert.equal(parseInterpreter(syntheticExecutable(encode('/lib64/ld-linux-x86-64.so.2\0'))), '/lib64/ld-linux-x86-64.so.2');
+    assert.equal(parseInterpreter(syntheticExecutable(undefined)), undefined);
+    assert.equal(parseInterpreter(syntheticElf(['libc.so.6'])), undefined); // a shared object names none
+  });
+
+  it('refuses malformed interpreter paths', () => {
+    const cases: [string, Uint8Array][] = [
+      ['empty or implausibly long', syntheticExecutable(new Uint8Array(0))],
+      ['empty or implausibly long', syntheticExecutable(new Uint8Array(4097).fill(0x41))],
+      ['not a NUL-terminated string', syntheticExecutable(encode('/lib64/ld-linux-x86-64.so.2'))],
+      ['not a NUL-terminated string', syntheticExecutable(encode('\0/lib64/ld.so\0'))],
+      ['runs past the end', syntheticExecutable(encode('/lib/ld.so\0'), 100)],
+      ['not an ELF file', encode('#!/bin/sh\n'.padEnd(200, ' '))],
+    ];
+    for (const [reason, image] of cases) {
+      assert.throws(() => parseInterpreter(image), (e: unknown) => e instanceof UntrustedError && e.message.includes('test') && e.message.includes(reason), reason);
+    }
+    assert.equal(parseInterpreter(syntheticExecutable(new Uint8Array(4096).fill(0x41, 0, 4095))), 'A'.repeat(4095));
+  });
+
+  it('reads from a file', { skip: process.platform !== 'linux' && 'reads /proc/self/exe on Linux' }, () => {
+    const interpreter = elfReadInterpreterFile('/proc/self/exe');
+    assert.ok(interpreter?.startsWith('/'), `PT_INTERP of /proc/self/exe is ${interpreter}`);
+  });
+
+  it('reads a synthetic file', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'hkdfguard-elf-')), 'exe');
+    writeFileSync(path, syntheticExecutable(encode('/lib/ld-linux-aarch64.so.1\0')));
+    assert.equal(elfReadInterpreterFile(path), '/lib/ld-linux-aarch64.so.1');
   });
 });

@@ -55,7 +55,7 @@ export const PROBE_EXPORT = 'hkdfguard_wrap_dek';
  * (major << 16 | minor << 8 | patch): 0.9.0. A release that fixes a security problem in the library
  * raises it, so an older, genuinely signed copy can't be put back in its place.
  */
-export const MAC_MINIMUM_LIBRARY_VERSION = (0 << 16) | (9 << 8) | 0;
+export const MAC_MINIMUM_LIBRARY_VERSION = macPackVersion(0, 9, 0);
 /** How much of the file is read to find its version. */
 export const MAC_VERSION_READ_LIMIT = 64 * 1024;
 
@@ -68,9 +68,21 @@ const LC_ID_DYLIB = 0xd;
 const ADMINISTRATIVE_GROUPS = [0, 80]; // wheel and admin
 const SHARED_SYSTEM_DIRECTORIES = ['/', '/Library', '/Library/Application Support', '/Users'];
 
+/** A version in Mach-O's packed form: major << 16 | minor << 8 | patch. */
+export function macPackVersion(major: number, minor: number, patch: number): number {
+  return (major << 16) | (minor << 8) | patch;
+}
+
+/** `path` without trailing '/'s - a loop, where a /\/+$/ regex backtracks quadratically on a long run of '/'. */
+function withoutTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path.codePointAt(end - 1) === 0x2f) end--;
+  return path.slice(0, end);
+}
+
 /** The per-user install's full path under `homeDirectory`. */
 export function macUserPath(homeDirectory: string): string {
-  return `${homeDirectory.replace(/\/+$/, '')}/${MAC_USER_DIRECTORY_UNDER_HOME}/${MAC_FILE_NAME}`;
+  return `${withoutTrailingSlashes(homeDirectory)}/${MAC_USER_DIRECTORY_UNDER_HOME}/${MAC_FILE_NAME}`;
 }
 
 /**
@@ -141,7 +153,7 @@ export function macRefuseShadowing(getenv: (name: string) => string | undefined,
   }
   for (const directory of (getenv('DYLD_LIBRARY_PATH') ?? '').split(':')) {
     if (directory === '') continue;
-    const candidate = `${directory.replace(/\/+$/, '')}/${MAC_FILE_NAME}`;
+    const candidate = `${withoutTrailingSlashes(directory)}/${MAC_FILE_NAME}`;
     if (exists(candidate)) {
       throw new UntrustedError(`'${candidate}' is on DYLD_LIBRARY_PATH and would be loaded in place of the verified HkdfGuard native library; refusing to load. Remove it from DYLD_LIBRARY_PATH.`);
     }
@@ -200,7 +212,7 @@ export function macVerifySignature(path: string, checkSignature: (path: string, 
 /** `path`'s parent ('/'-separated), or undefined above /. */
 export function macParentOf(path: string): string | undefined {
   if (path === '/') return undefined;
-  const slash = path.replace(/\/+$/, '').lastIndexOf('/');
+  const slash = withoutTrailingSlashes(path).lastIndexOf('/');
   return slash <= 0 ? '/' : path.slice(0, slash);
 }
 

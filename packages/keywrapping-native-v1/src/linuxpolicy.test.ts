@@ -2,8 +2,9 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { NotInstalledError, UnsupportedPlatformError, UntrustedError } from './errors.js';
 import {
-  LINUX_MAX_SYMBOLIC_LINKS, linuxCandidatePaths, linuxChoosePath, linuxParentOf, linuxReadEnvironment, linuxResolveTrusted,
-  linuxVerifyDependencies, linuxVerifyEnvironment, linuxVerifyLoadedImage,
+  LINUX_MAX_SYMBOLIC_LINKS, linuxCandidatePaths, linuxChoosePath, linuxListingEnvironment, linuxParentOf, linuxParseListing,
+  linuxReadEnvironment, linuxResolveTrusted, linuxVerifyDependencies, linuxVerifyEnvironment, linuxVerifyListing,
+  linuxVerifyLoadedImage,
 } from './linuxpolicy.js';
 import { PROBE_EXPORT } from './macpolicy.js';
 import { ENOENT, ENOTDIR, FileType, type FileStatus } from './unixpath.js';
@@ -213,5 +214,47 @@ describe('Linux loaded image and dependencies', () => {
     const cause = new Error('statx failed with errno 13');
     assert.throws(() => linuxVerifyDependencies(LIBRARY, () => ['libc.so.6'], () => '/lib/x86_64-linux-gnu/libc.so.6', () => { throw cause; }),
       (e: unknown) => e instanceof UntrustedError && e.cause === cause);
+  });
+});
+
+describe("Linux dynamic linker's list mode", () => {
+  it('reports every file, skipping the vDSO', () => {
+    const output = '\tlinux-vdso.so.1 (0x00007ffd2a5f2000)\n'
+      + '\tlibtss2-esys.so.0 => /lib/x86_64-linux-gnu/libtss2-esys.so.0 (0x00007f1c2a000000)\n'
+      + '\t/usr/lib/libpreloaded.so (0x00007f1c29e00000)\n'
+      + '\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f1c29c00000)\n'
+      + '\t/lib64/ld-linux-x86-64.so.2 (0x00007f1c2a200000)\n';
+    assert.deepEqual(linuxParseListing('lib', output),
+      ['/lib/x86_64-linux-gnu/libtss2-esys.so.0', '/usr/lib/libpreloaded.so', '/lib/x86_64-linux-gnu/libc.so.6', '/lib64/ld-linux-x86-64.so.2']);
+  });
+
+  it('refuses a name it cannot find, or a line it cannot read', () => {
+    untrusted(() => linuxParseListing('lib', '\tlibmissing.so.1 => not found\n'), "can't find 'libmissing.so.1'");
+    untrusted(() => linuxParseListing('lib', '\tstatically linked\n'), "doesn't understand");
+    untrusted(() => linuxParseListing('lib', '\tlibx.so => relative/libx.so (0x1000)\n'), 'not an absolute path');
+  });
+
+  it('runs with only the startup LD_LIBRARY_PATH and LD_PRELOAD', () => {
+    const initial = new TextEncoder().encode('HOME=/root\0LD_LIBRARY_PATH=/opt/lib\0LD_AUDIT=/opt/audit.so\0PATH=/usr/bin\0LD_PRELOAD=/opt/pre.so\0');
+    assert.deepEqual(linuxListingEnvironment(initial), { LD_LIBRARY_PATH: '/opt/lib', LD_PRELOAD: '/opt/pre.so' });
+    assert.deepEqual(linuxListingEnvironment(undefined), {});
+    assert.deepEqual(linuxListingEnvironment(new Uint8Array(0)), {});
+  });
+
+  it('refuses the first untrusted path', () => {
+    const checked: string[] = [];
+    const trusted = (path: string) => {
+      checked.push(path);
+      if (path.startsWith('/tmp/')) throw new UntrustedError(`'${path}' is writable by others.`);
+      return path;
+    };
+    linuxVerifyListing('lib', ['/lib/libc.so.6', '/lib64/ld-linux-x86-64.so.2'], trusted);
+    checked.length = 0;
+    untrusted(() => linuxVerifyListing('lib', ['/lib/libc.so.6', '/tmp/libtss2-esys.so.0', '/tmp/libcrypto.so.3'], trusted), '/tmp/libtss2-esys.so.0', 'nothing was loaded');
+    assert.deepEqual(checked, ['/lib/libc.so.6', '/tmp/libtss2-esys.so.0']);
+    // Against the simulated host's own path checks, too.
+    const fs = standardHost();
+    linuxVerifyListing(LIBRARY, [ESYS, `${LIB_DIR}/libc.so.6`], (p) => fs.resolve(p)!);
+    untrusted(() => linuxVerifyListing(LIBRARY, [ESYS, '/home/dev/lib/libtss2-esys.so.0'], (p) => fs.resolve(p)!), '/home/dev/lib/libtss2-esys.so.0', 'uid 1000');
   });
 });

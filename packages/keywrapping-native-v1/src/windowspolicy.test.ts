@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { UntrustedError } from './errors.js';
 import {
   ACE_FLAG_INHERIT_ONLY, AceType, PE_FILE_DLL, PeMachine, Rights, WIN_CODE_SIGNING_EKU, WIN_EXPECTED_PROFILE_EKU, WIN_EXPECTED_PUBLISHER,
-  WIN_EXPECTED_ROOT_SHA256, WIN_GUARDED_RIGHTS, WIN_GUARDED_ROOT_RIGHTS, winReadPeHeader, winRevocationDecision, winVerifyImageKind, winVerifySignerIdentity,
+  WIN_EXPECTED_ROOT_SHA256, WIN_GUARDED_RIGHTS, WIN_GUARDED_ROOT_RIGHTS, winReadPeHeader, winRequireMinimumVersion, winRevocationDecision, winVerifyImageKind, winVerifyLoadedModule, winVerifySignerIdentity,
   winVerifyTrustedOnly, type WinAce, type WinSecurity,
 } from './windowspolicy.js';
 
@@ -24,7 +24,7 @@ function untrusted(fn: () => unknown, ...contains: string[]): void {
 
 describe('Windows ACLs', () => {
   it('pass a trusted owner with read-only access for everyone else', () => {
-    verifyTrustedOnly(security(SYSTEM, allow(SYSTEM, FILE_ALL_ACCESS), allow(ADMINISTRATORS, FILE_ALL_ACCESS), allow(TRUSTED_INSTALLER, FILE_ALL_ACCESS), allow(USERS, FILE_READ_AND_EXECUTE)));
+    assert.doesNotThrow(() => verifyTrustedOnly(security(SYSTEM, allow(SYSTEM, FILE_ALL_ACCESS), allow(ADMINISTRATORS, FILE_ALL_ACCESS), allow(TRUSTED_INSTALLER, FILE_ALL_ACCESS), allow(USERS, FILE_READ_AND_EXECUTE))));
   });
 
   it('refuse any write right for an untrusted principal', () => {
@@ -68,8 +68,8 @@ describe('Windows signer', () => {
     winVerifySignerIdentity('test', subject, ekus, root, WIN_EXPECTED_PUBLISHER);
 
   it('passes the pinned root, profile and publisher, whatever the hash case', () => {
-    verifySigner(GENUINE_EKUS);
-    verifySigner(GENUINE_EKUS, WIN_EXPECTED_PUBLISHER, WIN_EXPECTED_ROOT_SHA256.toLowerCase());
+    assert.doesNotThrow(() => verifySigner(GENUINE_EKUS));
+    assert.doesNotThrow(() => verifySigner(GENUINE_EKUS, WIN_EXPECTED_PUBLISHER, WIN_EXPECTED_ROOT_SHA256.toLowerCase()));
   });
 
   it('refuses another root, profile, missing EKUs, or another subject', () => {
@@ -85,7 +85,7 @@ describe('Windows signer', () => {
 describe('Windows image kind', () => {
   it("passes a DLL for this process's architecture", () => {
     for (const [arch, machine] of [['x64', PeMachine.amd64], ['arm64', PeMachine.arm64], ['ia32', PeMachine.i386]] as const) {
-      winVerifyImageKind('test', PE_FILE_DLL | 0x2, machine, arch);
+      assert.doesNotThrow(() => winVerifyImageKind('test', PE_FILE_DLL | 0x2, machine, arch), arch);
     }
   });
 
@@ -127,3 +127,39 @@ describe('winRevocationDecision', () => {
   });
 });
 
+describe('winRequireMinimumVersion', () => {
+  it('accepts the minimum or later', () => {
+    for (const version of [[0, 9, 0], [0, 9, 1], [0, 10, 0], [1, 0, 0]] as const) {
+      assert.doesNotThrow(() => winRequireMinimumVersion('test', version), version.join('.'));
+    }
+  });
+
+  it('refuses an older version, or none at all', () => {
+    for (const version of [[0, 8, 9], [0, 8, 65535], [0, 0, 0]] as const) {
+      assert.throws(() => winRequireMinimumVersion('test', version), (e: unknown) => e instanceof UntrustedError && e.message.includes('older than the minimum'), version.join('.'));
+    }
+    assert.throws(() => winRequireMinimumVersion('test', null), (e: unknown) => e instanceof UntrustedError && e.message.includes('no readable version resource'));
+  });
+});
+
+describe('winVerifyLoadedModule', () => {
+  const verified = 'C:\\Program Files\\HkdfGuard\\v1\\HkdfGuard.dll';
+
+  it('accepts the verified file itself, whatever its case or long-path prefix', () => {
+    for (const loaded of [verified, 'c:\\program files\\hkdfguard\\v1\\hkdfguard.DLL', '\\\\?\\C:\\Program Files\\HkdfGuard\\v1\\HkdfGuard.dll']) {
+      assert.doesNotThrow(() => winVerifyLoadedModule(verified, loaded), loaded);
+    }
+  });
+
+  it('refuses a module mapped from any other file, or one whose file could not be read', () => {
+    for (const loaded of [
+      'C:\\Users\\someone\\AppData\\Local\\Temp\\HkdfGuard.dll', // the same name, loaded earlier from elsewhere
+      'C:\\app\\app.exe.local\\HkdfGuard.dll', // DLL redirection
+      'C:\\Program Files\\HkdfGuard\\v2\\HkdfGuard.dll',
+      '\\\\?\\UNC\\server\\share\\HkdfGuard.dll',
+    ]) {
+      assert.throws(() => winVerifyLoadedModule(verified, loaded), (e: unknown) => e instanceof UntrustedError && e.message.includes(loaded), loaded);
+    }
+    assert.throws(() => winVerifyLoadedModule(verified, null), (e: unknown) => e instanceof UntrustedError && e.message.includes(verified));
+  });
+});
