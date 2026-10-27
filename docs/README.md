@@ -10,7 +10,8 @@ platform protects (TPM or Secure Enclave), then to a durable key file.
 [`hkdfguard` CLI reference](reference/cli.md).
 
 **Using an AWS KMS key as the KEK** instead of the TPM or Secure Enclave: see
-[Wrap keys with AWS KMS](how-to/use-aws-kms.md).
+[Wrap keys with AWS KMS](how-to/use-aws-kms.md). **Using Azure Key Vault keys** instead: see
+[Wrap keys with Azure Key Vault](how-to/use-azure-key-vault.md).
 
 **Porting from the .NET or Go libraries:** the same pages exist in `hkdfguard-dotnet/docs` and
 `hkdfguard-go/docs`, with the same structure. Everything a value or a key file is made of - the
@@ -24,6 +25,8 @@ native key files - is byte-identical between the ports, so one deployment serves
 | Tutorial | [Getting started](getting-started.md) | Draft |
 | How-to | [Wrap keys with AWS KMS](how-to/use-aws-kms.md) | Draft |
 | How-to | [Run the AWS KMS integration tests](how-to/run-aws-kms-integration-tests.md) | Draft |
+| How-to | [Wrap keys with Azure Key Vault](how-to/use-azure-key-vault.md) | Draft |
+| How-to | [Run the Azure Key Vault integration tests](how-to/run-azure-key-vault-integration-tests.md) | Draft |
 | How-to | Provision a service on each platform | Planned (the test-host scripts under `packages/keywrapping-native-v1/scripts` show each platform's steps) |
 | How-to | Create key files in a deployment pipeline | Planned (see [Getting started, step 5](getting-started.md#5-create-a-key-file)) |
 | How-to | Rotate keys | Planned (see [Getting started, step 6](getting-started.md#6-use-the-key-file)) |

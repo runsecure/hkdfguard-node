@@ -20,6 +20,9 @@
       "path": "packages/keywrapping-awskms"
     },
     {
+      "path": "packages/keywrapping-azurekeyvault"
+    },
+    {
       "path": "packages/dek"
     },
     {
