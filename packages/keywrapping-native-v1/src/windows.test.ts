@@ -108,9 +108,9 @@ describe('the Windows loader against the real system', { skip: process.platform 
   it('passes the location, signature and image checks for the installed library', (t) => {
     const path = installedPath(t);
     if (path === undefined) return;
-    winVerifyLocation(nativeAddon(), path);
-    winVerifySignature(nativeAddon(), path, WIN_EXPECTED_PUBLISHER);
-    winVerifyImageKindOf(path);
+    assert.doesNotThrow(() => winVerifyLocation(nativeAddon(), path));
+    assert.doesNotThrow(() => winVerifySignature(nativeAddon(), path, WIN_EXPECTED_PUBLISHER));
+    assert.doesNotThrow(() => winVerifyImageKindOf(path));
   });
 
   it('finds the installed library chained to the pinned root, with the profile EKU', (t) => {

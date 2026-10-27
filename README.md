@@ -15,12 +15,15 @@ lists every page.
 
 Each package is published separately. Implementations depend only on the abstractions, never on each
 other, so the key wrapper, the cipher and the cache can each be swapped for another implementation.
+(The AWS KMS key wrapper uses `securefile`, a helper that implements no interface.)
 
 | Package | Port of | What it is |
 |---|---|---|
 | `@runsecure/hkdfguard-diagnostics` | HkdfGuard.Diagnostics | OpenTelemetry names and helpers, sensitive-logging flags, logging (any console-shaped logger) |
 | `@runsecure/hkdfguard-abstractions` | HkdfGuard.Abstractions | Interfaces (`KeyWrapper`, `CryptoProviderFactory`, `KeyRing`, `ProtectedCache`, ...), shared rules and errors |
 | `@runsecure/hkdfguard-keywrapping-native-v1` | HkdfGuard.KeyWrapping.V1 | `KeyWrapper` over the OS's native KMS library (TPM2, Secure Enclave, Platform Crypto Provider) |
+| `@runsecure/hkdfguard-keywrapping-awskms` | HkdfGuard.KeyWrapping.AwsKms | `KeyWrapper` over one symmetric AWS KMS key, through the AWS SDK for JavaScript v3 (`KMSClient`) |
+| `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through |
 | `@runsecure/hkdfguard-cryptoprovider-aesgcm256` | HkdfGuard.CryptoProvider.AesGcm256 | The AES-256-GCM `CryptoProviderFactory` and `PipelineDataProtector` |
 | `@runsecure/hkdfguard-dek` | HkdfGuard.DataEncryptionKey, HkdfGuard.Options | Key rings with rotation, data protectors, the stored format, `buildKeyRing`, and options read from an `appsettings.json` section |
 | `@runsecure/hkdfguard-cache` | HkdfGuard.Cache | Protected caches, pull-through `CacheSource`s (for Vault, Key Vault, ...) and collections |
@@ -180,6 +183,50 @@ nothing in a real service stays that disciplined: any dependency's first `fs.pro
 call, a `worker_threads` worker, or a later KMS call starts threads that plain mode leaves open. So
 **use `requireProtectedSignature: true` for a Windows service**: it closes later threads too.
 
+## Wrapping under AWS KMS instead
+
+`@runsecure/hkdfguard-keywrapping-awskms` puts the KEK in AWS KMS instead of the machine's TPM or
+Secure Enclave: DEKs are wrapped with `Encrypt`, revealed with `Decrypt` - the key pinned, so a key
+file wrapped under any other key is refused - and generated with `GenerateDataKeyWithoutPlaintext`,
+so the plaintext of a new DEK never leaves KMS. Access is IAM's, every call is in CloudTrail, and
+no native library is involved. The application creates, configures and owns the `KMSClient`; the
+wrapper never creates or destroys one.
+
+```ts
+import { KMSClient } from '@aws-sdk/client-kms';
+import { AwsKmsKeyWrapper } from '@runsecure/hkdfguard-keywrapping-awskms';
+
+const kms = new KMSClient({});
+const ring = await buildKeyRing({
+  keyWrapper: new AwsKmsKeyWrapper(kms, 'arn:aws:kms:us-east-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab',
+    { encryptionContext: { purpose: 'com.example.orders' } }), // logged in plaintext by CloudTrail: no secrets
+  cryptoProviderFactory: new AesGcmCryptoProviderFactory(),
+  keyRefreshInterval: 300,
+  keyFiles: { 1: '/etc/hkdfguard/keys/orders/v1.key' },
+});
+```
+
+A KMS failure rejects with `AwsKmsError` (`ERR_HKDFGUARD_AWS_KMS`), naming the operation, the key,
+KMS's error name and the HTTP status, with the SDK's error as its `cause`. The wrapper zeroes its
+copy of a key sent to `Encrypt` and the buffer the SDK decodes `Decrypt`'s plaintext into; the
+base64 strings the SDK puts on the wire can't be zeroed.
+
+Key files are read through `@runsecure/hkdfguard-securefile`, which applies the native library's
+`hkdfguard_open_file` rules without the native library: the file and every folder above it must be
+owned and writable only by administrators (SYSTEM, Administrators, TrustedInstaller; root) or a
+`KeyFileTrust` principal, on a local fixed drive with no link, junction or substituted drive on its
+path (Windows), or through directories and links only root or a trusted user owns (Linux, Apple
+silicon macOS) - and must not look like a plaintext key. Anyone who can call `kms:Encrypt` on the
+key could otherwise replace a key file and choose your DEK. On Linux and macOS the checks are Node's
+own `fs` calls; on Windows they need Win32 calls (owner and DACL through the opened handle, final
+path, reparse points, 8.3 names, drive type), made through the package's small C add-on
+(`native/hkdfguard_securefile.c`), compiled by node-gyp at install on Windows only. It links only
+`kernel32` and `advapi32`, with `/DEPENDENTLOADFLAG` restricting their resolution to System32, and
+returns facts only: every rule is TypeScript, tested on every platform.
+
+[Wrap keys with AWS KMS](docs/how-to/use-aws-kms.md) covers the key, IAM permissions, credentials,
+key files, refresh intervals, limitations and troubleshooting.
+
 ## Development
 
 Node.js 22 or later (see `.nvmrc`), with Python 3 and a C compiler for the add-on.
@@ -201,6 +248,16 @@ scripts/check.sh                                 # everything
 scripts/check.sh packages/keywrapping-native-v1  # one package's tests
 npx -y -p node@22 -c scripts/check.sh            # with an older node on PATH
 ```
+
+The AWS KMS key wrapper's tests use an in-process fake KMS that really encrypts (AES-GCM, binding the
+key and encryption context), a real `KMSClient` whose HTTP handler answers in-process, and a real
+refused connection; its integration tests against a real KMS key are reported as skipped unless
+`HKDFGUARD_TEST_AWS_KMS_KEY_ID` names one - see
+[Run the AWS KMS integration tests](docs/how-to/run-aws-kms-integration-tests.md). The securefile
+package's rules are tested against simulated filesystems and security descriptors on every
+platform, and against real files on Windows, Linux and macOS (each platform's suite skipped on the
+others); on Linux the real-file tests use `keyFileDirectory`'s private folder, so run them as a
+non-root user to cover the refusals root would pass.
 
 The native key wrapper's tests make real calls against a provisioned service. They are reported as
 skipped, never passed, unless the test service exists: on Windows and macOS the tests find it by
@@ -303,8 +360,8 @@ The **Release** workflow (`release.yml`) then:
    `0.x`, and any with a pre-release suffix, are published as GitHub pre-releases.
 
 npm has no author signing like Authenticode; provenance, the registry's own signature and the
-GitHub attestation are how a package's origin is proved. Nothing shipped is a binary - the add-on
-is compiled on each consumer's machine - so there is nothing to Authenticode-sign or notarize; the
+GitHub attestation are how a package's origin is proved. Nothing shipped is a binary - the add-ons
+are compiled on each consumer's machine - so there is nothing to Authenticode-sign or notarize; the
 header of `release.yml` says where that would go if prebuilt add-on binaries are ever shipped, and
 lists the one-time npm and GitHub setup publishing depends on. Third-party actions are pinned to
 full commit SHAs.

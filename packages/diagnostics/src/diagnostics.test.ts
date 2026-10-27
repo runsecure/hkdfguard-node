@@ -75,7 +75,7 @@ describe('ComponentTelemetry', () => {
   }
 
   it('recordException with no span does nothing', () => {
-    recordException(undefined, new Error('boom'));
+    assert.doesNotThrow(() => recordException(undefined, new Error('boom')));
   });
 
   it('Root shares its flag with Cache, DataProtection and EncryptedConfiguration', () => {
@@ -159,9 +159,9 @@ describe('HkdfGuardLog', () => {
   });
 
   it('writes nothing without a logger, or without the level', () => {
-    for (const [, call] of cases) {
-      call(undefined as unknown as Logger);
-      call({});
+    for (const [name, call] of cases) {
+      assert.doesNotThrow(() => call(undefined as unknown as Logger), name);
+      assert.doesNotThrow(() => call({}), name);
     }
   });
 

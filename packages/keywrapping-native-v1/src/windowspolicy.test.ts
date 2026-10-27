@@ -24,7 +24,7 @@ function untrusted(fn: () => unknown, ...contains: string[]): void {
 
 describe('Windows ACLs', () => {
   it('pass a trusted owner with read-only access for everyone else', () => {
-    verifyTrustedOnly(security(SYSTEM, allow(SYSTEM, FILE_ALL_ACCESS), allow(ADMINISTRATORS, FILE_ALL_ACCESS), allow(TRUSTED_INSTALLER, FILE_ALL_ACCESS), allow(USERS, FILE_READ_AND_EXECUTE)));
+    assert.doesNotThrow(() => verifyTrustedOnly(security(SYSTEM, allow(SYSTEM, FILE_ALL_ACCESS), allow(ADMINISTRATORS, FILE_ALL_ACCESS), allow(TRUSTED_INSTALLER, FILE_ALL_ACCESS), allow(USERS, FILE_READ_AND_EXECUTE))));
   });
 
   it('refuse any write right for an untrusted principal', () => {
@@ -68,8 +68,8 @@ describe('Windows signer', () => {
     winVerifySignerIdentity('test', subject, ekus, root, WIN_EXPECTED_PUBLISHER);
 
   it('passes the pinned root, profile and publisher, whatever the hash case', () => {
-    verifySigner(GENUINE_EKUS);
-    verifySigner(GENUINE_EKUS, WIN_EXPECTED_PUBLISHER, WIN_EXPECTED_ROOT_SHA256.toLowerCase());
+    assert.doesNotThrow(() => verifySigner(GENUINE_EKUS));
+    assert.doesNotThrow(() => verifySigner(GENUINE_EKUS, WIN_EXPECTED_PUBLISHER, WIN_EXPECTED_ROOT_SHA256.toLowerCase()));
   });
 
   it('refuses another root, profile, missing EKUs, or another subject', () => {
@@ -85,7 +85,7 @@ describe('Windows signer', () => {
 describe('Windows image kind', () => {
   it("passes a DLL for this process's architecture", () => {
     for (const [arch, machine] of [['x64', PeMachine.amd64], ['arm64', PeMachine.arm64], ['ia32', PeMachine.i386]] as const) {
-      winVerifyImageKind('test', PE_FILE_DLL | 0x2, machine, arch);
+      assert.doesNotThrow(() => winVerifyImageKind('test', PE_FILE_DLL | 0x2, machine, arch), arch);
     }
   });
 

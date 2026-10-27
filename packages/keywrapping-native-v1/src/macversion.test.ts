@@ -4,14 +4,14 @@ import { describe, it } from 'node:test';
 import { NotInstalledError, UntrustedError } from './errors.js';
 import {
   MAC_MINIMUM_LIBRARY_VERSION, MAC_SYSTEM_PATH, MAC_VERSION_READ_LIMIT, macChoosePath, macDylibCurrentVersion, macFormatVersion,
-  macHomeFromAccount, macRequireMinimumVersion,
+  macHomeFromAccount, macPackVersion, macRequireMinimumVersion,
 } from './macpolicy.js';
 import { ENOENT } from './unixpath.js';
 
 // Mach-O images built in memory for the version check, which runs on every platform.
 
 const ARM64 = 0x0100000c, X86_64 = 0x01000007;
-const version = (major: number, minor: number, patch: number) => (major << 16) | (minor << 8) | patch;
+const version = macPackVersion;
 
 function idDylib(v: number): Uint8Array {
   const cmd = new Uint8Array(32); // cmd, cmdsize, name offset, timestamp, current, compatibility, "x\0" + padding
@@ -133,7 +133,7 @@ describe('macOS library version', () => {
     } finally {
       closeSync(fd);
     }
-    macRequireMinimumVersion(MAC_SYSTEM_PATH, buffer.subarray(0, total));
+    assert.doesNotThrow(() => macRequireMinimumVersion(MAC_SYSTEM_PATH, buffer.subarray(0, total)));
   });
 });
 
