@@ -15,7 +15,7 @@ lists every page.
 
 Each package is published separately. Implementations depend only on the abstractions, never on each
 other, so the key wrapper, the cipher and the cache can each be swapped for another implementation.
-(The AWS KMS key wrapper uses `securefile`, a helper that implements no interface.)
+(The AWS KMS and Azure Key Vault key wrappers use `securefile`, a helper that implements no interface.)
 
 | Package | Port of | What it is |
 |---|---|---|
@@ -23,6 +23,7 @@ other, so the key wrapper, the cipher and the cache can each be swapped for anot
 | `@runsecure/hkdfguard-abstractions` | HkdfGuard.Abstractions | Interfaces (`KeyWrapper`, `CryptoProviderFactory`, `KeyRing`, `ProtectedCache`, ...), shared rules and errors |
 | `@runsecure/hkdfguard-keywrapping-native-v1` | HkdfGuard.KeyWrapping.V1 | `KeyWrapper` over the OS's native KMS library (TPM2, Secure Enclave, Platform Crypto Provider) |
 | `@runsecure/hkdfguard-keywrapping-awskms` | HkdfGuard.KeyWrapping.AwsKms | `KeyWrapper` over one symmetric AWS KMS key, through the AWS SDK for JavaScript v3 (`KMSClient`) |
+| `@runsecure/hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault | `KeyWrapper` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through `@azure/keyvault-keys` |
 | `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through |
 | `@runsecure/hkdfguard-cryptoprovider-aesgcm256` | HkdfGuard.CryptoProvider.AesGcm256 | The AES-256-GCM `CryptoProviderFactory` and `PipelineDataProtector` |
 | `@runsecure/hkdfguard-dek` | HkdfGuard.DataEncryptionKey, HkdfGuard.Options | Key rings with rotation, data protectors, the stored format, `buildKeyRing`, and options read from an `appsettings.json` section |
@@ -227,6 +228,45 @@ returns facts only: every rule is TypeScript, tested on every platform.
 [Wrap keys with AWS KMS](docs/how-to/use-aws-kms.md) covers the key, IAM permissions, credentials,
 key files, refresh intervals, limitations and troubleshooting.
 
+## Wrapping under Azure Key Vault instead
+
+`@runsecure/hkdfguard-keywrapping-azurekeyvault` puts the KEK in Azure Key Vault, as two keys: an RSA
+key (2048 or 3072 bits) wraps each DEK with RSA-OAEP-256, and a separate EC P-256 key signs each
+wrapped DEK with ES256. RSA-OAEP wrapping needs only the public key, so on its own anyone could make
+a key file holding a DEK they chose; the signature needs the signing key's private half, which never
+leaves Key Vault, and `unwrap` verifies it before it unwraps anything. Give `sign` to the pipeline
+that creates key files, never to the application.
+
+```ts
+import { DefaultAzureCredential } from '@azure/identity';
+import { AzureKeyVaultKeyWrapper } from '@runsecure/hkdfguard-keywrapping-azurekeyvault';
+
+const ring = await buildKeyRing({
+  keyWrapper: new AzureKeyVaultKeyWrapper('https://myvault.vault.azure.net/keys/orders-wrap',
+    'https://myvault.vault.azure.net/keys/orders-sign',
+    new DefaultAzureCredential(),             // a managed identity, deployed
+    { context: 'com.example.orders' }),       // bound into every signature; not secret
+  cryptoProviderFactory: new AesGcmCryptoProviderFactory(),
+  keyRefreshInterval: 300,
+  keyFiles: { 1: '/etc/hkdfguard/keys/orders/v1.key' },
+});
+```
+
+Both keys are pinned: a key file records only the two key versions it was made with, and the vault
+and key names always come from the constructor, so either key can be rotated in Key Vault while the
+versions existing key files name stay enabled. Key files are byte for byte those of the .NET, Java
+and Python wrappers (359 bytes under an RSA-2048 key, 487 under RSA-3072). The wrapper creates its
+Key Vault clients from the application's credential, one per key version it uses. The SDK has no
+local RSA-OAEP-256 or ES256, so every operation is a Key Vault call; `generateAndWrap` generates
+the DEK in the process, since Key Vault has no "generate data key". A failure rejects with
+`AzureKeyVaultError` (`ERR_HKDFGUARD_AZURE_KEY_VAULT`), naming the operation, the key, Key Vault's
+error code and the HTTP status, with the SDK's error as its `cause`. As with AWS KMS, the wrapper
+zeroes its own copies of keys, but not the base64 strings the SDK puts on the wire, and reads key
+files through `@runsecure/hkdfguard-securefile`.
+
+[Wrap keys with Azure Key Vault](docs/how-to/use-azure-key-vault.md) covers the two keys, the
+permissions for each identity, credentials, key files and troubleshooting.
+
 ## Development
 
 Node.js 22 or later (see `.nvmrc`), with Python 3 and a C compiler for the add-on.
@@ -253,7 +293,13 @@ The AWS KMS key wrapper's tests use an in-process fake KMS that really encrypts 
 key and encryption context), a real `KMSClient` whose HTTP handler answers in-process, and a real
 refused connection; its integration tests against a real KMS key are reported as skipped unless
 `HKDFGUARD_TEST_AWS_KMS_KEY_ID` names one - see
-[Run the AWS KMS integration tests](docs/how-to/run-aws-kms-integration-tests.md). The securefile
+[Run the AWS KMS integration tests](docs/how-to/run-aws-kms-integration-tests.md). The Azure Key
+Vault key wrapper's tests run the real Azure SDK against an in-process fake vault that answers its
+HTTP requests - really wrapping with RSA-OAEP-256 and signing ES256 digests - and its integration
+tests against real keys are reported as skipped unless `HKDFGUARD_TEST_AZURE_WRAP_KEY_ID` and
+`HKDFGUARD_TEST_AZURE_SIGN_KEY_ID` name them, in the environment or a git-ignored
+`azure.test.properties` at the repository root - see
+[Run the Azure Key Vault integration tests](docs/how-to/run-azure-key-vault-integration-tests.md). The securefile
 package's rules are tested against simulated filesystems and security descriptors on every
 platform, and against real files on Windows, Linux and macOS (each platform's suite skipped on the
 others); on Linux the real-file tests use `keyFileDirectory`'s private folder, so run them as a
