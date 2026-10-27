@@ -80,7 +80,7 @@ describe('Windows trusted principals', () => {
 
 describe('Windows path form, final path and reparse points', () => {
   it('pass a path on a local fixed drive', () => {
-    verifyPathForm(KEY_FILE, DriveType.fixed);
+    assert.doesNotThrow(() => verifyPathForm(KEY_FILE, DriveType.fixed));
   });
 
   it('refuse UNC and device paths', () => {
@@ -98,8 +98,8 @@ describe('Windows path form, final path and reparse points', () => {
   });
 
   it('pass the same final path, whatever its case', () => {
-    verifyFinalPath(KEY_FILE, '\\\\?\\C:\\HkdfGuardKeys\\myapp\\v1.key');
-    verifyFinalPath(KEY_FILE, '\\\\?\\c:\\hkdfguardkeys\\MYAPP\\v1.KEY');
+    assert.doesNotThrow(() => verifyFinalPath(KEY_FILE, '\\\\?\\C:\\HkdfGuardKeys\\myapp\\v1.key'));
+    assert.doesNotThrow(() => verifyFinalPath(KEY_FILE, '\\\\?\\c:\\hkdfguardkeys\\MYAPP\\v1.KEY'));
   });
 
   it('refuse a final path elsewhere, or remote', () => {
@@ -132,7 +132,7 @@ describe('Windows path form, final path and reparse points', () => {
 
 describe('Windows owner and DACL', () => {
   it('pass a trusted owner, read-only for everyone else', () => {
-    verify(locked(ADMINISTRATORS));
+    assert.doesNotThrow(() => verify(locked(ADMINISTRATORS)));
   });
 
   it('refuse an untrusted owner, naming it', () => {
@@ -166,12 +166,12 @@ describe('Windows owner and DACL', () => {
 
   it('ignore deny and inherit-only entries', () => {
     // A folder's: only a folder carries entries meant for what's created inside it.
-    verify({
+    assert.doesNotThrow(() => verify({
       owner: ADMINISTRATORS,
       daclAbsent: false,
       aces: [allow(ADMINISTRATORS, FULL_CONTROL), { type: AceType.denied, flags: 0, mask: FULL_CONTROL, sid: USERS },
         allow(AUTHENTICATED_USERS, MODIFY, INHERIT_ONLY_ACE | 0x3)],
-    }, 'C:\\HkdfGuardKeys');
+    }, 'C:\\HkdfGuardKeys'));
   });
 
   it('refuse an entry it cannot evaluate', () => {
@@ -183,7 +183,7 @@ describe('Windows owner and DACL', () => {
 
   it('ignore every kind of deny entry', () => {
     for (const type of [AceType.deniedObject, AceType.deniedCallback, AceType.deniedCallbackObject]) {
-      verify(locked(ADMINISTRATORS, { type, flags: 0, mask: FULL_CONTROL, sid: null }));
+      assert.doesNotThrow(() => verify(locked(ADMINISTRATORS, { type, flags: 0, mask: FULL_CONTROL, sid: null })), `type ${type}`);
     }
   });
 

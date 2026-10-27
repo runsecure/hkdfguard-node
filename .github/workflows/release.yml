@@ -147,9 +147,11 @@ jobs:
         run: |
           set -euo pipefail
           # --ignore-scripts: no dependency's lifecycle script runs. The only install scripts in
-          # the lockfile are this repository's own add-on builds, run by name next.
+          # the lockfile are this repository's own add-on builds, run by name next - npm still runs
+          # a script named on the command line under --ignore-scripts, but not its pre- or post-
+          # scripts.
           npm ci --ignore-scripts
-          npm run install --workspace packages/keywrapping-native-v1 --workspace packages/securefile
+          npm run install --ignore-scripts --workspace packages/keywrapping-native-v1 --workspace packages/securefile
           node_modules/.bin/tsc --build --force
 
       # Every published package, in the workspace order - which is dependency order - into
