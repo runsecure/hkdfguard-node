@@ -7,9 +7,10 @@
 # forced build that type-checks every platform's loader, every package's tests, npm audit of the
 # runtime dependencies, and a dry-run pack of every published package. The native round trips are
 # reported as skipped on GitHub's runners, which have no HkdfGuard native library installed; a
-# self-hosted runner with a provisioned test service runs them too. So are the AWS KMS and Azure Key
-# Vault integration tests, which need HKDFGUARD_TEST_AWS_KMS_KEY_ID, or HKDFGUARD_TEST_AZURE_WRAP_KEY_ID
-# and HKDFGUARD_TEST_AZURE_SIGN_KEY_ID, and cloud credentials this workflow doesn't have.
+# self-hosted runner with a provisioned test service runs them too. So are the AWS KMS, Azure Key
+# Vault and Google Cloud KMS integration tests, which need HKDFGUARD_TEST_AWS_KMS_KEY_ID,
+# HKDFGUARD_TEST_AZURE_WRAP_KEY_ID and HKDFGUARD_TEST_AZURE_SIGN_KEY_ID, or
+# HKDFGUARD_TEST_GOOGLE_KMS_KEY_NAME, and cloud credentials this workflow doesn't have.
 #
 # Holds no secrets and needs no write permission.
 name: Build

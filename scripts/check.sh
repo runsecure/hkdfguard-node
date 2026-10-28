@@ -20,6 +20,8 @@
 #   HKDFGUARD_TEST_AWS_KMS_KEY_ID  a symmetric AWS KMS key: the AWS KMS integration tests then run too.
 #   HKDFGUARD_TEST_AZURE_WRAP_KEY_ID, HKDFGUARD_TEST_AZURE_SIGN_KEY_ID  an RSA and an EC P-256 Azure Key
 #                                  Vault key (or azure.test.properties): the Azure integration tests run too.
+#   HKDFGUARD_TEST_GOOGLE_KMS_KEY_NAME  a symmetric Google Cloud KMS key (or google.test.properties): the
+#                                  Google Cloud KMS integration tests run too.
 #
 # The native round trips (keywrapping-native-v1, and the end-to-end tests in packages/integration)
 # are reported as skipped unless this host has a provisioned test service; see
@@ -28,6 +30,9 @@
 # docs/how-to/run-aws-kms-integration-tests.md. The Azure Key Vault integration tests
 # (packages/keywrapping-azurekeyvault) are reported as skipped unless both Azure keys are named, in
 # the environment or azure.test.properties; see docs/how-to/run-azure-key-vault-integration-tests.md.
+# The Google Cloud KMS integration tests (packages/keywrapping-googlekms) are reported as skipped
+# unless the key is named, in the environment or google.test.properties; see
+# docs/how-to/run-google-kms-integration-tests.md.
 
 set -euo pipefail
 
@@ -49,6 +54,7 @@ readonly PUBLISHED_PACKAGES=(
     packages/keywrapping-native-v1
     packages/keywrapping-awskms
     packages/keywrapping-azurekeyvault
+    packages/keywrapping-googlekms
     packages/dek
     packages/cache
     packages/encryptedconfig
