@@ -34,8 +34,9 @@ application.
 
 Wrapped DEKs aren't interchangeable between wrappers: a key file belongs to the kind of wrapper that
 made it. Between languages they are: a key file made by the .NET `AzureKeyVaultKeyWrapper`, the Java
-`AzureKeyVaultKeyWrapperImpl` or the Python `AzureKeyVaultKeyWrapper` is read by this one, and the
-other way round, given the same two keys and context.
+`AzureKeyVaultKeyWrapperImpl`, the Python `AzureKeyVaultKeyWrapper` or the Go
+`azurekeyvault.KeyWrapper` is read by this one, and the other way round, given the same two keys and
+context.
 
 ## 1. Create the keys
 
@@ -67,16 +68,34 @@ With Azure RBAC, assign roles on each **key**, not the vault:
 | Identity | On the RSA key | On the EC key |
 |---|---|---|
 | Release pipeline that creates key files | Key Vault Crypto Service Encryption User | Key Vault Crypto User |
-| Application | Key Vault Crypto Service Encryption User | Key Vault Crypto Service Encryption User |
+| Application | Key Vault Crypto Service Encryption User | HkdfGuard Key Verifier (below) |
 
 Every role here includes reading the key (`get`). The wrapper reads each key's current version
 before it wraps or signs under it, and the Azure SDK reads a key version before it first uses it
-(to check it is enabled and allowed the operation). The application's role on the EC key doesn't
-include `sign`.
+(to check it is enabled and allowed the operation).
+
+The Azure SDK for JavaScript verifies in the vault, so the application needs `verify` on the EC key.
+No built-in role allows `verify` without also allowing `sign`, so that role is a custom one. Create
+it once per subscription, from `verifier.json`:
+
+```json
+{
+  "Name": "HkdfGuard Key Verifier",
+  "Description": "Read a Key Vault key and verify signatures with it.",
+  "Actions": [],
+  "DataActions": ["Microsoft.KeyVault/vaults/keys/read", "Microsoft.KeyVault/vaults/keys/verify/action"],
+  "AssignableScopes": ["/subscriptions/<subscription-id>"]
+}
+```
 
 ```bash
+az role definition create --role-definition @verifier.json
+
+vaultId=$(az keyvault show -n myvault --query id -o tsv)
 az role assignment create --assignee <app-principal-id> --role "Key Vault Crypto Service Encryption User" \
-  --scope "$(az keyvault show -n myvault --query id -o tsv)/keys/myapp-wrap"
+  --scope "$vaultId/keys/myapp-wrap"
+az role assignment create --assignee <app-principal-id> --role "HkdfGuard Key Verifier" \
+  --scope "$vaultId/keys/myapp-sign"
 ```
 
 With vault access policies instead, which apply to the whole vault: the pipeline gets **Get**,

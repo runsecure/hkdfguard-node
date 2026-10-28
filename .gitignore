@@ -65,8 +65,8 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
-# Local integration-test settings (azure.test.properties): they name test keys, never a credential,
-# but stay on the developer's machine.
+# Local integration-test settings (azure.test.properties, google.test.properties): they name test
+# keys, never a credential, but stay on the developer's machine.
 *.test.properties
 
 # dotenv environment variable files

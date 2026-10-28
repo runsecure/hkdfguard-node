@@ -23,6 +23,9 @@
       "path": "packages/keywrapping-azurekeyvault"
     },
     {
+      "path": "packages/keywrapping-googlekms"
+    },
+    {
       "path": "packages/dek"
     },
     {
