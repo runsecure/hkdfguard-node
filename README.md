@@ -90,7 +90,11 @@ current key file stops encrypting at that age, and decryption under it never sto
 
 `@runsecure/hkdfguard-keywrapping-native-v1` calls the native KMS library through its own small C
 add-on, `native/hkdfguard_native.c`, compiled by node-gyp when the package is installed - so
-installing it needs Python 3 and a C compiler (Visual Studio Build Tools on Windows). The add-on only
+installing it needs Python 3 and a C compiler (Visual Studio Build Tools on Windows). On Windows it
+is linked with `/DEPENDENTLOADFLAG:0x800`, so the DLLs it imports - `wintrust`, `crypt32` and
+`version` among them, none a KnownDLL - resolve from System32 only: Node loads an add-on with
+`LOAD_WITH_ALTERED_SEARCH_PATH`, which would otherwise search its own folder first, letting a
+planted `wintrust.dll` decide whether `HkdfGuard.dll` is trusted. The add-on only
 loads and calls the library; every verification rule (path ownership, code signature on Windows and
 macOS, the dynamic linker's environment, what would be and what was actually loaded) is TypeScript,
 and is tested on every platform. On Linux, before loading, the process's own dynamic linker is asked

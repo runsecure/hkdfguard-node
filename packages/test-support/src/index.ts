@@ -4,3 +4,4 @@ export { RecordingFactory, RecordingKey, TestProvider } from './providers.js';
 export { keyFileDirectory, linuxKeyFileRoot, untrustedDirectoryChain } from './keyfiles.js';
 export { icacls, windowsCurrentUserSid, windowsShortPath } from './windowsaccounts.js';
 export { awaitNativeAccess, NATIVE_ACCESS_TIMEOUT_MS, probeNativeAccess } from './nativeaccess.js';
+export { LOAD_LIBRARY_SEARCH_SYSTEM32, peDependentLoadFlags } from './pe.js';
