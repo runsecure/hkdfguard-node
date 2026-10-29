@@ -1,0 +1,24 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../abstractions"
+    },
+    {
+      "path": "../securefile"
+    },
+    {
+      "path": "../cryptoprovider-aesgcm256"
+    },
+    {
+      "path": "../test-support"
+    }
+  ]
+}

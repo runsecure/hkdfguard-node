@@ -22,6 +22,8 @@
 #                                  Vault key (or azure.test.properties): the Azure integration tests run too.
 #   HKDFGUARD_TEST_GOOGLE_KMS_KEY_NAME  a symmetric Google Cloud KMS key (or google.test.properties): the
 #                                  Google Cloud KMS integration tests run too.
+#   HKDFGUARD_TEST_VAULT_TRANSIT_KEY  a Vault transit key (or vault.test.properties; the token only from
+#                                  HKDFGUARD_TEST_VAULT_TOKEN): the Vault transit integration tests run too.
 #   HKDFGUARD_TEST_AWS_SECRET_NAME, HKDFGUARD_TEST_AZURE_SECRET_ID, HKDFGUARD_TEST_GOOGLE_SECRET_NAME,
 #   HKDFGUARD_TEST_VAULT_SECRET_NAME  a secret in that store (or its .test.properties file; the
 #                                  Vault token only from HKDFGUARD_TEST_VAULT_TOKEN): that secret
@@ -36,7 +38,9 @@
 # the environment or azure.test.properties; see docs/how-to/run-azure-key-vault-integration-tests.md.
 # The Google Cloud KMS integration tests (packages/keywrapping-googlekms) are reported as skipped
 # unless the key is named, in the environment or google.test.properties; see
-# docs/how-to/run-google-kms-integration-tests.md.
+# docs/how-to/run-google-kms-integration-tests.md. The HashiCorp Vault transit integration tests
+# (packages/keywrapping-hashicorpvault) are reported as skipped unless the transit key is named, in the
+# environment or vault.test.properties; see docs/how-to/run-hashicorp-vault-transit-integration-tests.md.
 # Each secret cache's integration tests (packages/cache-*) are reported as skipped unless its secret
 # is named; see docs/how-to/run-*-cache-integration-tests.md.
 
@@ -61,6 +65,7 @@ readonly PUBLISHED_PACKAGES=(
     packages/keywrapping-awskms
     packages/keywrapping-azurekeyvault
     packages/keywrapping-googlekms
+    packages/keywrapping-hashicorpvault
     packages/dek
     packages/cache
     packages/cache-awssecretsmanager

@@ -15,7 +15,7 @@ lists every page.
 
 Each package is published separately. Implementations depend only on the abstractions, never on each
 other, so the key wrapper, the cipher and the cache can each be swapped for another implementation.
-(The AWS KMS, Azure Key Vault and Google Cloud KMS key wrappers use `securefile`, a helper that
+(The AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit key wrappers use `securefile`, a helper that
 implements no interface.)
 
 | Package | Port of | What it is |
@@ -26,6 +26,7 @@ implements no interface.)
 | `@runsecure/hkdfguard-keywrapping-awskms` | HkdfGuard.KeyWrapping.AwsKms | `KeyWrapper` over one symmetric AWS KMS key, through the AWS SDK for JavaScript v3 (`KMSClient`) |
 | `@runsecure/hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault | `KeyWrapper` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through `@azure/keyvault-keys` |
 | `@runsecure/hkdfguard-keywrapping-googlekms` | HkdfGuard.KeyWrapping.GoogleKms | `KeyWrapper` over one symmetric Google Cloud KMS key, through `@google-cloud/kms` (`KeyManagementServiceClient`) |
+| `@runsecure/hkdfguard-keywrapping-hashicorpvault` | HkdfGuard.KeyWrapping.HashiCorpVault | `KeyWrapper` over one key in a HashiCorp Vault transit secrets engine, through Node's own HTTP client |
 | `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through |
 | `@runsecure/hkdfguard-cryptoprovider-aesgcm256` | HkdfGuard.CryptoProvider.AesGcm256 | The AES-256-GCM `CryptoProviderFactory` and `PipelineDataProtector` |
 | `@runsecure/hkdfguard-dek` | HkdfGuard.DataEncryptionKey, HkdfGuard.Options | Key rings with rotation, data protectors, the stored format, `buildKeyRing`, and options read from an `appsettings.json` section |
@@ -319,6 +320,51 @@ call. Called directly, the client would also raise an unhandled rejection, which
 [Wrap keys with Google Cloud KMS](docs/how-to/use-google-kms.md) covers the key, the IAM roles for
 each identity, credentials, key files and troubleshooting.
 
+## Wrapping under HashiCorp Vault transit instead
+
+`@runsecure/hkdfguard-keywrapping-hashicorpvault` puts the KEK in a HashiCorp Vault transit secrets
+engine: one key (`aes256-gcm96`, Vault's default), used through `encrypt` and `decrypt`, with new
+DEKs made by `datakey/wrapped` so the plaintext never leaves Vault. HashiCorp ships no Node SDK, and
+the community client parses Vault's answers into strings that can't be zeroed, so the wrapper talks
+to Vault's HTTP API through Node's own `node:http` and `node:https`, with no third-party dependency,
+as `@runsecure/hkdfguard-cache-hashicorpvault` does.
+
+```ts
+import { HashiCorpVaultTransitKeyWrapper, StaticVaultTokenSource } from '@runsecure/hkdfguard-keywrapping-hashicorpvault';
+
+const token = new StaticVaultTokenSource(process.env.VAULT_TOKEN!); // or a VaultTokenSource over your auth method
+const wrapper = new HashiCorpVaultTransitKeyWrapper('https://vault.example.com:8200', 'orders-kek', token,
+  { context: 'com.example.orders' });          // bound as associated_data; not secret
+const ring = await buildKeyRing({
+  keyWrapper: wrapper,
+  cryptoProviderFactory: new AesGcmCryptoProviderFactory(),
+  keyRefreshInterval: 300,
+  keyFiles: { 1: '/etc/hkdfguard/keys/orders/v1.key' },
+});
+// Once the ring is closed: wrapper.close(); token.close();
+```
+
+The key is pinned by its path, and Vault's key rotation is transparent: a ciphertext names its key
+version, and stays readable while that version is at or above `min_decryption_version`. The context
+is bound into every wrapped DEK as Vault's `associated_data`; since `datakey/wrapped` ignores it,
+with a context `generateAndWrap` generates the DEK in the process and wraps it with `encrypt`. An
+answer whose warnings say Vault ignored a parameter (a Vault too old for `associated_data`) is
+refused, so a context is never silently dropped. A key file is Vault's ciphertext, `vault:v1:...`,
+about 89 bytes of ASCII, byte for byte that of the .NET, Go, Java and Python wrappers, and is read
+through `@runsecure/hkdfguard-securefile`, as for AWS KMS. The address must be https, except on
+loopback; no redirect is followed; a transient failure (no answer, 429, a 5xx other than 501) is
+retried with exponential backoff and jitter. A failure rejects with `HashiCorpVaultTransitError`
+(`ERR_HKDFGUARD_VAULT_TRANSIT`), naming the operation, the key, and Vault's status and errors
+(`Vault answered 400 BadRequest: cipher: message authentication failed`).
+
+The DEK never becomes a string: it is base64-encoded straight into a request body of the wrapper's
+own and read out of Vault's answer the same way, and every buffer that held it - and the buffer the
+token is copied into - is zeroed. What can't be zeroed is the token in the request header (Node takes
+headers only as strings) and the socket's and OpenSSL's buffers.
+
+[Wrap keys with HashiCorp Vault transit](docs/how-to/use-hashicorp-vault-transit.md) covers the key,
+the policies for each role, tokens, key files and troubleshooting.
+
 ## Caching secrets from a secret store
 
 The four `cache-*` packages are `ProtectedReadOnlyCache`s over a secret store. Each one fetches a
@@ -420,6 +466,12 @@ and the additional authenticated data) and checks the request's checksums; its i
 against a real key are reported as skipped unless `HKDFGUARD_TEST_GOOGLE_KMS_KEY_NAME` names one, in
 the environment or a git-ignored `google.test.properties` at the repository root - see
 [Run the Google Cloud KMS integration tests](docs/how-to/run-google-kms-integration-tests.md). The
+HashiCorp Vault transit key wrapper's tests serve a fake transit engine from `node:http` on 127.0.0.1,
+called through the wrapper's real http client, that really encrypts (AES-GCM per key version, the
+context as AAD); its integration tests against a real Vault are reported as skipped unless
+`HKDFGUARD_TEST_VAULT_TRANSIT_KEY` names a transit key, in the environment or a git-ignored
+`vault.test.properties` at the repository root - see
+[Run the HashiCorp Vault transit integration tests](docs/how-to/run-hashicorp-vault-transit-integration-tests.md). The
 securefile package's rules are tested against simulated filesystems and security descriptors on every
 platform, and against real files on Windows, Linux and macOS (each platform's suite skipped on the
 others); on Linux the real-file tests use `keyFileDirectory`'s private folder, so run them as a

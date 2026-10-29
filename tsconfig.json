@@ -26,6 +26,9 @@
       "path": "packages/keywrapping-googlekms"
     },
     {
+      "path": "packages/keywrapping-hashicorpvault"
+    },
+    {
       "path": "packages/dek"
     },
     {

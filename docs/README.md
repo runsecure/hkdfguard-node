@@ -12,7 +12,8 @@ platform protects (TPM or Secure Enclave), then to a durable key file.
 **Using an AWS KMS key as the KEK** instead of the TPM or Secure Enclave: see
 [Wrap keys with AWS KMS](how-to/use-aws-kms.md). **Using Azure Key Vault keys** instead: see
 [Wrap keys with Azure Key Vault](how-to/use-azure-key-vault.md). **Using a Google Cloud KMS key**
-instead: see [Wrap keys with Google Cloud KMS](how-to/use-google-kms.md).
+instead: see [Wrap keys with Google Cloud KMS](how-to/use-google-kms.md). **Using a HashiCorp Vault
+transit key** instead: see [Wrap keys with HashiCorp Vault transit](how-to/use-hashicorp-vault-transit.md).
 
 **Porting from the .NET or Go libraries:** the same pages exist in `hkdfguard-dotnet/docs` and
 `hkdfguard-go/docs`, with the same structure. Everything a value or a key file is made of - the
@@ -30,6 +31,8 @@ native key files - is byte-identical between the ports, so one deployment serves
 | How-to | [Run the Azure Key Vault integration tests](how-to/run-azure-key-vault-integration-tests.md) | Draft |
 | How-to | [Wrap keys with Google Cloud KMS](how-to/use-google-kms.md) | Draft |
 | How-to | [Run the Google Cloud KMS integration tests](how-to/run-google-kms-integration-tests.md) | Draft |
+| How-to | [Wrap keys with HashiCorp Vault transit](how-to/use-hashicorp-vault-transit.md) | Draft |
+| How-to | [Run the HashiCorp Vault transit integration tests](how-to/run-hashicorp-vault-transit-integration-tests.md) | Draft |
 | How-to | [Run the AWS Secrets Manager cache integration tests](how-to/run-aws-secrets-manager-cache-integration-tests.md) | Draft |
 | How-to | [Run the Azure Key Vault secret cache integration tests](how-to/run-azure-key-vault-secret-cache-integration-tests.md) | Draft |
 | How-to | [Run the Google Secret Manager cache integration tests](how-to/run-google-secret-manager-cache-integration-tests.md) | Draft |

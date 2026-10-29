@@ -13,6 +13,7 @@
     "packages/keywrapping-awskms",
     "packages/keywrapping-azurekeyvault",
     "packages/keywrapping-googlekms",
+    "packages/keywrapping-hashicorpvault",
     "packages/dek",
     "packages/cache",
     "packages/cache-awssecretsmanager",
