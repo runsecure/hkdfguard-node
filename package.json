@@ -15,6 +15,10 @@
     "packages/keywrapping-googlekms",
     "packages/dek",
     "packages/cache",
+    "packages/cache-awssecretsmanager",
+    "packages/cache-azurekeyvault",
+    "packages/cache-googlesecretmanager",
+    "packages/cache-hashicorpvault",
     "packages/encryptedconfig",
     "packages/integration"
   ],

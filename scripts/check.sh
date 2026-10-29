@@ -22,6 +22,10 @@
 #                                  Vault key (or azure.test.properties): the Azure integration tests run too.
 #   HKDFGUARD_TEST_GOOGLE_KMS_KEY_NAME  a symmetric Google Cloud KMS key (or google.test.properties): the
 #                                  Google Cloud KMS integration tests run too.
+#   HKDFGUARD_TEST_AWS_SECRET_NAME, HKDFGUARD_TEST_AZURE_SECRET_ID, HKDFGUARD_TEST_GOOGLE_SECRET_NAME,
+#   HKDFGUARD_TEST_VAULT_SECRET_NAME  a secret in that store (or its .test.properties file; the
+#                                  Vault token only from HKDFGUARD_TEST_VAULT_TOKEN): that secret
+#                                  cache's integration tests run too.
 #
 # The native round trips (keywrapping-native-v1, and the end-to-end tests in packages/integration)
 # are reported as skipped unless this host has a provisioned test service; see
@@ -33,6 +37,8 @@
 # The Google Cloud KMS integration tests (packages/keywrapping-googlekms) are reported as skipped
 # unless the key is named, in the environment or google.test.properties; see
 # docs/how-to/run-google-kms-integration-tests.md.
+# Each secret cache's integration tests (packages/cache-*) are reported as skipped unless its secret
+# is named; see docs/how-to/run-*-cache-integration-tests.md.
 
 set -euo pipefail
 
@@ -57,6 +63,10 @@ readonly PUBLISHED_PACKAGES=(
     packages/keywrapping-googlekms
     packages/dek
     packages/cache
+    packages/cache-awssecretsmanager
+    packages/cache-azurekeyvault
+    packages/cache-googlesecretmanager
+    packages/cache-hashicorpvault
     packages/encryptedconfig
 )
 # Tested, never published: the end-to-end tests across the packages over the native KEK.

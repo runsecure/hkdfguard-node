@@ -30,6 +30,10 @@ native key files - is byte-identical between the ports, so one deployment serves
 | How-to | [Run the Azure Key Vault integration tests](how-to/run-azure-key-vault-integration-tests.md) | Draft |
 | How-to | [Wrap keys with Google Cloud KMS](how-to/use-google-kms.md) | Draft |
 | How-to | [Run the Google Cloud KMS integration tests](how-to/run-google-kms-integration-tests.md) | Draft |
+| How-to | [Run the AWS Secrets Manager cache integration tests](how-to/run-aws-secrets-manager-cache-integration-tests.md) | Draft |
+| How-to | [Run the Azure Key Vault secret cache integration tests](how-to/run-azure-key-vault-secret-cache-integration-tests.md) | Draft |
+| How-to | [Run the Google Secret Manager cache integration tests](how-to/run-google-secret-manager-cache-integration-tests.md) | Draft |
+| How-to | [Run the HashiCorp Vault cache integration tests](how-to/run-hashicorp-vault-cache-integration-tests.md) | Draft |
 | How-to | Provision a service on each platform | Planned (the test-host scripts under `packages/keywrapping-native-v1/scripts` show each platform's steps) |
 | How-to | Create key files in a deployment pipeline | Planned (see [Getting started, step 5](getting-started.md#5-create-a-key-file)) |
 | How-to | Rotate keys | Planned (see [Getting started, step 6](getting-started.md#6-use-the-key-file)) |

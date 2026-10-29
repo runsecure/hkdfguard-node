@@ -32,6 +32,18 @@
       "path": "packages/cache"
     },
     {
+      "path": "packages/cache-awssecretsmanager"
+    },
+    {
+      "path": "packages/cache-azurekeyvault"
+    },
+    {
+      "path": "packages/cache-googlesecretmanager"
+    },
+    {
+      "path": "packages/cache-hashicorpvault"
+    },
+    {
       "path": "packages/encryptedconfig"
     },
     {

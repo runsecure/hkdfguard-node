@@ -9,8 +9,11 @@ import { HkdfGuardTelemetry } from './telemetry.js';
  */
 export const CacheMetrics = {
   /**
-   * Counts every protected-cache add/addOrUpdate, tagged with AttributeNames.operationName (which
-   * cache span ran) and AttributeNames.result ("success" or "error").
+   * Counts every protected-cache add/addOrUpdate and every fetch a populating cache (a
+   * RemoteSecretCache, such as the AWS Secrets Manager, Azure Key Vault, Google Secret Manager and
+   * HashiCorp Vault caches) makes on a miss, tagged with AttributeNames.operationName (which cache
+   * span ran) and AttributeNames.result ("success" or "error", or "not_found" for a fetch whose
+   * source has no such value).
    */
   get operations(): Counter {
     return HkdfGuardTelemetry.cache.meter.createCounter(MetricNames.cacheOperations, {
