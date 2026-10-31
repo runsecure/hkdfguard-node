@@ -298,14 +298,14 @@ describe('status codes', () => {
   // HKDFGUARD_OK and HKDFGUARD_ERR_*, as every platform's hkdfguard.h defines them.
   const header: Record<keyof typeof Status, number> = {
     ok: 0, invalidArgument: -1, bufferTooSmall: -2, providerUnavailable: -3, providerError: -4, cryptoError: -5, internalError: -6,
-    invalidServiceName: -8, policyInvalid: -9, payloadMalformed: -10, payloadAuthFailed: -11, payloadUnsupported: -12,
+    invalidServiceName: -8, policyInvalid: -9, payloadMalformed: -10, payloadAuthFailed: -11, payloadUnsupported: -12, payloadVersionRefused: -13,
     kekFingerprintMismatch: -16, kekNotFound: -17, kekAccessDenied: -18, kekInvalid: -19, processHardeningFailed: -20,
     fileNotFound: -32, fileAccessDenied: -33, fileIo: -34, fileTooShort: -35, fileTooLong: -36, filePlaintextKey: -37, fileMalformed: -38, fileUntrusted: -39,
     winGroupInvalid: -64,
     macAccessControlCreationFailed: -96, macKeyGenerationFailed: -97, macKeychainWriteFailed: -98, macKekVerificationFailed: -99, macKeychainReadFailed: -100,
   };
   const defined = Object.values(header).filter((s) => s !== 0);
-  const reserved = [-7, -13, -14, -15, ...Array.from({ length: 11 }, (_, i) => -21 - i), ...Array.from({ length: 24 }, (_, i) => -40 - i),
+  const reserved = [-7, -14, -15, ...Array.from({ length: 11 }, (_, i) => -21 - i), ...Array.from({ length: 24 }, (_, i) => -40 - i),
     -65, -79, -80, -95, -101, -111, -112, 0, 1, -1000];
   const tables: [string, ReadonlyMap<number, string>][] = [
     ['shared', sharedStatusDescriptions], ['Windows', windowsStatusDescriptions], ['Linux', linuxStatusDescriptions], ['macOS', macStatusDescriptions],
@@ -327,7 +327,7 @@ describe('status codes', () => {
 
   it('share their meanings, each platform adding only its own hints', () => {
     const hinted = (table: ReadonlyMap<number, string>) => defined.filter((s) => table.get(s) !== sharedStatusDescriptions.get(s));
-    assert.deepEqual(hinted(windowsStatusDescriptions), [Status.providerError, Status.policyInvalid, Status.kekNotFound, Status.kekAccessDenied, Status.kekInvalid, Status.processHardeningFailed]);
+    assert.deepEqual(hinted(windowsStatusDescriptions), [Status.providerUnavailable, Status.providerError, Status.policyInvalid, Status.payloadVersionRefused, Status.kekNotFound, Status.kekAccessDenied, Status.kekInvalid, Status.processHardeningFailed]);
     assert.deepEqual(hinted(linuxStatusDescriptions), [Status.providerUnavailable, Status.providerError, Status.policyInvalid, Status.kekFingerprintMismatch, Status.processHardeningFailed]);
     assert.deepEqual(hinted(macStatusDescriptions), [Status.providerUnavailable, Status.payloadAuthFailed, Status.kekNotFound, Status.kekAccessDenied, Status.kekInvalid, Status.processHardeningFailed]);
 
@@ -335,6 +335,8 @@ describe('status codes', () => {
     assert.ok(kekAccessDenied.includes('not authorized') && kekAccessDenied.includes('HkdfGuardUsers') && kekAccessDenied.includes('KeyUseGroups'));
     assert.ok(windowsStatusDescriptions.get(Status.policyInvalid)!.includes('HKLM\\Software\\Policies\\HkdfGuard'));
     assert.ok(windowsStatusDescriptions.get(Status.kekNotFound)!.includes('run hkdfguard provision'));
+    assert.ok(windowsStatusDescriptions.get(Status.payloadVersionRefused)!.includes('ClassicalMode'));
+    assert.ok(windowsStatusDescriptions.get(Status.providerUnavailable)!.includes('ClassicalMode'));
     assert.ok(linuxStatusDescriptions.get(Status.policyInvalid)!.includes('/etc/hkdfguard/policy.toml'));
     assert.ok(linuxStatusDescriptions.get(Status.kekNotFound)!.includes('run hkdfguard provision'));
     assert.ok(linuxStatusDescriptions.get(Status.kekFingerprintMismatch)!.includes('different KEK'));

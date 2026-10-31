@@ -371,6 +371,8 @@ its meaning. The codes are the same on every platform (`Status` in
 | `StatusError` `-18` (macOS) | The keychain would not answer: locked, no UI session for the access prompt, or the prompt was declined | Run from a logged-in session and choose Always Allow |
 | `StatusError` `-16` | The key file was wrapped under a different service's KEK | Use the service name the file was created with |
 | `StatusError` `-10`, `-11` or `-12` | The key file was altered | Restore it from your deployment artifacts |
+| `StatusError` `-13` (Windows) | The key file is the other payload version from the one `HKLM\Software\Policies\HkdfGuard\ClassicalMode` selects (absent or 0: version 2; 1: version 1) | Re-wrap the key file on this host, or set `ClassicalMode` to match the file |
+| `StatusError` `-3` (Windows) | Payload version 2 can't be used on this host (event 2008 names the reason) | Set `ClassicalMode` to 1 to keep using version 1 |
 | `KeyFileRefusedError` `-32` (`ENOENT`) or `-33` (`EACCES`) | The key file, or a folder in its path, doesn't exist; or this account may not read it | Check the path, and the `--group` it was wrapped for |
 | `KeyFileRefusedError` `-39` (`EACCES`) | The key file's path isn't trusted: another account could write or replace the file or a folder above it, or it is reached through a link, junction, short name or network drive | Keep key files in a folder only administrators (or root) and the application's account can write, by a real local path |
 | `KeyFileRefusedError` `-37` (`ERR_HKDFGUARD_INVALID_KEY_FILE`) | The file holds what looks like an **unwrapped** key | Treat the key as exposed: delete the file, rotate, and wrap a new key file |
