@@ -14,7 +14,10 @@
         }],
         ["OS=='linux'", { "link_settings": { "libraries": ["-ldl"] } }],
         ["OS=='win'", {
-          "msvs_settings": { "VCCLCompilerTool": { "WarningLevel": 4, "WarnAsError": "true" } },
+          "msvs_settings": {
+            "VCCLCompilerTool": { "WarningLevel": 4, "WarnAsError": "true" },
+            "VCLinkerTool": { "AdditionalOptions": ["/DEPENDENTLOADFLAG:0x800"] }
+          },
           "link_settings": { "libraries": ["wintrust.lib", "crypt32.lib", "advapi32.lib", "shell32.lib", "ole32.lib", "version.lib"] }
         }]
       ]

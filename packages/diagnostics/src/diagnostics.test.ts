@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { SpanStatusCode } from '@opentelemetry/api';
 import {
-  AttributeNames, CacheMetrics, EventNames, HkdfGuardLog, HkdfGuardTelemetry, LogKeys, MetricNames, recordException,
+  AttributeNames, CacheMetrics, EventNames, HkdfGuardLog, HkdfGuardTelemetry, LogKeys, MetricNames, recordException, Results, SpanNames,
   type ComponentTelemetry, type Logger,
 } from './index.js';
 import { useMetricRecorder, useSpanRecorder } from '@runsecure/hkdfguard-test-support';
@@ -20,6 +20,8 @@ describe('names', () => {
     assert.equal(AttributeNames.operationName, 'hkdfguard.operation.name');
     assert.equal(EventNames.sensitiveOperation, 'hkdfguard.sensitive_operation');
     assert.equal(MetricNames.cacheOperations, 'hkdfguard.cache.operations');
+    assert.equal(SpanNames.cache.populate, 'hkdfguard.cache.populate');
+    assert.deepEqual(Object.values(Results), ['success', 'error', 'not_found']);
     assert.deepEqual(allComponents.map(([, c]) => c.sourceName), [
       'HkdfGuard', 'HkdfGuard.Cache', 'HkdfGuard.DataEncryptionKey', 'HkdfGuard.EncryptedConfiguration',
       'HkdfGuard.CryptoProvider.AesGcm256', 'HkdfGuard.KeyWrapping.V1',

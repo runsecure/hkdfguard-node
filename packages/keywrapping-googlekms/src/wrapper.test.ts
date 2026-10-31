@@ -8,9 +8,9 @@ import { describe, it, type TestContext } from 'node:test';
 import { KeyManagementServiceClient, protos } from '@google-cloud/kms';
 import * as grpc from '@grpc/grpc-js';
 import { InvalidArgumentError, isZero, MAX_WRAPPED_KEY_BYTES, type KeyWrapper } from '@runsecure/hkdfguard-abstractions';
+import { crc32c } from '@runsecure/hkdfguard-abstractions/internal';
 import { AesGcmCryptoProviderFactory } from '@runsecure/hkdfguard-cryptoprovider-aesgcm256';
 import { keyFileDirectory, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
-import { crc32c } from './crc32c.js';
 import { GoogleKmsError } from './errors.js';
 import { KeyFileError, KeyFileTrust } from './index.js';
 import {

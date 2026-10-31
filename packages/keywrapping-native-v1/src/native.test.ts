@@ -266,8 +266,9 @@ describe('the macOS loader against the real system', { skip: process.platform !=
  * back a real wrapped key needs the provisioned test service. Windows only: they pin the Windows
  * library's key-file length and its refusal of 8.3 names and junctions. On Linux the library reads
  * key files only from a directory chain no group or other user can write - never under /tmp - so
- * the key files Linux tests write go in keyFileDirectory's private folder (the CLI test in
- * linux.test.ts, and the key-ring halves of these tests in packages/integration).
+ * the key files Linux tests write go in keyFileDirectory's private folder (linux.test.ts's "key files
+ * read through the Linux native library" and CLI tests, and the key-ring halves of these tests in
+ * packages/integration).
  */
 describe('key files read through the installed native library', { skip: process.platform !== 'win32' }, () => {
   /**

@@ -1,0 +1,38 @@
+{
+  "name": "@runsecure/hkdfguard-cache-azurekeyvault",
+  "version": "0.9.0",
+  "description": "HkdfGuard protected read-only cache over Azure Key Vault secrets (Azure SDK for JavaScript): each secret is read on its first lookup, taken out of the response before the SDK can make it a string, encrypted under the key ring's current key and cached only as ciphertext.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test*"
+  ],
+  "scripts": {
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@azure/core-rest-pipeline": "1.25.0",
+    "@azure/keyvault-secrets": "4.11.2",
+    "@opentelemetry/api": "1.9.1",
+    "@runsecure/hkdfguard-abstractions": "0.9.0",
+    "@runsecure/hkdfguard-cache": "0.9.0",
+    "@runsecure/hkdfguard-diagnostics": "0.9.0"
+  },
+  "devDependencies": {
+    "@azure/identity": "4.13.3",
+    "@runsecure/hkdfguard-dek": "0.9.0",
+    "@runsecure/hkdfguard-test-support": "0.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

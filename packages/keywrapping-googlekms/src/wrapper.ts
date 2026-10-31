@@ -1,8 +1,8 @@
 import { randomFillSync } from 'node:crypto';
 import type { protos } from '@google-cloud/kms';
 import { InvalidArgumentError, isWellFormed, MAX_WRAPPED_KEY_BYTES, wipe, type KeyWrapper } from '@runsecure/hkdfguard-abstractions';
+import { crc32c } from '@runsecure/hkdfguard-abstractions/internal';
 import { KeyFileTrust, readTrustedKeyFile } from '@runsecure/hkdfguard-securefile';
-import { crc32c } from './crc32c.js';
 import { GoogleKmsError } from './errors.js';
 
 /** The length of the DEK {@link GoogleKmsKeyWrapper.generateAndWrap} generates: 32 bytes (AES-256). */
