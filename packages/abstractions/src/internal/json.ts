@@ -1,7 +1,7 @@
 // A strict, forward-only JSON reader over bytes, for taking secrets out of JSON without ever making
-// one a string. Internal to this package: SecretJsonBody, ErrorResponseBody and
-// SecretValueSink.setBytesWithJsonKeys read through it.
-import { wipe } from '@runsecure/hkdfguard-abstractions';
+// one a string. Shared by HkdfGuard's own packages: the cache's SecretJsonBody, ErrorResponseBody and
+// SecretValueSink.setBytesWithJsonKeys, and the Vault transit wrapper, read through it.
+import { wipe } from '../rules.js';
 
 export const enum JsonToken {
   StartObject,
@@ -45,18 +45,19 @@ export class MalformedJsonError extends Error {
  * it without ever making one a string: a string token is reported by where its escaped text lies,
  * and unescaped only into a buffer the caller provides ({@link copyString}). The counterpart of
  * .NET's Utf8JsonReader, as strict: no comments, trailing commas, leading zeros or unescaped control
- * characters, nesting at most {@link MAX_DEPTH} deep, and nothing but whitespace after the root
+ * characters, nesting at most `maxDepth` ({@link MAX_DEPTH} by default) deep, and nothing but whitespace after the root
  * value. A \u escape must be a whole code point - a surrogate pair, never half of one. Duplicate
  * property names are reported as they are, for the caller to decide about. Malformed JSON throws
  * {@link MalformedJsonError}, which says where but never quotes it. The input is read in place,
  * never copied.
  */
 export class JsonReader {
-  /** The deepest nesting of objects and arrays read. */
+  /** The deepest nesting of objects and arrays read, unless the constructor is given less. */
   static readonly MAX_DEPTH = 64;
 
   readonly #json: Uint8Array;
   readonly #end: number;
+  readonly #maxDepth: number;
   // Whether each open container is an object (true) or an array.
   readonly #containers: boolean[] = [];
   #position = 0;
@@ -69,10 +70,11 @@ export class JsonReader {
   #valueEscaped = false;
   #rootDone = false;
 
-  /** A reader over json[0, length) - all of it when length is omitted. */
-  constructor(json: Uint8Array, length = json.length) {
+  /** A reader over json[0, length) - all of it when length is omitted - nesting at most `maxDepth` deep. */
+  constructor(json: Uint8Array, length = json.length, maxDepth = JsonReader.MAX_DEPTH) {
     this.#json = json;
     this.#end = length;
+    this.#maxDepth = maxDepth;
   }
 
   /** The token last read; undefined before the first. A method, not a getter, since every read changes it. */
@@ -231,7 +233,7 @@ export class JsonReader {
   }
 
   #open(isObject: boolean, opened: JsonToken): void {
-    if (this.#containers.length === JsonReader.MAX_DEPTH) throw this.#malformed(this.#position);
+    if (this.#containers.length === this.#maxDepth) throw this.#malformed(this.#position);
     this.#containers.push(isObject);
     this.#tokenStart = this.#position++;
     this.#token = opened;

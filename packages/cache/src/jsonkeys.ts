@@ -2,8 +2,8 @@
 // unescaped (or, for a number, true or false, copied) into a buffer of its own, handed over, and
 // zeroed. Internal to this package.
 import { wipe } from '@runsecure/hkdfguard-abstractions';
+import { JsonReader, JsonToken, MalformedJsonError } from '@runsecure/hkdfguard-abstractions/internal';
 import { InvalidSecretDataError } from './errors.js';
-import { JsonReader, JsonToken, MalformedJsonError } from './json.js';
 import type { SecretValueSink } from './remote.js';
 import { isValidKey } from './secretnames.js';
 

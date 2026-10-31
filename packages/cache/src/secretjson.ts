@@ -1,7 +1,7 @@
 import { InvalidArgumentError, wipe } from '@runsecure/hkdfguard-abstractions';
+import { JsonReader, JsonToken, MalformedJsonError } from '@runsecure/hkdfguard-abstractions/internal';
 import { readSecretBody, type ResponseBody } from './body.js';
 import { InvalidSecretDataError } from './errors.js';
-import { JsonReader, JsonToken, MalformedJsonError } from './json.js';
 import { setKeys } from './jsonkeys.js';
 import { SecretValueSink } from './remote.js';
 

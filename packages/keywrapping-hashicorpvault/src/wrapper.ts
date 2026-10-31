@@ -1,14 +1,15 @@
 import { randomFillSync, randomInt } from 'node:crypto';
 import { Agent as HttpAgent, request as httpRequest, STATUS_CODES, type ClientRequest, type IncomingMessage } from 'node:http';
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
-import { isIPv4 } from 'node:net';
 import {
   ClosedError, HkdfGuardError, InvalidArgumentError, isWellFormed, MAX_WRAPPED_KEY_BYTES, wipe, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
+import {
+  delay, isValidVaultPath, JsonReader, JsonToken, MalformedJsonError, untilAborted, vaultApiBase,
+} from '@runsecure/hkdfguard-abstractions/internal';
 import { KeyFileTrust, readTrustedKeyFile } from '@runsecure/hkdfguard-securefile';
 import { decodeInto, encodedLength, encodeInto } from './base64.js';
 import { HashiCorpVaultTransitError } from './errors.js';
-import { JsonReader, JsonToken, MalformedJsonError } from './json.js';
 import { HashiCorpVaultTransitKeyWrapperOptions, MAX_CONTEXT_LENGTH } from './options.js';
 import { isValidToken, MAX_TOKEN_LENGTH, type VaultTokenSource } from './token.js';
 
@@ -32,6 +33,8 @@ export const MAX_RESPONSE_LENGTH = 16 * 1024;
 
 const TOKEN_HEADER = 'X-Vault-Token';
 const SEGMENT = /^[A-Za-z0-9._-]+$/;
+// The deepest nesting read from Vault's answer, as .NET's wrapper limits it: a transit answer nests three deep.
+const MAX_JSON_DEPTH = 16;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRY_DELAY_MS = 200;
 const Limits = HashiCorpVaultTransitKeyWrapperOptions;
@@ -150,7 +153,9 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
     if (typeof options !== 'object' || options === null) {
       throw new InvalidArgumentError('HashiCorpVaultTransitKeyWrapper options must be an object.');
     }
-    const api = apiBase(address);
+    const text = address instanceof URL ? address.href : address;
+    if (typeof text !== 'string') throw new InvalidArgumentError('address must be a string or a URL.');
+    const api = vaultApiBase(text, 'a token and DEKs');
     if (typeof keyName !== 'string' || keyName.length > MAX_KEY_NAME_LENGTH || !isValidSegment(keyName)) {
       throw new InvalidArgumentError(`The key name ${JSON.stringify(keyName) ?? String(keyName)} isn't one: 1-${MAX_KEY_NAME_LENGTH} ASCII `
         + 'letters, digits, \'-\', \'_\' and \'.\', and not "." or "..".');
@@ -502,7 +507,7 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
     let found = false;
     let ignoredParameter = false;
     try {
-      const reader = new JsonReader(json);
+      const reader = new JsonReader(json, json.length, MAX_JSON_DEPTH);
       reader.read();
       if (reader.token() !== JsonToken.StartObject) throw this.#malformed(operation);
 
@@ -676,33 +681,6 @@ function readErrors(body: Uint8Array): string[] | undefined {
   return Array.isArray(errors) ? errors.map((e: unknown) => (typeof e === 'string' ? e : JSON.stringify(e))) : undefined;
 }
 
-/** Resolves after `ms`, or rejects with `signal`'s reason once it is aborted. */
-function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
-  signal?.throwIfAborted();
-  return new Promise<void>((resolve, reject) => {
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal!.reason);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-/** `promise`, or `signal`'s reason once it is aborted, whichever comes first. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
-      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error); });
-  });
-}
-
 interface Settings {
   mountPath: string;
   namespace: string | undefined;
@@ -731,8 +709,8 @@ function checked(options: HashiCorpVaultTransitKeyWrapperOptions): Settings {
   if (!(settings.keyFileTrust instanceof KeyFileTrust)) throw new InvalidArgumentError('keyFileTrust must be a KeyFileTrust.');
   if (options.agent !== undefined && !(options.agent instanceof HttpAgent)) throw new InvalidArgumentError('agent must be an https.Agent.');
 
-  if (!isValidPath(settings.mountPath)) throw new InvalidArgumentError(`The mount path '${settings.mountPath}' isn't a Vault path.`);
-  if (settings.namespace !== undefined && !isValidPath(settings.namespace)) {
+  if (!isValidVaultPath(settings.mountPath)) throw new InvalidArgumentError(`The mount path '${settings.mountPath}' isn't a Vault path.`);
+  if (settings.namespace !== undefined && !isValidVaultPath(settings.namespace)) {
     throw new InvalidArgumentError(`The namespace '${settings.namespace}' isn't a Vault path.`);
   }
   if (!(settings.timeoutMs > 0 && settings.timeoutMs <= Limits.MAX_TIMEOUT_MS)) {
@@ -757,54 +735,6 @@ function encodeContext(context: unknown): Uint8Array {
     throw new InvalidArgumentError(`The context is ${encoded.length} bytes in UTF-8; at most ${MAX_CONTEXT_LENGTH} are allowed.`);
   }
   return encoded;
-}
-
-// Whether Vault's address is https, its host and port, and the path of /v1/ under it - refusing an
-// address that would send tokens and DEKs in the clear (http anywhere but loopback) or that carries
-// credentials, a query or a fragment.
-function apiBase(address: string | URL): { https: boolean; hostname: string; port: number | undefined; base: string } {
-  const text = address instanceof URL ? address.href : address;
-  if (typeof text !== 'string') throw new InvalidArgumentError('address must be a string or a URL.');
-  const invalid = (problem: string) => new InvalidArgumentError(`Vault's address '${text}' ${problem}`, 'ERR_HKDFGUARD_INVALID_VAULT_ADDRESS');
-
-  // A scheme and a host, checked on the text: the URL parser would read "https:///host" as "https://host".
-  let url: URL | undefined;
-  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#\\]/.test(text)) {
-    try {
-      url = new URL(text);
-    } catch {
-      url = undefined;
-    }
-  }
-  if (url === undefined || url.hostname === '') throw invalid("isn't absolute, e.g. https://vault.example.com:8200.");
-
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback(url.hostname))) {
-    throw invalid('must be https; http is allowed only on a loopback address (a local Vault Agent or dev server), since every request carries a token and DEKs.');
-  }
-  const authority = text.slice(text.indexOf('//') + 2).split(/[/?#]/, 1)[0]!;
-  if (authority.includes('@') || url.username !== '' || url.password !== '' || text.includes('?') || text.includes('#')) {
-    throw invalid('must not hold credentials, a query or a fragment.');
-  }
-
-  let prefix = url.pathname;
-  while (prefix.endsWith('/')) prefix = prefix.slice(0, -1);
-  return {
-    https: url.protocol === 'https:',
-    hostname: url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname,
-    port: url.port === '' ? undefined : Number(url.port),
-    base: `${prefix}/v1/`,
-  };
-}
-
-// localhost, or an IP literal on the loopback network - as the URL parser normalized it, so no name
-// is ever resolved.
-function isLoopback(hostname: string): boolean {
-  return hostname === 'localhost' || (isIPv4(hostname) && hostname.startsWith('127.')) || hostname === '[::1]';
-}
-
-// '/'-separated segments, none empty, "." or "..": a path that stays where it's put.
-function isValidPath(path: unknown): boolean {
-  return typeof path === 'string' && path.split('/').every(isValidSegment);
 }
 
 function isValidSegment(segment: string): boolean {

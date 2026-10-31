@@ -1142,7 +1142,7 @@ describe('HashiCorpVaultSecretCache: construction', () => {
   for (const address of ['http://localhost:8200', 'http://LOCALHOST', 'http://127.0.0.1:8200', 'http://127.1.2.3', 'http://[::1]:8200',
     'https://vault.example.com:8200', 'HTTPS://vault.example.com/prefix/', 'https://[2001:db8::1]:8200']) {
     it(`accepts ${address}: https, or http only on loopback`, () => {
-      newCache(address);
+      assert.doesNotThrow(() => newCache(address));
     });
   }
 

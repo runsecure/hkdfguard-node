@@ -5,13 +5,13 @@ import { SpanStatusCode } from '@opentelemetry/api';
 import { protos, SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import * as grpc from '@grpc/grpc-js';
 import { InvalidArgumentError, isZero, type ProtectedReadOnlyCache } from '@runsecure/hkdfguard-abstractions';
+import { crc32c } from '@runsecure/hkdfguard-abstractions/internal';
 import { InvalidSecretDataError, ProtectedCache, ProtectedCacheCollection } from '@runsecure/hkdfguard-cache';
 import { KeyRing } from '@runsecure/hkdfguard-dek';
 import { AttributeNames, HkdfGuardTelemetry, MetricNames, SpanNames } from '@runsecure/hkdfguard-diagnostics';
 import { capturingLogger, RecordingKey, useMetricRecorder, useSpanRecorder } from '@runsecure/hkdfguard-test-support';
 import { GoogleSecretManagerSecretCache, retrySettings, type GoogleSecretManagerSecretCacheOptions } from './cache.js';
 import { ResponseCapture, type AccessedSecretVersion } from './capture.js';
-import { crc32c } from './crc32c.js';
 
 const v1 = protos.google.cloud.secretmanager.v1;
 type AccessResponse = protos.google.cloud.secretmanager.v1.IAccessSecretVersionResponse;

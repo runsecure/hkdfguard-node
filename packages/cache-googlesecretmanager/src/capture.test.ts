@@ -3,8 +3,8 @@ import { inspect } from 'node:util';
 import { describe, it, type TestContext } from 'node:test';
 import { protos } from '@google-cloud/secret-manager';
 import { isZero } from '@runsecure/hkdfguard-abstractions';
+import { crc32c } from '@runsecure/hkdfguard-abstractions/internal';
 import { AccessedSecretVersion, MalformedResponseError, parseAccessResponse, ResponseCapture } from './capture.js';
-import { crc32c } from './crc32c.js';
 
 /*
  * The AccessSecretVersion response parser and the per-fetch capture, driven directly with the bytes

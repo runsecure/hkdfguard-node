@@ -2,12 +2,12 @@ import { strict as assert } from 'node:assert';
 import { Readable } from 'node:stream';
 import { describe, it } from 'node:test';
 import { InvalidArgumentError, isZero } from '@runsecure/hkdfguard-abstractions';
+import { JsonReader, JsonToken, MalformedJsonError } from '@runsecure/hkdfguard-abstractions/internal';
 import { KeyRing } from '@runsecure/hkdfguard-dek';
 import { RecordingKey } from '@runsecure/hkdfguard-test-support';
 import type { ResponseBody } from './body.js';
 import { ErrorResponseBody } from './errorbody.js';
 import { InvalidSecretDataError } from './errors.js';
-import { JsonReader, JsonToken, MalformedJsonError } from './json.js';
 import { RemoteSecretCache, SecretNameMatching, type SecretValueSink } from './remote.js';
 import { SecretJsonBody, type SecretJsonCaptureOptions } from './secretjson.js';
 

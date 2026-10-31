@@ -1,17 +1,16 @@
 import { randomInt } from 'node:crypto';
 import { Agent as HttpAgent, request as httpRequest, type ClientRequest, type IncomingMessage } from 'node:http';
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
-import { isIPv4 } from 'node:net';
 import {
   ClosedError, HkdfGuardError, InvalidArgumentError, wipe, type DataProtector, type KeyRing,
 } from '@runsecure/hkdfguard-abstractions';
+import { delay, isValidVaultPath, untilAborted, vaultApiBase } from '@runsecure/hkdfguard-abstractions/internal';
 import { ErrorResponseBody, RemoteSecretCache, SecretJsonBody, SecretNameMatching, type SecretValueSink } from '@runsecure/hkdfguard-cache';
 import { VaultRequestError } from './errors.js';
 import { HashiCorpVaultSecretCacheOptions, VaultKvVersion } from './options.js';
 import { isValidToken, type VaultTokenProvider } from './token.js';
 
 const TOKEN_HEADER = 'X-Vault-Token';
-const PATH_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRY_DELAY_MS = 200;
 const Limits = HashiCorpVaultSecretCacheOptions;
@@ -128,7 +127,9 @@ export class HashiCorpVaultSecretCache extends RemoteSecretCache {
     if (options === null || typeof options !== 'object') throw new TypeError('options must be a HashiCorpVaultSecretCacheOptions object.');
     super(keyRing, SecretNameMatching.exact, options.logger);
 
-    const api = apiBase(address);
+    const text = address instanceof URL ? address.href : address;
+    if (typeof text !== 'string') throw new TypeError('address must be a string or a URL.');
+    const api = vaultApiBase(text, 'a token');
     const settings = checked(options);
     this.#tokenProvider = tokenProvider;
     this.#tokenProtector = tokenProtector;
@@ -159,7 +160,7 @@ export class HashiCorpVaultSecretCache extends RemoteSecretCache {
    */
   static isValidSecretName(name: string | undefined | null): boolean {
     return typeof name === 'string' && name.length > 0 && name.length <= HashiCorpVaultSecretCache.MAX_SECRET_NAME_LENGTH
-      && isValidPath(name);
+      && isValidVaultPath(name);
   }
 
   /**
@@ -369,33 +370,6 @@ export function retryDelay(baseDelayMs: number, retry: number, jitterMs: number)
   return Math.min(backoff, maximum) + jitterMs;
 }
 
-/** Resolves after `ms`, or rejects with `signal`'s reason once it is aborted. */
-function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
-  signal?.throwIfAborted();
-  return new Promise<void>((resolve, reject) => {
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal!.reason);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-/** `promise`, or `signal`'s reason once it is aborted, whichever comes first. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
-      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error); });
-  });
-}
-
 interface Settings {
   mountPath: string;
   kvVersion: VaultKvVersion;
@@ -428,12 +402,12 @@ function checked(options: HashiCorpVaultSecretCacheOptions): Settings {
   }
   if (options.agent !== undefined && !(options.agent instanceof HttpAgent)) throw new TypeError('agent must be an https.Agent.');
 
-  if (!isValidPath(settings.mountPath)) throw new InvalidArgumentError(`The mount path '${settings.mountPath}' isn't a Vault path.`);
+  if (!isValidVaultPath(settings.mountPath)) throw new InvalidArgumentError(`The mount path '${settings.mountPath}' isn't a Vault path.`);
   if (!RemoteSecretCache.isValidKey(settings.defaultKey)) {
     throw new InvalidArgumentError(`The default key '${settings.defaultKey}' isn't a key: 1-${RemoteSecretCache.MAX_KEY_LENGTH} printable ASCII `
       + "characters other than space, '!' and '#'.");
   }
-  if (settings.namespace !== undefined && !isValidPath(settings.namespace)) {
+  if (settings.namespace !== undefined && !isValidVaultPath(settings.namespace)) {
     throw new InvalidArgumentError(`The namespace '${settings.namespace}' isn't a Vault path.`);
   }
   if (settings.kvVersion !== VaultKvVersion.v1 && settings.kvVersion !== VaultKvVersion.v2) {
@@ -449,52 +423,4 @@ function checked(options: HashiCorpVaultSecretCacheOptions): Settings {
     throw new InvalidArgumentError(`The retry delay must be zero to ${Limits.MAX_RETRY_DELAY_MS} ms; it is ${settings.retryDelayMs}.`);
   }
   return settings;
-}
-
-// Whether Vault's address is https, its host and port, and the path of /v1/ under it - refusing an
-// address that would send tokens in the clear (http anywhere but loopback) or that carries
-// credentials, a query or a fragment.
-function apiBase(address: string | URL): { https: boolean; hostname: string; port: number | undefined; base: string } {
-  const text = address instanceof URL ? address.href : address;
-  if (typeof text !== 'string') throw new TypeError('address must be a string or a URL.');
-  const invalid = (problem: string) => new InvalidArgumentError(`Vault's address '${text}' ${problem}`, 'ERR_HKDFGUARD_INVALID_VAULT_ADDRESS');
-
-  // A scheme and a host, checked on the text: the URL parser would read "https:///host" as "https://host".
-  let url: URL | undefined;
-  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#\\]/.test(text)) {
-    try {
-      url = new URL(text);
-    } catch {
-      url = undefined;
-    }
-  }
-  if (url === undefined || url.hostname === '') throw invalid("isn't absolute, e.g. https://vault.example.com:8200.");
-
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback(url.hostname))) {
-    throw invalid('must be https; http is allowed only on a loopback address (a local Vault Agent or dev server), since every request carries a token.');
-  }
-  const authority = text.slice(text.indexOf('//') + 2).split(/[/?#]/, 1)[0]!;
-  if (authority.includes('@') || url.username !== '' || url.password !== '' || text.includes('?') || text.includes('#')) {
-    throw invalid('must not hold credentials, a query or a fragment.');
-  }
-
-  let prefix = url.pathname;
-  while (prefix.endsWith('/')) prefix = prefix.slice(0, -1);
-  return {
-    https: url.protocol === 'https:',
-    hostname: url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname,
-    port: url.port === '' ? undefined : Number(url.port),
-    base: `${prefix}/v1/`,
-  };
-}
-
-// localhost, or an IP literal on the loopback network - as the URL parser normalized it, so no name
-// is ever resolved.
-function isLoopback(hostname: string): boolean {
-  return hostname === 'localhost' || (isIPv4(hostname) && hostname.startsWith('127.')) || hostname === '[::1]';
-}
-
-// '/'-separated segments, none empty, "." or "..": a path that stays where it's put.
-function isValidPath(path: unknown): boolean {
-  return typeof path === 'string' && path.split('/').every((segment) => PATH_SEGMENT.test(segment) && segment !== '.' && segment !== '..');
 }

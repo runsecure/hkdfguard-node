@@ -405,14 +405,14 @@ describe('constructing a HashiCorpVaultTransitKeyWrapper', () => {
   }
 
   it('accepts a key name of every allowed character, up to the limit', () => {
-    newWrapper(undefined, undefined, 'My_Kek-1.2');
-    newWrapper(undefined, undefined, 'k'.repeat(MAX_KEY_NAME_LENGTH));
+    assert.doesNotThrow(() => newWrapper(undefined, undefined, 'My_Kek-1.2'));
+    assert.doesNotThrow(() => newWrapper(undefined, undefined, 'k'.repeat(MAX_KEY_NAME_LENGTH)));
   });
 
   for (const address of ['http://localhost:8200', 'http://LOCALHOST', 'http://127.0.0.1:8200', 'http://127.1.2.3', 'http://[::1]:8200',
     'https://vault.example.com:8200', 'HTTPS://vault.example.com/prefix/', 'https://[2001:db8::1]:8200', new URL('https://vault.example.com')]) {
     it(`accepts ${String(address)}: https, or http only on loopback`, () => {
-      newWrapper(address);
+      assert.doesNotThrow(() => newWrapper(address));
     });
   }
 

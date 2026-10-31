@@ -1,5 +1,5 @@
+import { JsonReader, JsonToken, MalformedJsonError } from '@runsecure/hkdfguard-abstractions/internal';
 import { readLimitedBody, type ResponseBody } from './body.js';
-import { JsonReader, JsonToken, MalformedJsonError } from './json.js';
 
 const decoder = new TextDecoder(); // not fatal: invalid UTF-8 becomes U+FFFD
 

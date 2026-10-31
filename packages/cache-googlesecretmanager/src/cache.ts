@@ -1,10 +1,11 @@
+import { randomInt } from 'node:crypto';
 import { stringify } from 'node:querystring';
 import { protos, SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { InvalidArgumentError, type KeyRing } from '@runsecure/hkdfguard-abstractions';
+import { abortReason, crc32c, delay as sleep, untilAborted } from '@runsecure/hkdfguard-abstractions/internal';
 import { InvalidSecretDataError, RemoteSecretCache, SecretNameMatching, type SecretValueSink } from '@runsecure/hkdfguard-cache';
 import type { Logger } from '@runsecure/hkdfguard-diagnostics';
 import { ResponseCapture, type AccessedSecretVersion } from './capture.js';
-import { crc32c } from './crc32c.js';
 
 /** The options of a {@link GoogleSecretManagerSecretCache}. */
 export interface GoogleSecretManagerSecretCacheOptions {
@@ -62,7 +63,7 @@ const API_CLIENT_HEADER = (() => {
 /** The few members of a @grpc/grpc-js Client - the client's stub - that a fetch uses. */
 interface GrpcStub {
   makeUnaryRequest(method: string, serialize: (request: Buffer) => Buffer, deserialize: (raw: Buffer) => AccessedSecretVersion,
-    argument: Buffer, options: object, callback: (error: unknown, response?: AccessedSecretVersion) => void): { cancel(): void };
+    argument: Buffer, options: object, callback: (error: Error | null, response?: AccessedSecretVersion) => void): { cancel(): void };
 }
 
 /** A gRPC call as an interceptor sees it: only start, whose metadata the cache adds its headers to. */
@@ -260,8 +261,8 @@ async function callWithRetries(stub: GrpcStub, resourceName: string, capture: Re
     } catch (error) {
       const status = statusOf(error);
       if ((status !== RESOURCE_EXHAUSTED && status !== UNAVAILABLE) || signal?.aborted === true) throw error;
-      // Jitter, as the client's own retries have: nothing secret depends on it.
-      const wait = Math.random() * delay;
+      // Jitter, as the client's own retries have; from the CSPRNG, though nothing secret depends on it.
+      const wait = randomInt(0, Math.floor(delay) + 1);
       if (Date.now() + wait >= deadline) throw error;
       await sleep(wait, signal);
       delay = Math.min(delay * retrySettings.delayMultiplier, retrySettings.maxDelayMs);
@@ -274,13 +275,13 @@ function callOnce(stub: GrpcStub, request: Buffer, capture: ResponseCapture, opt
   signal: AbortSignal | undefined): Promise<AccessedSecretVersion> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted === true) {
-      reject(signal.reason);
+      reject(abortReason(signal));
       return;
     }
     let call: { cancel(): void } | undefined;
     const onAbort = () => {
       call?.cancel();
-      reject(signal!.reason);
+      reject(abortReason(signal!));
     };
     try {
       call = stub.makeUnaryRequest(METHOD, () => request, (raw) => capture.deserialize(raw), request, options, (error, response) => {
@@ -330,37 +331,3 @@ function statusOf(error: unknown): unknown {
   return typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
 }
 
-/** `promise`, or the signal's reason once it is aborted, whichever comes first. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (signal === undefined) return promise;
-  return new Promise<T>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
-      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error); });
-  });
-}
-
-/** Resolves after `ms`, or rejects with the signal's reason once it is aborted. */
-function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted === true) {
-      reject(signal.reason);
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal!.reason);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
