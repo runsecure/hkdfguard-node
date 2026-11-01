@@ -130,8 +130,8 @@ what to do about it there.
 `buildKeyRing` uses for every key file, reads the file with the
 library's `hkdfguard_open_file`. It returns the bytes still wrapped and never touches a KEK, but
 first refuses a file that is missing, unreadable, the wrong size, not a wrapped DEK, or that holds
-what looks like an unwrapped key (32 raw bytes, or their hex or base64: treat that as a key
-exposure) - and one whose path isn't trusted: a link, junction or other reparse point, an 8.3 short
+what looks like an unwrapped key (32 raw bytes, optionally followed by one line ending (LF or
+CRLF), or their hex or base64: treat that as a key exposure) - and one whose path isn't trusted: a link, junction or other reparse point, an 8.3 short
 name, a network, mapped or SUBST drive, or a file or folder another account could write or replace.
 A refusal throws `KeyFileRefusedError`, with `status` and an fs-style `code`: `ENOENT`, `EACCES`
 (unreadable or untrusted), `ERR_HKDFGUARD_INVALID_KEY_FILE` (size or contents),
