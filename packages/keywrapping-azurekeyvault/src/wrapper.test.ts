@@ -290,6 +290,17 @@ async function generate(wrapper: KeyWrapper): Promise<Uint8Array> {
 const dek = () => new Uint8Array(randomBytes(32));
 const filled = (length: number) => new Uint8Array(length).fill(0xaa);
 const parse = (wrapped: Uint8Array) => envelope.parse(wrapped, (message) => new Error(message));
+// The identifiers of the Key Vault clients a wrapper keeps.
+const keptClients = (wrapper: AzureKeyVaultKeyWrapper) => [...(wrapper as unknown as { clients: Map<string, unknown> }).clients.keys()];
+
+/** `wrapped`, recording another signing key version; its signature is left as it was. */
+function withSigningVersion(wrapped: Uint8Array, version: string): Uint8Array {
+  const parts = parse(wrapped);
+  const fail = (message: string) => new Error(message);
+  const unsigned = envelope.buildUnsigned(parts.wrappingKeyVersion, parts.wrappedDek, fail);
+  const result = new Uint8Array(MAX_WRAPPED_KEY_BYTES);
+  return result.slice(0, envelope.write(unsigned, version, parts.signature, result, fail));
+}
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
 /** A predicate for assert.rejects: an AzureKeyVaultError whose message is `message` exactly, or matches it. */
@@ -850,6 +861,85 @@ describe('Key Vault clients', () => {
     for (let i = 0; i < 3; i++) await wrapper.unwrap(wrapped, new Uint8Array(32));
 
     assert.deepEqual(v.calls('get').map((r) => r.path), [`/keys/sign/${parts.signingKeyVersion}`, `/keys/wrap/${parts.wrappingKeyVersion}`]);
+  });
+
+  it('are kept for the versions a successful unwrap used, and only those', async () => {
+    const v = vault();
+    const wrapped = await wrapWith(wrapperFor(v), dek());
+    const parts = parse(wrapped);
+    const wrapper = wrapperFor(v);
+    v.requests.length = 0;
+
+    await wrapper.unwrap(wrapped, new Uint8Array(32));
+    assert.deepEqual([...keptClients(wrapper)].sort(), [v.url('sign', parts.signingKeyVersion), v.url('wrap', parts.wrappingKeyVersion)].sort());
+    // A second unwrap of it makes no new client: nothing is read again.
+    await wrapper.unwrap(wrapped, new Uint8Array(32));
+    assert.equal(v.calls('get').length, 2);
+    assert.equal(keptClients(wrapper).length, 2);
+  });
+
+  it('aren\'t kept for a signing key version Key Vault doesn\'t have', async () => {
+    const v = vault();
+    const wrapped = await wrapWith(wrapperFor(v), dek());
+    const wrapper = wrapperFor(v);
+    const forged = Array.from({ length: 5 }, () => withSigningVersion(wrapped, randomBytes(16).toString('hex')));
+    v.requests.length = 0;
+
+    for (const payload of [...forged, forged[0]!, forged[0]!]) {
+      const result = filled(32);
+      await assert.rejects(wrapper.unwrap(payload, result), vaultError('Azure Key Vault verify failed for key \'sign\': KeyNotFound (HTTP 404).', 'verify'));
+      assert.ok(isZero(result));
+    }
+    // Nothing kept: the same forged version is read afresh by a new client each time.
+    assert.equal(keptClients(wrapper).length, 0);
+    assert.equal(v.calls('get').length, 7);
+    assert.equal(v.calls('unwrapkey').length, 0);
+
+    // A genuine one still is, afterwards.
+    await wrapper.unwrap(wrapped, new Uint8Array(32));
+    assert.equal(keptClients(wrapper).length, 2);
+  });
+
+  it('aren\'t kept for a version whose signature doesn\'t verify', async () => {
+    const v = vault();
+    const wrapped = await wrapWith(wrapperFor(v), dek());
+    const wrapper = wrapperFor(v);
+    v.answers.set('verify', () => ({ value: false }));
+
+    await assert.rejects(wrapper.unwrap(wrapped, new Uint8Array(32)), vaultError(/signature doesn't verify/));
+    assert.equal(keptClients(wrapper).length, 0);
+  });
+
+  it('aren\'t kept for a wrapping key version Key Vault refuses', async () => {
+    const v = vault();
+    const wrapped = await wrapWith(wrapperFor(v), dek());
+    const parts = parse(wrapped);
+    v.purge('wrap', parts.wrappingKeyVersion);
+    const wrapper = wrapperFor(v);
+
+    await assert.rejects(wrapper.unwrap(wrapped, new Uint8Array(32)), vaultError(/unwrap failed for key 'wrap': KeyNotFound/, 'unwrap'));
+    assert.deepEqual(keptClients(wrapper), [v.url('sign', parts.signingKeyVersion)]);
+  });
+
+  it('are kept once for a version unwraps use at the same time', async () => {
+    const v = vault();
+    const wrapped = await wrapWith(wrapperFor(v), dek());
+    const wrapper = wrapperFor(v);
+
+    await Promise.all(Array.from({ length: 4 }, () => wrapper.unwrap(wrapped, new Uint8Array(32))));
+    assert.equal(keptClients(wrapper).length, 2);
+    const reads = v.calls('get').length;
+    await wrapper.unwrap(wrapped, new Uint8Array(32));
+    assert.equal(v.calls('get').length, reads);
+  });
+
+  it('are kept for the configured keys after wrapping', async () => {
+    const v = vault();
+    const [wrapVersion, signVersion] = [v.current('wrap'), v.current('sign')];
+    for (const wrapper of [wrapperFor(v), wrapperFor(v, { wrap: v.url('wrap', wrapVersion), sign: v.url('sign', signVersion) })]) {
+      await generate(wrapper);
+      assert.deepEqual([...keptClients(wrapper)].sort(), [v.url('sign', signVersion), v.url('wrap', wrapVersion)].sort());
+    }
   });
 
   it('are given the client options', async () => {
