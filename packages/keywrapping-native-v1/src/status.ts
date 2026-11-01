@@ -22,10 +22,11 @@ export const Status = {
   invalidServiceName: -8,
   policyInvalid: -9,
 
-  // Wrapped payload (-10..-15; -13..-15 are reserved)
+  // Wrapped payload (-10..-15; -14..-15 are reserved)
   payloadMalformed: -10,
   payloadAuthFailed: -11,
   payloadUnsupported: -12,
+  payloadVersionRefused: -13,
 
   // KEK and process (-16..-31; -21..-31 are reserved)
   kekFingerprintMismatch: -16,
@@ -75,9 +76,10 @@ export const sharedStatusDescriptions: ReadonlyMap<number, string> = new Map([
   [Status.internalError, 'an unexpected internal failure in the native library'],
   [Status.invalidServiceName, "the service name is null, empty, too long, or has a character other than an ASCII letter, digit or '.'"],
   [Status.policyInvalid, "the machine's HkdfGuard policy is invalid"],
-  [Status.payloadMalformed, 'the wrapped payload is not a valid WrappedDekV1'],
+  [Status.payloadMalformed, 'the wrapped payload is not a valid wrapped DEK'],
   [Status.payloadAuthFailed, 'AES-GCM authentication failed: the wrapped payload was altered'],
   [Status.payloadUnsupported, "the wrapped payload's version or suite is not one this native library understands"],
+  [Status.payloadVersionRefused, "the wrapped payload's version is one this native library understands, but this host's policy does not use"],
   [Status.kekFingerprintMismatch, "the payload was wrapped under a different KEK than this service's current one"],
   [Status.kekNotFound, 'no KEK is provisioned for this service; run hkdfguard provision'],
   [Status.kekAccessDenied, 'the KEK exists, but this account is not authorized to use it'],
@@ -106,8 +108,10 @@ function withHints(hints: [number, string][]): ReadonlyMap<number, string> {
 
 /** Windows HkdfGuard.dll. */
 export const windowsStatusDescriptions: ReadonlyMap<number, string> = withHints([
+  [Status.providerUnavailable, "payload version 2 is unavailable on this host: the TPM can't be used for it and KeyStoragePolicy, or an existing TPM KEK, rules out the software key store (event 2008 names the reason); set HKLM\\Software\\Policies\\HkdfGuard\\ClassicalMode to 1 to keep using version 1"],
   [Status.providerError, 'the KEK\'s key storage provider (Platform Crypto Provider or Software KSP) could not open or create the key'],
   [Status.policyInvalid, 'a machine policy value under HKLM\\Software\\Policies\\HkdfGuard is invalid'],
+  [Status.payloadVersionRefused, 'the wrapped payload is the other payload version from the one HKLM\\Software\\Policies\\HkdfGuard\\ClassicalMode selects (absent or 0: version 2; 1: version 1); a host unwraps only its own version'],
   [Status.kekNotFound, 'no KEK is provisioned for this service; run hkdfguard provision from an elevated prompt'],
   [Status.kekAccessDenied, 'the KEK exists, but this account is not authorized to use it (or, for a new KEK, the process is not elevated); add it to the HkdfGuardUsers group or a KeyUseGroups group'],
   [Status.kekInvalid, "the existing KEK's ACL is missing, lacks SYSTEM/Administrators, or grants an over-broad principal"],

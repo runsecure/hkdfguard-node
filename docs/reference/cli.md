@@ -158,12 +158,13 @@ to do about some on Windows. The Node library reports the same codes as `StatusE
 | -1 to -6 | General: invalid argument, buffer too small, provider unavailable or failed, crypto, internal |
 | -8, -9 | Invalid service name; invalid machine policy |
 | -10 to -12 | Wrapped payload malformed, failed authentication, or an unsupported version |
+| -13 | Wrapped payload version this host's policy doesn't use (Windows: `ClassicalMode`) |
 | -16 to -20 | KEK fingerprint mismatch, not found, access denied, invalid; process hardening failed |
 | -32 to -39 | Key file: not found, access denied, I/O, too short, too long, plaintext key, malformed, untrusted |
 | -64 | Windows: invalid `KeyUseGroups` entry |
 | -96 to -100 | macOS: keychain and Secure Enclave failures |
 
-The rest (-7, -13 to -15, -21 to -31, -40 to -63, ...) are reserved.
+The rest (-7, -14 to -15, -21 to -31, -40 to -63, ...) are reserved.
 
 ## macOS
 
