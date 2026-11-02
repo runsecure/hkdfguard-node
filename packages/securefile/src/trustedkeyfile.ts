@@ -10,7 +10,7 @@ import {
   type WinSecurity,
 } from './windows.js';
 
-/** The length of an unwrapped DEK; a file this size is probably a plaintext key. */
+/** The length of an unwrapped DEK; a file this size, or this size plus a line ending (LF or CRLF), is probably a plaintext key. */
 export const PLAINTEXT_KEY_LENGTH = 32;
 
 /** A 32-byte key as text is at most 64 hex digits; this allows surrounding whitespace. */
@@ -33,8 +33,8 @@ export const PLAINTEXT_TEXT_SCAN_LIMIT = 96;
  *   symbolic links a trusted user owns are followed; the resolved path is then opened with
  *   O_NOFOLLOW and must still be a regular file. These checks are Node's own fs calls.
  * - Everywhere: the contents must be 1 to MAX_WRAPPED_KEY_BYTES bytes - never more than one byte
- *   past that is read - and must not look like an unwrapped key (exactly 32 bytes, or a 32-byte key
- *   as hex or base64).
+ *   past that is read - and must not look like an unwrapped key (32 raw bytes, optionally followed by
+ *   one line ending (LF or CRLF), or a 32-byte key as hex or base64).
  *
  * A key file is a few hundred bytes on a local drive, so the checks and the read are made on the
  * calling thread rather than libuv's thread pool.
@@ -257,16 +257,21 @@ const isHexDigit = (c: number) => isDigit(c) || (c >= 0x41 && c <= 0x46) || (c >
 const isAlphanumeric = (c: number) => isDigit(c) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a);
 
 /**
- * The native library's test for a plaintext key written to disk: exactly 32 bytes, or a 32-byte key
- * as 64 hex digits or as base64 (standard or URL-safe, padded or not), with any surrounding
- * whitespace. Reads `contents` in place, making no copy of it.
+ * The native library's test for a plaintext key written to disk: 32 raw bytes, optionally followed by
+ * one line ending (LF or CRLF), or a 32-byte key as 64 hex digits or as base64 (standard or URL-safe,
+ * padded or not), with any surrounding whitespace. A raw key is judged by its length and trailing
+ * line ending alone, never by trimming: its own last bytes may be whitespace values. Reads
+ * `contents` in place, making no copy of it.
  */
 export function looksLikePlaintextKey(contents: Uint8Array): boolean {
-  if (contents.length === PLAINTEXT_KEY_LENGTH) return true;
-  if (contents.length > PLAINTEXT_TEXT_SCAN_LIMIT) return false;
+  const length = contents.length;
+  if (length === PLAINTEXT_KEY_LENGTH) return true;
+  if (length === PLAINTEXT_KEY_LENGTH + 1 && contents[PLAINTEXT_KEY_LENGTH] === 0x0a) return true; // LF
+  if (length === PLAINTEXT_KEY_LENGTH + 2 && contents[PLAINTEXT_KEY_LENGTH] === 0x0d && contents[PLAINTEXT_KEY_LENGTH + 1] === 0x0a) return true; // CRLF
+  if (length > PLAINTEXT_TEXT_SCAN_LIMIT) return false;
 
   let start = 0;
-  let end = contents.length;
+  let end = length;
   while (start < end && isWhitespace(contents[start]!)) start++;
   while (end > start && isWhitespace(contents[end - 1]!)) end--;
   return isHexKey(contents, start, end) || isBase64Key(contents, start, end);

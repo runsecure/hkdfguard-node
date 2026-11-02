@@ -90,7 +90,7 @@ export const sharedStatusDescriptions: ReadonlyMap<number, string> = new Map([
   [Status.fileIo, 'the key file is not a regular file, is in use by a writer, or could not be read'],
   [Status.fileTooShort, 'the key file is shorter than a wrapped DEK'],
   [Status.fileTooLong, 'the key file is longer than a wrapped DEK'],
-  [Status.filePlaintextKey, 'the key file holds what looks like an UNWRAPPED key (32 raw bytes, or its hex or base64): treat it as a key exposure'],
+  [Status.filePlaintextKey, 'the key file holds what looks like an UNWRAPPED key (32 raw bytes, optionally followed by one line ending (LF or CRLF), or its hex or base64): treat it as a key exposure'],
   [Status.fileMalformed, 'the key file is the right size, but is not a valid wrapped DEK'],
   [Status.fileUntrusted, "the key file's path is not trusted: a link or reparse point, a short or network path, or a file or folder another account could replace"],
   [Status.winGroupInvalid, 'an HKLM\\Software\\Policies\\HkdfGuard\\KeyUseGroups entry is unresolvable, not a group, not host-local, or over-broad'],

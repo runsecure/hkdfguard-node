@@ -71,6 +71,21 @@ describe('key file contents', () => {
     assert.throws(() => readBytes(new Uint8Array(randomBytes(32))), keyFileError(INVALID_KEY_FILE, 'exposed'));
   });
 
+  it('refuses a plaintext key followed by a line ending as exposed', () => {
+    for (const ending of ['\n', '\r\n']) {
+      const raw = Buffer.concat([randomBytes(32), Buffer.from(ending, 'latin1')]);
+      assert.throws(() => readBytes(new Uint8Array(raw)), keyFileError(INVALID_KEY_FILE, 'exposed'), JSON.stringify(ending));
+    }
+  });
+
+  it('does not refuse a raw key followed by anything but one line ending', () => {
+    // 33 bytes ending CR and 34 ending LF LF fall through to the other checks, which they pass.
+    for (const tail of [[0x0d], [0x0a, 0x0a]]) {
+      const contents = new Uint8Array(Buffer.concat([Buffer.alloc(32, 0x80), Buffer.from(tail)]));
+      assert.deepEqual(readBytes(contents), contents, JSON.stringify(tail));
+    }
+  });
+
   it('reads until the end however the reads are split', () => {
     const key = wrapped();
     const chunks = [key.subarray(0, 1), key.subarray(1, 100), key.subarray(100)];
@@ -127,6 +142,34 @@ describe('plaintext key detection', () => {
   it('detects a raw key', () => {
     assert.ok(looksLikePlaintextKey(new Uint8Array(randomBytes(32))));
     assert.ok(looksLikePlaintextKey(new Uint8Array(32)));
+  });
+
+  it('detects a raw key followed by one line ending', () => {
+    const lf = Buffer.from([0x0a]);
+    const crlf = Buffer.from([0x0d, 0x0a]);
+    assert.ok(looksLikePlaintextKey(new Uint8Array(Buffer.concat([randomBytes(32), lf]))));
+    assert.ok(looksLikePlaintextKey(new Uint8Array(Buffer.concat([randomBytes(32), crlf]))));
+    // A key whose own last bytes are whitespace values: judged by length, not by trimming.
+    for (const last of [0x0a, 0x20, 0x0d]) {
+      const raw = Buffer.alloc(32, 0x80);
+      raw[31] = last;
+      assert.ok(looksLikePlaintextKey(new Uint8Array(Buffer.concat([raw, lf]))), `last byte ${last}, LF`);
+      assert.ok(looksLikePlaintextKey(new Uint8Array(Buffer.concat([raw, crlf]))), `last byte ${last}, CRLF`);
+    }
+  });
+
+  it('does not detect a raw key with anything but one line ending after it', () => {
+    // Fixed bytes that are neither hex nor base64, so only the raw-key rule could match.
+    const raw = Buffer.alloc(32, 0x80);
+    for (const tail of [[0x0d], [0x0a, 0x0a], [0x0d, 0x0d], [0x0a, 0x0d], [0x20], [0x20, 0x0a], [0x0d, 0x0a, 0x0a]]) {
+      assert.ok(!looksLikePlaintextKey(new Uint8Array(Buffer.concat([raw, Buffer.from(tail)]))), JSON.stringify(tail));
+    }
+    // 31 bytes + LF is 32 bytes, and 31 bytes + CRLF is 32 bytes (the last CR) + LF: both are still
+    // refused, by length alone (as is 30 bytes + CRLF: 32 bytes). Shorter files are not.
+    assert.ok(looksLikePlaintextKey(new Uint8Array(Buffer.concat([raw.subarray(1), Buffer.from([0x0a])]))), '31 bytes + LF');
+    assert.ok(looksLikePlaintextKey(new Uint8Array(Buffer.concat([raw.subarray(1), Buffer.from([0x0d, 0x0a])]))), '31 bytes + CRLF');
+    assert.ok(!looksLikePlaintextKey(new Uint8Array(Buffer.concat([raw.subarray(2), Buffer.from([0x0a])]))), '30 bytes + LF');
+    assert.ok(!looksLikePlaintextKey(new Uint8Array(Buffer.concat([raw.subarray(3), Buffer.from([0x0d, 0x0a])]))), '29 bytes + CRLF');
   });
 
   it('does not detect other text', () => {
@@ -335,6 +378,8 @@ describe('readTrustedKeyFile on Windows, real files', { skip: !isWindows && 'Win
     const path = join(windowsKeyDirectory(t), 'v1.key');
     writeFileSync(path, randomBytes(32).toString('hex'));
     await assert.rejects(readTrustedKeyFile(path, trustCurrentUser()), keyFileError(INVALID_KEY_FILE, 'unwrapped'));
+    writeFileSync(path, Buffer.concat([randomBytes(32), Buffer.from('\r\n', 'latin1')]));
+    await assert.rejects(readTrustedKeyFile(path, trustCurrentUser()), keyFileError(INVALID_KEY_FILE, 'unwrapped'));
   });
 });
 
@@ -425,6 +470,8 @@ describe('readTrustedKeyFile on Linux and macOS, real files', { skip: !isUnix &&
     if (directory === undefined) return;
     const path = join(directory, 'v1.key');
     writeFileSync(path, `${randomBytes(32).toString('base64')}\n`);
+    await assert.rejects(readTrustedKeyFile(path, unixTrustCurrentUser()), keyFileError(INVALID_KEY_FILE, 'unwrapped'));
+    writeFileSync(path, Buffer.concat([randomBytes(32), Buffer.from('\n', 'latin1')]));
     await assert.rejects(readTrustedKeyFile(path, unixTrustCurrentUser()), keyFileError(INVALID_KEY_FILE, 'unwrapped'));
   });
 

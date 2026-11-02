@@ -41,7 +41,7 @@ export interface KeyRingOptions {
   DisableEphemeralKeyRotation?: boolean;
   /** Hours (at least 1) a superseded ephemeral key stays registered for decryption. */
   EphemeralKeyRetentionHours?: number;
-  /** Days (1-3650) after a key file was last written that it stops encrypting; 365 when unset. Node port only so far. */
+  /** Days (1-3650) after a key file was last written that it stops encrypting; 365 when unset. Every port reads this field. */
   KeyFileMaxAgeDays?: number;
   /** Versions whose wrapped DEK is read from a file. */
   KeyFiles?: KeyFileOptions[];
