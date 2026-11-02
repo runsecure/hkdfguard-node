@@ -1,6 +1,6 @@
 {
   "name": "@runsecure/hkdfguard-cache-awssecretsmanager",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "HkdfGuard protected read-only cache over AWS Secrets Manager (AWS SDK for JavaScript v3): each secret is read on its first lookup, taken out of the response before the SDK can make it a string, encrypted under the key ring's current key and cached only as ciphertext.",
   "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
@@ -22,12 +22,12 @@
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "3.1149.0",
     "@opentelemetry/api": "1.9.1",
-    "@runsecure/hkdfguard-abstractions": "0.9.0",
-    "@runsecure/hkdfguard-cache": "0.9.0",
-    "@runsecure/hkdfguard-diagnostics": "0.9.0"
+    "@runsecure/hkdfguard-abstractions": "0.9.1",
+    "@runsecure/hkdfguard-cache": "0.9.1",
+    "@runsecure/hkdfguard-diagnostics": "0.9.1"
   },
   "devDependencies": {
-    "@runsecure/hkdfguard-dek": "0.9.0",
+    "@runsecure/hkdfguard-dek": "0.9.1",
     "@runsecure/hkdfguard-test-support": "0.0.0"
   },
   "engines": {
