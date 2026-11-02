@@ -26,10 +26,25 @@
       "path": "packages/keywrapping-googlekms"
     },
     {
+      "path": "packages/keywrapping-hashicorpvault"
+    },
+    {
       "path": "packages/dek"
     },
     {
       "path": "packages/cache"
+    },
+    {
+      "path": "packages/cache-awssecretsmanager"
+    },
+    {
+      "path": "packages/cache-azurekeyvault"
+    },
+    {
+      "path": "packages/cache-googlesecretmanager"
+    },
+    {
+      "path": "packages/cache-hashicorpvault"
     },
     {
       "path": "packages/encryptedconfig"

@@ -158,10 +158,12 @@ describe('a deployment', () => {
   nativeWithKeyFiles('refuses to build from a tampered key file', async (service, directory) => {
     const { keyFile } = await runPipeline(service, directory, { Secret: 'value' });
     const wrapped = readFileSync(keyFile);
-    wrapped[wrapped.length >> 1]! ^= 0x01;
+    // The last byte is part of the AEAD tag, which no platform's library can check without the
+    // KEK, so the file reads back fine and the build fails at unwrap. (A change to the payload's
+    // structure is refused earlier, when the file is read, as a KeyFileRefusedError.)
+    wrapped[wrapped.length - 1]! ^= 0x01;
     writeFileSync(keyFile, wrapped, { mode: 0o600 });
-    // Refused as the key file is read, if the change lands in a field it checks, else at unwrap.
-    await assert.rejects(buildRing(service, { keyFile }), (e: unknown) => e instanceof StatusError || e instanceof KeyFileRefusedError);
+    await assert.rejects(buildRing(service, { keyFile }), (e: unknown) => e instanceof StatusError);
   });
 
   nativeWithKeyFiles('reads its key file through the native library: one with an unknown version is refused before any unwrap', async (service, directory) => {

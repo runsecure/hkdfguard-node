@@ -8,7 +8,7 @@ import { isValidServiceName, isZero, MAX_SERVICE_NAME_LENGTH, MAX_WRAPPED_KEY_BY
 import { keyFileDirectory, linuxKeyFileRoot, untrustedDirectoryChain } from '@runsecure/hkdfguard-test-support';
 import { unixProbe } from './darwin.js';
 import { elfReadInterpreterFile, elfReadNeededFile } from './elf.js';
-import { NotInstalledError, StatusError, UntrustedError } from './errors.js';
+import { INVALID_KEY_FILE, KeyFileRefusedError, NotInstalledError, StatusError, UntrustedError } from './errors.js';
 import { hostLibrary } from './host.js';
 import type { KmsLibrary } from './library.js';
 import { linuxListDependencies, linuxReadLink, linuxStatus, linuxTrustedFile, linuxVerifyBeforeLoading } from './linux.js';
@@ -533,6 +533,159 @@ describe('the Linux native library against a provisioned service', { skip: proce
     if (p === undefined) return;
     const { status, output } = runCli('provision', '--service-name', p.service);
     assert.equal(status, 0, `hkdfguard provision exited ${status}: ${output}`);
+  });
+});
+
+describe('key files read through the Linux native library', { skip: process.platform !== 'linux' && 'Linux only' }, () => {
+  // hkdfguard_open_file, through NativeKeyWrapperV1.readKeyFile, against a real wrapped payload. The
+  // library refuses a key file below any group- or other-writable directory, so every key file here
+  // is in keyFileDirectory's private folder unless the test is about where it may not be.
+
+  interface KeyFiles extends Provisioned {
+    /** A fresh private folder, removed after the test. */
+    directory: string;
+    /** A real payload wrapped under the test service. */
+    wrapped: Uint8Array;
+  }
+
+  /** The provisioned service, a private key-file folder and one wrapped payload; skips the test, saying why, without any of them. */
+  async function keyFiles(t: TestContext, prefix: string): Promise<KeyFiles | undefined> {
+    const p = await provisioned(t);
+    if (p === undefined) return undefined;
+    const directory = keyFileDirectory(t, prefix);
+    if (directory === undefined) return undefined;
+    return { ...p, directory, wrapped: await wrap(p, randomDek()) };
+  }
+
+  /**
+   * Writes a key file as hkdfguard wrap does: 0600 whatever the umask, replacing any existing file's
+   * contents and mode (writeFileSync's mode applies only when it creates the file). An Ubuntu desktop
+   * session's umask of 002 would otherwise leave it group-writable, which the library refuses.
+   */
+  function writeKeyFile(directory: string, name: string, contents: Uint8Array): string {
+    const path = join(directory, name);
+    writeFileSync(path, contents, { mode: 0o600 });
+    chmodSync(path, 0o600);
+    return path;
+  }
+
+  const refused = (status: number, code: string, path: string) => (e: unknown) =>
+    e instanceof KeyFileRefusedError && e.status === status && e.code === code && e.path === path
+    && e.message.startsWith(`Key file '${path}' was refused by the native library with status ${status} (`);
+
+  it('reads a key file back exactly as written', async (t) => {
+    const k = await keyFiles(t, 'hkdfguard-open-');
+    if (k === undefined) return;
+    assert.deepEqual(await k.wrapper.readKeyFile(writeKeyFile(k.directory, 'key.bin', k.wrapped)), k.wrapped);
+  });
+
+  it('refuses a key file of the wrong size as too short or too long', async (t) => {
+    const k = await keyFiles(t, 'hkdfguard-open-');
+    if (k === undefined) return;
+    const length = k.wrapped.length;
+    for (const [size, status] of [[0, Status.fileTooShort], [100, Status.fileTooShort], [length - 1, Status.fileTooShort],
+      [length + 1, Status.fileTooLong], [4096, Status.fileTooLong]] as const) {
+      const contents = new Uint8Array(size);
+      contents.set(k.wrapped.subarray(0, Math.min(size, length)));
+      const path = writeKeyFile(k.directory, `size-${size}.bin`, contents);
+      await assert.rejects(k.wrapper.readKeyFile(path), refused(status, INVALID_KEY_FILE, path), `${size} bytes`);
+    }
+  });
+
+  it('refuses a file holding what looks like an unwrapped DEK as a key exposure', async (t) => {
+    const k = await keyFiles(t, 'hkdfguard-open-');
+    if (k === undefined) return;
+    const dek = Buffer.from(randomDek());
+    const forms: Record<string, Uint8Array> = {
+      raw: dek,
+      hex: Buffer.from(dek.toString('hex').toUpperCase(), 'ascii'),
+      'lower-hex': Buffer.from(dek.toString('hex'), 'ascii'),
+      base64: Buffer.from(dek.toString('base64'), 'ascii'),
+      'base64-with-newline': Buffer.from(`${dek.toString('base64')}\n`, 'ascii'),
+    };
+    for (const [form, contents] of Object.entries(forms)) {
+      const path = writeKeyFile(k.directory, `plaintext-${form}.bin`, contents);
+      await assert.rejects(k.wrapper.readKeyFile(path), refused(Status.filePlaintextKey, INVALID_KEY_FILE, path), form);
+    }
+  });
+
+  it("refuses a change to the payload's structure when read, but a changed tag only at unwrap", async (t) => {
+    // The version byte and a byte mid-payload are checked when the file is read; the AEAD tag can
+    // only be checked with the KEK, so a changed tag reads fine and fails unwrap.
+    const k = await keyFiles(t, 'hkdfguard-open-');
+    if (k === undefined) return;
+    for (const position of [0, k.wrapped.length >> 1]) {
+      const tampered = Uint8Array.from(k.wrapped);
+      tampered[position]! ^= 0x01;
+      const path = writeKeyFile(k.directory, `structure-${position}.bin`, tampered);
+      await assert.rejects(k.wrapper.readKeyFile(path), refused(Status.fileMalformed, INVALID_KEY_FILE, path), `byte ${position}`);
+    }
+
+    const tag = Uint8Array.from(k.wrapped);
+    tag[tag.length - 1]! ^= 0x01;
+    const read = await k.wrapper.readKeyFile(writeKeyFile(k.directory, 'tag.bin', tag));
+    assert.deepEqual(read, tag);
+    const destination = filled(0xaa, DEK_LENGTH);
+    await assert.rejects(k.wrapper.unwrap(read, destination), StatusError);
+    assert.ok(isZero(destination), 'the destination was not zeroed');
+  });
+
+  it('refuses a missing file or folder as not found, and a folder as not a key file', async (t) => {
+    const k = await keyFiles(t, 'hkdfguard-open-');
+    if (k === undefined) return;
+    for (const path of [join(k.directory, 'missing.bin'), join(k.directory, 'missing', 'key.bin')]) {
+      await assert.rejects(k.wrapper.readKeyFile(path), refused(Status.fileNotFound, 'ENOENT', path), path);
+    }
+    await assert.rejects(k.wrapper.readKeyFile(k.directory), refused(Status.fileIo, 'EIO', k.directory));
+  });
+
+  it('follows a link only where it leads is trusted too', async (t) => {
+    // The library judges where a link leads, not the link: within private folders it is followed;
+    // into /tmp (sticky, world-writable) it is refused, as is /tmp itself.
+    const k = await keyFiles(t, 'hkdfguard-open-');
+    if (k === undefined) return;
+    const key = writeKeyFile(k.directory, 'key.bin', k.wrapped);
+    const fileLink = join(k.directory, 'file-link.bin');
+    symlinkSync(key, fileLink);
+    const folderLink = join(k.directory, 'folder-link');
+    symlinkSync(k.directory, folderLink);
+
+    assert.deepEqual(await k.wrapper.readKeyFile(fileLink), k.wrapped);
+    assert.deepEqual(await k.wrapper.readKeyFile(join(folderLink, 'key.bin')), k.wrapped);
+
+    const shared = mkdtempSync('/tmp/hkdfguard-shared-');
+    try {
+      assert.ok(untrustedDirectoryChain(shared) !== undefined, `${shared} is trusted`);
+      const exposed = writeKeyFile(shared, 'key.bin', k.wrapped);
+      const intoShared = join(k.directory, 'into-tmp.bin');
+      symlinkSync(exposed, intoShared);
+      const sharedFolderLink = join(k.directory, 'tmp-folder');
+      symlinkSync(shared, sharedFolderLink);
+
+      for (const path of [exposed, intoShared, join(sharedFolderLink, 'key.bin')]) {
+        await assert.rejects(k.wrapper.readKeyFile(path), refused(Status.fileUntrusted, 'EACCES', path), path);
+      }
+    } finally {
+      rmSync(shared, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a key file another account could rewrite, while owner-only and group or other read are not', async (t) => {
+    // A group- or other-writable key file could be replaced by another account, so the library
+    // refuses it (-39) whatever the folders above it. Group read is fine: hkdfguard wrap --group
+    // hands a key file to a service's group as 0640.
+    const k = await keyFiles(t, 'hkdfguard-mode-');
+    if (k === undefined) return;
+    const path = writeKeyFile(k.directory, 'key.bin', k.wrapped);
+
+    for (const mode of [0o664, 0o646]) {
+      chmodSync(path, mode);
+      await assert.rejects(k.wrapper.readKeyFile(path), refused(Status.fileUntrusted, 'EACCES', path), mode.toString(8));
+    }
+    for (const mode of [0o600, 0o640, 0o644]) {
+      chmodSync(path, mode);
+      assert.deepEqual(await k.wrapper.readKeyFile(path), k.wrapped, mode.toString(8));
+    }
   });
 });
 

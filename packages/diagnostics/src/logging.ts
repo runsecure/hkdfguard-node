@@ -136,7 +136,8 @@ export const HkdfGuardLog = {
 
   /**
    * Warning: the current key file is nearing its maximum age, after which it stops encrypting.
-   * Logged once per key. A Node-port event: the other ports have no key-file age limit yet.
+   * Logged once per key. Every port logs it with the same message: event 11 here and in .NET, Go
+   * and Python; Java, whose 11 was already taken, numbers it 12.
    */
   keyFileAgeWarning(logger: Logger | undefined, keyVersion: number, path: string, refuseAt: Date): void {
     logEvent(logger, 'warn', 11, 'KeyFileAgeWarning',
@@ -146,7 +147,8 @@ export const HkdfGuardLog = {
 
   /**
    * Critical: the current key file has passed its maximum age and no longer encrypts; decryption
-   * still works. Logged once per key. A Node-port event, like {@link keyFileAgeWarning}.
+   * still works. Logged once per key. Every port logs it with the same message: event 12 here and
+   * in .NET, Go and Python; Java numbers it 13 (see {@link keyFileAgeWarning}).
    */
   keyFileExpired(logger: Logger | undefined, keyVersion: number, path: string): void {
     logEvent(logger, 'critical', 12, 'KeyFileExpired',

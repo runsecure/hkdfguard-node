@@ -1,6 +1,7 @@
-// CRC32C (Castagnoli, reflected polynomial 0x82F63B78), as Cloud KMS checksums requests and responses.
-// Computed here: Node has none built in (zlib.crc32 is CRC-32), and what is checksummed - a key, the
-// context, a wrapped key - is small.
+// CRC32C (Castagnoli, reflected polynomial 0x82F63B78), as Cloud KMS checksums requests and responses
+// and Secret Manager checksums payloads. Computed here: Node has none built in (zlib.crc32 is
+// CRC-32), and what is checksummed - a key, the context, a wrapped key, a payload of at most 64 KiB -
+// is small.
 const TABLE = (() => {
   const table = new Uint32Array(256);
   for (let index = 0; index < 256; index++) {

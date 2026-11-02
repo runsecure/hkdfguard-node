@@ -1,0 +1,27 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../abstractions"
+    },
+    {
+      "path": "../diagnostics"
+    },
+    {
+      "path": "../cache"
+    },
+    {
+      "path": "../dek"
+    },
+    {
+      "path": "../test-support"
+    }
+  ]
+}

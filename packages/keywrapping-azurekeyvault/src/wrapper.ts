@@ -79,8 +79,10 @@ type Operation = 'wrap' | 'sign' | 'verify' | 'unwrap';
  * in @runsecure/hkdfguard-keywrapping-native-v1) is what keeps such copies out of reach of a debugger
  * or a crash dump.
  *
- * The wrapper creates one Key Vault client per key version it uses, and keeps it; the clients hold no
- * resources that need releasing. A `signal` is checked before each call and passed to the SDK, which
+ * The wrapper creates one Key Vault client per key version it uses, and keeps it once a call through
+ * it has succeeded - Key Vault answered, and the answer passed this wrapper's checks (for verify, that
+ * the signature is valid) - so a wrapped DEK naming a version Key Vault refuses leaves nothing behind;
+ * the clients hold no resources that need releasing. A `signal` is checked before each call and passed to the SDK, which
  * aborts the request; an abort is rethrown as the SDK reports it. Argument errors throw
  * InvalidArgumentError; a Key Vault refusal, an unreachable vault or a credential that can't get a
  * token rejects with {@link AzureKeyVaultError}, naming the operation, the key, and Key Vault's error
@@ -97,7 +99,8 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
   private readonly clientOptions: CryptographyClientOptions;
   private readonly context: Uint8Array;
   private readonly keyFileTrust: KeyFileTrust;
-  // One client per key version, by its identifier; and the version each key given without one resolved to.
+  // One client per key version, by its identifier, kept once a call through it has succeeded; and the
+  // version each key given without one resolved to.
   private readonly clients = new Map<string, CryptographyClient>();
   private readonly currentVersions = new Map<string, KeyVaultKeyId>();
   private readonly keyClients = new Map<string, KeyClient>();
@@ -187,18 +190,22 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
       // The signature first: nothing reaches unwrapKey that a principal allowed to sign didn't make.
       const digest = sha256(envelope.signedData(data.subarray(0, parts.unsignedLength), this.context));
       const signedBy = this.signingKey.withVersion(parts.signingKeyVersion);
-      const verified = await this.call(signedBy, 'verify', (client) => client.verify('ES256', digest, parts.signature, { abortSignal: signal }));
-      if (verified.result !== true) {
-        throw new AzureKeyVaultError('verify', signedBy.toString(), `The wrapped DEK's signature doesn't verify under '${this.signingKey.name}' version `
-          + `${parts.signingKeyVersion}: it was tampered with, wrapped under a different context, or not made by a principal allowed to sign.`);
-      }
+      await this.call(signedBy, 'verify', async (client) => {
+        const verified = await client.verify('ES256', digest, parts.signature, { abortSignal: signal });
+        if (verified.result !== true) {
+          throw new AzureKeyVaultError('verify', signedBy.toString(), `The wrapped DEK's signature doesn't verify under '${this.signingKey.name}' version `
+            + `${parts.signingKeyVersion}: it was tampered with, wrapped under a different context, or not made by a principal allowed to sign.`);
+        }
+      });
 
       const wrappedBy = this.wrappingKey.withVersion(parts.wrappingKeyVersion);
-      const unwrapped = await this.call(wrappedBy, 'unwrap', (client) => client.unwrapKey('RSA-OAEP-256', parts.wrappedDek, { abortSignal: signal }));
-      const revealed = unwrapped.result;
-      if (!(revealed instanceof Uint8Array) || revealed.length === 0) {
-        throw new AzureKeyVaultError('unwrap', wrappedBy.toString(), `Azure Key Vault unwrap for key '${this.wrappingKey.name}' returned no key.`);
-      }
+      const revealed = await this.call(wrappedBy, 'unwrap', async (client) => {
+        const unwrapped = await client.unwrapKey('RSA-OAEP-256', parts.wrappedDek, { abortSignal: signal });
+        if (!(unwrapped.result instanceof Uint8Array) || unwrapped.result.length === 0) {
+          throw new AzureKeyVaultError('unwrap', wrappedBy.toString(), `Azure Key Vault unwrap for key '${this.wrappingKey.name}' returned no key.`);
+        }
+        return unwrapped.result;
+      });
       try {
         if (revealed.length > result.length) {
           throw new InvalidArgumentError(`The revealed key is ${revealed.length} bytes; result holds ${result.length}.`);
@@ -258,9 +265,11 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
 
   private async wrapOwned(key: Uint8Array, result: Uint8Array, signal: AbortSignal | undefined): Promise<number> {
     const wrappingKey = await this.resolve(this.wrappingKey, 'wrap', signal);
-    const wrapped = await this.call(wrappingKey, 'wrap', (client) => client.wrapKey('RSA-OAEP-256', key, { abortSignal: signal }));
-    const ciphertext = wrapped.result instanceof Uint8Array ? wrapped.result : new Uint8Array(0);
-    const unsigned = envelope.buildUnsigned(wrappingKey.version, ciphertext, this.fail('wrap', wrappingKey));
+    const unsigned = await this.call(wrappingKey, 'wrap', async (client) => {
+      const wrapped = await client.wrapKey('RSA-OAEP-256', key, { abortSignal: signal });
+      const ciphertext = wrapped.result instanceof Uint8Array ? wrapped.result : new Uint8Array(0);
+      return envelope.buildUnsigned(wrappingKey.version, ciphertext, this.fail('wrap', wrappingKey));
+    });
     const length = unsigned.length + envelope.KEY_VERSION_LENGTH + envelope.SIGNATURE_LENGTH;
     if (length > MAX_WRAPPED_KEY_BYTES) {
       throw new AzureKeyVaultError('wrap', wrappingKey.toString(), `The wrapped DEK would be ${length} bytes; a wrapped DEK is at most `
@@ -270,9 +279,11 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
     // ES256 signs the SHA-256 digest of the data, which the SDK takes already computed.
     const digest = sha256(envelope.signedData(unsigned, this.context));
     const signingKey = await this.resolve(this.signingKey, 'sign', signal);
-    const signed = await this.call(signingKey, 'sign', (client) => client.sign('ES256', digest, { abortSignal: signal }));
-    const signature = signed.result instanceof Uint8Array ? signed.result : new Uint8Array(0);
-    return envelope.write(unsigned, signingKey.version, signature, result, this.fail('sign', signingKey));
+    return this.call(signingKey, 'sign', async (client) => {
+      const signed = await client.sign('ES256', digest, { abortSignal: signal });
+      const signature = signed.result instanceof Uint8Array ? signed.result : new Uint8Array(0);
+      return envelope.write(unsigned, signingKey.version, signature, result, this.fail('sign', signingKey));
+    });
   }
 
   // The version of `key` every operation goes to: the one named, or else the key's current version,
@@ -298,7 +309,8 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
 
     const version = this.versionOf(current.id, key, operation);
     // The client works with the key just read - its public half, permitted operations and validity -
-    // and sends every operation to that version.
+    // and sends every operation to that version. Kept now, as the version is one Key Vault reported for
+    // a key the constructor named: at most one per configured key, never one a wrapped DEK chose.
     if (!this.clients.has(version.toString())) this.clients.set(version.toString(), new CryptographyClient(current, this.credential, this.options()));
     this.currentVersions.set(key.toString(), version);
     return version;
@@ -322,12 +334,23 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
     return expected.withVersion(used.version);
   }
 
+  // Makes `call` - a Key Vault call and the checks on its answer, which throw if it isn't one to
+  // accept - through the client for `key`. A new client reads the key (falling back to doing everything
+  // in the vault if it may not) and sends every operation to that version; it is kept only once the
+  // call succeeds, so a version Key Vault refuses, or whose signature doesn't verify, leaves nothing behind.
   private async call<T>(key: KeyVaultKeyId, operation: Operation, call: (client: CryptographyClient) => Promise<T>): Promise<T> {
+    const id = key.toString();
+    const kept = this.clients.get(id);
+    const client = kept ?? new CryptographyClient(id, this.credential, this.options());
+    let result: T;
     try {
-      return await call(this.client(key));
+      result = await call(client);
     } catch (error) {
       throw this.translate(error, operation, key);
     }
+    // Another call for the same version may have kept its client meanwhile: the first one kept stays.
+    if (kept === undefined && !this.clients.has(id)) this.clients.set(id, client);
+    return result;
   }
 
   // Turns Azure failures into the AzureKeyVaultError every operation fails with: a service refusal (a
@@ -350,18 +373,6 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
 
   private fail(operation: Operation, key: KeyVaultKeyId): envelope.Fail {
     return (message) => new AzureKeyVaultError(operation, key.toString(), message);
-  }
-
-  // A client for a key version, created on first use: it reads the key (falling back to doing
-  // everything in the vault if it may not) and sends every operation to that version.
-  private client(key: KeyVaultKeyId): CryptographyClient {
-    const id = key.toString();
-    let client = this.clients.get(id);
-    if (client === undefined) {
-      client = new CryptographyClient(id, this.credential, this.options());
-      this.clients.set(id, client);
-    }
-    return client;
   }
 
   private keyClient(vault: string): KeyClient {

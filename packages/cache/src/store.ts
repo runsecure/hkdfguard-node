@@ -54,22 +54,35 @@ export class Store {
     }
   }
 
-  /** The entry for `name`, fetching it from the source on a miss; undefined when neither has it. */
+  /** The entry for `name`, populating it on a miss (see {@link populate}); undefined when nothing has it. */
   async lookup(name: string, signal?: AbortSignal): Promise<KeyTrackingValue | undefined> {
     const key = cacheMatchKey(name);
     const cached = this.cached(key);
-    if (cached !== undefined || this.source === undefined) return cached;
+    if (cached !== undefined) return cached;
+    return (await this.populate(name, signal)) ? this.cached(key) : undefined;
+  }
 
+  /**
+   * Called on a miss for `name`: stores whatever can be had for it and reports whether anything was
+   * stored, after which lookup looks `name` up again. This one fetches `name` from the source, if
+   * there is one; a store filled some other way (a RemoteSecretCache's) overrides it.
+   */
+  protected async populate(name: string, signal?: AbortSignal): Promise<boolean> {
+    if (this.source === undefined) return false;
     signal?.throwIfAborted();
     const plaintext = await this.source.fetch(name, signal);
-    if (plaintext === undefined) return undefined;
-    const fresh = this.encrypt(name, plaintext);
-    // Another caller may have stored this name while the fetch was in flight; theirs wins, so every
-    // reader sees one value.
-    const existing = this.cached(key);
-    if (existing !== undefined) return existing;
-    this.entries.set(key, fresh);
-    return fresh;
+    if (plaintext === undefined) return false;
+    this.putIfAbsent(name, this.encrypt(name, plaintext));
+    return true;
+  }
+
+  /**
+   * Stores `entry` under `name` unless an unexpired entry is there already. Another caller may have
+   * stored the name while a fetch was in flight; theirs wins, so every reader sees one value.
+   */
+  putIfAbsent(name: string, entry: KeyTrackingValue): void {
+    const key = cacheMatchKey(name);
+    if (this.cached(key) === undefined) this.entries.set(key, entry);
   }
 
   /**

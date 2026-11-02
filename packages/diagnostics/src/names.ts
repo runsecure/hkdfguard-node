@@ -8,6 +8,8 @@ export const SpanNames = {
     add: 'hkdfguard.cache.add',
     addOrUpdate: 'hkdfguard.cache.add_or_update',
     decrypt: 'hkdfguard.cache.decrypt',
+    /** A cache over a remote secret store fetching one secret on a miss. */
+    populate: 'hkdfguard.cache.populate',
   },
   dataProtection: {
     protectorEncrypt: 'hkdfguard.data_protection.protector.encrypt',
@@ -57,6 +59,8 @@ export const AttributeNames = {
 export const Results = {
   success: 'success',
   error: 'error',
+  /** A populating cache's fetch found no such value in its source. */
+  notFound: 'not_found',
 } as const;
 
 /**
