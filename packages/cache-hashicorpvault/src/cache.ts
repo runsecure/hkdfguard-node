@@ -95,12 +95,11 @@ export class HashiCorpVaultSecretCache extends RemoteSecretCache {
    *   the cache never closes keys
    * @param options the KV engine read and how to reach it; omitted for KV version 2 at "secret",
    *   reading the key "value"
-   * @throws TypeError address, tokenProvider, tokenProtector or keyRing is missing, or an option is
-   *   of the wrong type
+   * @throws TypeError address, tokenProvider, tokenProtector or keyRing is missing, or options isn't an object
    * @throws InvalidArgumentError address isn't https (or http on loopback), or holds credentials, a
-   *   query or a fragment (ERR_HKDFGUARD_INVALID_VAULT_ADDRESS); or the mount path, default key or
-   *   namespace isn't one, the KV version isn't, the timeout isn't positive, the retry count isn't
-   *   3-10 or the retry delay isn't zero to 10 seconds
+   *   query or a fragment (ERR_HKDFGUARD_INVALID_VAULT_ADDRESS); an option is of the wrong type; or
+   *   the mount path, default key or namespace isn't one, the KV version isn't, the timeout isn't
+   *   positive, the retry count isn't 3-10 or the retry delay isn't zero to 10 seconds
    */
   constructor(
     address: string | URL, tokenProvider: VaultTokenProvider, tokenProtector: DataProtector, keyRing: KeyRing,
@@ -203,7 +202,6 @@ export class HashiCorpVaultSecretCache extends RemoteSecretCache {
     } finally {
       refusal?.close();
     }
-    signal.throwIfAborted();
 
     // Nothing at the path: Vault answers 404 with an empty error list - or, for a KV version 2
     // secret whose latest version is deleted, with its metadata and none. A 404 naming an error (no

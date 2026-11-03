@@ -1,17 +1,20 @@
 import { strict as assert } from 'node:assert';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { Agent as HttpsAgent } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, it } from 'node:test';
 import { HkdfGuardError, InvalidArgumentError, type DataProtector } from '@runsecure/hkdfguard-abstractions';
 import { KeyRing } from '@runsecure/hkdfguard-dek';
 import { RecordingKey } from '@runsecure/hkdfguard-test-support';
+import { describeAnswer, readBody, readVaultErrors, vaultRefusal } from './body.js';
 import {
-  apiBase, checkConnectionSettings, isValidPath, isValidSegment, MAX_RETRY_COUNT, MAX_RETRY_DELAY_MS, MAX_TIMEOUT_MS, MIN_RETRY_COUNT,
-  NAMESPACE_HEADER, REQUEST_HEADER, retryDelay, TOKEN_HEADER,
+  apiBase, checkConnectionOptions, checkConnectionSettings, DEFAULT_RETRY_DELAY_MS, DEFAULT_TIMEOUT_MS, isLoopback, isValidPath, isValidSegment,
+  MAX_RETRY_COUNT, MAX_RETRY_DELAY_MS, MAX_TIMEOUT_MS, MIN_RETRY_COUNT, NAMESPACE_HEADER, REQUEST_HEADER, retryDelay, TOKEN_HEADER,
+  type VaultConnectionOptions,
 } from './connection.js';
 import { VaultRequestError } from './errors.js';
 import {
-  chunksOf, copyTokenWithin, decryptToken, getTokenWithin, isTransient, markTransient, putProtectedToken, putToken, runWithin, sendAttempt,
+  checkProtectedToken, chunksOf, copyTokenWithin, decryptToken, getTokenWithin, httpsAgentFor, isTransient, markTransient, putProtectedToken, putToken, runWithin, sendAttempt,
   vaultHeaders, VaultConnector, withRetries,
 } from './http.js';
 import { MAX_TOKEN_LENGTH, StaticVaultToken, StaticVaultTokenSource, TOKEN_PURPOSE } from './token.js';
@@ -47,17 +50,40 @@ async function bodyOf(response: IncomingMessage): Promise<string> {
 
 describe('connection', () => {
   it("splits Vault's address into its API base", () => {
-    assert.deepEqual(apiBase('https://vault.example.com:8200/proxy/', 'a token'), { https: true, hostname: 'vault.example.com', port: 8200, base: '/proxy/v1/' });
-    assert.deepEqual(apiBase('http://127.0.0.1:8200', 'a token'), { https: false, hostname: '127.0.0.1', port: 8200, base: '/v1/' });
-    assert.deepEqual(apiBase('http://[::1]', 'a token'), { https: false, hostname: '::1', port: undefined, base: '/v1/' });
+    assert.deepEqual(apiBase('https://vault.example.com:8200/proxy/', 'a token'),
+      { https: true, hostname: 'vault.example.com', port: 8200, prefix: '/proxy', base: '/proxy/v1/' });
+    assert.deepEqual(apiBase('http://127.0.0.1:8200', 'a token'), { https: false, hostname: '127.0.0.1', port: 8200, prefix: '', base: '/v1/' });
+    assert.deepEqual(apiBase('http://[::1]', 'a token'), { https: false, hostname: '::1', port: undefined, prefix: '', base: '/v1/' });
   });
 
   for (const address of ['http://vault.example.com', 'https://user:pw@vault.example.com', 'https://vault.example.com?x=1', 'https://vault.example.com#f',
-    'vault.example.com', 'https:///vault']) {
+    'vault.example.com', 'https:///vault', 'unix:///var/run/vault.sock']) {
     it(`refuses the address ${address}`, () => {
       assert.throws(() => apiBase(address, 'a token'), (e: unknown) => e instanceof InvalidArgumentError && e.code === 'ERR_HKDFGUARD_INVALID_VAULT_ADDRESS');
     });
   }
+
+  it('allows http anywhere only when asked, as VaultClient does with allowUnencryptedHttp', () => {
+    assert.equal(apiBase('http://vault.example.com', 'a token', { allowUnencryptedHttp: true }).https, false);
+    assert.throws(() => apiBase('http://vault.example.com', 'a token', { allowUnencryptedHttp: false }), /or with allowUnencryptedHttp/);
+    assert.throws(() => apiBase('http://vault.example.com', 'a token'), (e: unknown) => e instanceof Error && !e.message.includes('allowUnencryptedHttp'));
+  });
+
+  it('knows loopback, with or without brackets, and resolves no name', () => {
+    for (const host of ['localhost', '127.0.0.1', '127.8.9.10', '::1', '[::1]']) assert.ok(isLoopback(host), host);
+    for (const host of ['vault.example.com', '128.0.0.1', '::2', 'localhost.example.com']) assert.ok(!isLoopback(host), host);
+  });
+
+  it('applies the shared defaults, and checks the options every integration shares', () => {
+    assert.deepEqual(checkConnectionOptions({}, 'transit'),
+      { mountPath: 'transit', namespace: undefined, timeoutMs: DEFAULT_TIMEOUT_MS, retryCount: MIN_RETRY_COUNT, retryDelayMs: DEFAULT_RETRY_DELAY_MS });
+    assert.equal(checkConnectionOptions({ mountPath: 'kv/team-a', retryCount: MAX_RETRY_COUNT }, 'secret').mountPath, 'kv/team-a');
+    const wrong = [
+      { mountPath: 42 }, { mountPath: null }, { namespace: 7 }, { namespace: null }, { timeoutMs: '30' }, { retryCount: '3' }, { retryDelayMs: null },
+      { agent: 'tls' }, { tls: 'tls' }, { tls: null }, { agent: new HttpsAgent(), tls: {} }, { mountPath: '../sys' }, { retryCount: 2 },
+    ] as unknown as VaultConnectionOptions[];
+    for (const options of wrong) assert.throws(() => checkConnectionOptions(options, 'transit'), InvalidArgumentError, JSON.stringify(options));
+  });
 
   it('checks paths and segments', () => {
     for (const path of ['secret', 'kv/team-a', 'a.b_c-d/e']) assert.ok(isValidPath(path), path);
@@ -258,5 +284,95 @@ describe('sendAttempt', () => {
       setTimeout(() => response.socket?.destroy(), 10);
     });
     await assert.rejects(sendAttempt(() => connector.request('GET', '/', {}), undefined, bodyOf, 1000, undefined, 'slow'), (e: unknown) => isTransient(e));
+  });
+});
+
+describe('reading answers', () => {
+  async function* chunks(...parts: string[]): AsyncGenerator<Uint8Array> {
+    for (const part of parts) yield Buffer.from(part);
+  }
+
+  it('reads the whole body, zeroing each chunk once copied', async () => {
+    const parts = [Buffer.from('{"a":'), Buffer.from('1}')];
+    const body = (await readBody((async function* () {
+      yield* parts;
+    })()))!;
+    try {
+      assert.equal(body.view().toString(), '{"a":1}');
+      for (const part of parts) assert.ok(part.every((b) => b === 0));
+    } finally {
+      body.close();
+    }
+  });
+
+  it('reads nothing past the limit, and says so', async () => {
+    assert.equal(await readBody(chunks('12345', '6'), 5), undefined);
+    const exact = (await readBody(chunks('123', '45'), 5))!;
+    assert.equal(exact.view().toString(), '12345');
+    exact.close();
+    assert.equal(exact.length, 0);
+  });
+
+  it("passes on the body's failure", async () => {
+    const lost = new Error('lost');
+    async function* failing(): AsyncGenerator<Uint8Array> {
+      yield Buffer.from('partial');
+      throw lost;
+    }
+    await assert.rejects(readBody(failing()), (e: unknown) => e === lost);
+  });
+
+  const bodies: [string, string[] | undefined][] = [
+    ['{"errors":["permission denied","2 errors occurred"]}', ['permission denied', '2 errors occurred']],
+    ['{"errors":[]}', []],
+    ['{"request_id":"x"}', []],
+    ['{"errors":[],"error":"one"}', ['one']],
+    ['{"error":"one"}', ['one']],
+    ['{"errors":["a",{"b":1},2]}', ['a', '{"b":1}', '2']],
+    ['{"errors":"internal"}', undefined],
+    ['["internal"]', undefined],
+    ['<html>Not Found</html>', undefined],
+    ['', undefined],
+    ['{"errors":[]} trailing', undefined],
+  ];
+  for (const [body, errors] of bodies) {
+    it(`reads the errors ${JSON.stringify(body)} lists`, () => {
+      assert.deepEqual(readVaultErrors(Buffer.from(body)), errors);
+    });
+  }
+
+  it("describes Vault's answer as .NET names its status", () => {
+    assert.equal(describeAnswer(400, ['cipher: message authentication failed']), '400 BadRequest: cipher: message authentication failed');
+    assert.equal(describeAnswer(403, ['a', 'b']), '403 Forbidden: a; b');
+    assert.equal(describeAnswer(404, []), '404 NotFound');
+    assert.equal(describeAnswer(299, undefined), '299');
+  });
+
+  it('reports a refusal as a VaultRequestError, transient as its status says', () => {
+    const sealed = vaultRefusal(503, ['Vault is sealed'], "Couldn't read 'x'");
+    assert.ok(sealed instanceof VaultRequestError);
+    assert.equal(sealed.message, "Couldn't read 'x': Vault answered 503 ServiceUnavailable: Vault is sealed");
+    assert.equal(sealed.statusCode, 503);
+    assert.ok(sealed.isTransient);
+    const denied = vaultRefusal(403, undefined);
+    assert.equal(denied.message, 'Vault answered 403 Forbidden');
+    assert.ok(!denied.isTransient);
+  });
+});
+
+describe('agents and tokens', () => {
+  it("uses the caller's agent, else one of its own", () => {
+    const given = new HttpsAgent();
+    cleanups.push(() => given.destroy());
+    assert.deepEqual(httpsAgentFor(given, undefined), { agent: given, own: false });
+    const own = httpsAgentFor(undefined, undefined);
+    cleanups.push(() => own.agent.destroy());
+    assert.ok(own.own && own.agent instanceof HttpsAgent && own.agent !== given);
+    assert.throws(() => httpsAgentFor(given, {}), InvalidArgumentError);
+  });
+
+  it('takes a non-empty string as a protected token, and nothing else', () => {
+    assert.equal(checkProtectedToken('protected'), 'protected');
+    for (const token of ['', undefined, null, 42, {}]) assert.throws(() => checkProtectedToken(token), invalidToken);
   });
 });

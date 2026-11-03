@@ -211,8 +211,8 @@ earlier step, and pass the token to the test step through the job's environment,
 |---|---|---|
 | `HashiCorp Vault cache integration # SKIP` | `HKDFGUARD_TEST_VAULT_SECRET_NAME` isn't set in the Node process or `vault.test.properties` | Set it in the same command, or the file in the repository root, next to `package-lock.json` |
 | `Set HKDFGUARD_TEST_VAULT_TOKEN in the environment` | The token isn't in the Node process's environment | Step 3, in the same shell; it is never read from the file |
-| `VaultRequestError: Vault refused to read ... HTTP 403: permission denied` | The token has expired, or its policy doesn't cover the path | Step 3: the policy names `secret/data/hkdfguard/*`; create a new token |
-| `VaultRequestError: ... HTTP 404: no handler for route` | No KV version 2 engine is mounted at `secret` | Use a dev server, or `vault secrets enable -path=secret kv-v2` |
+| `VaultRequestError: Couldn't read ...: Vault answered 403 Forbidden: permission denied` | The token has expired, or its policy doesn't cover the path | Step 3: the policy names `secret/data/hkdfguard/*`; create a new token |
+| `VaultRequestError: ...: Vault answered 404 NotFound: no handler for route` | No KV version 2 engine is mounted at `secret` | Use a dev server, or `vault secrets enable -path=secret kv-v2` |
 | `ECONNREFUSED` after a few seconds | Nothing listens at the address | `docker ps`; check the host port in `-p` and in `HKDFGUARD_TEST_VAULT_ADDR` |
 | `Vault's address ... must be https` | An http address that isn't loopback | Use `127.0.0.1` or `localhost`, or https |
 | `EPROTO` or `wrong version number` | An https address for a dev server listening on http | Use `http://127.0.0.1:8200`, or start the server with `-dev-tls` |

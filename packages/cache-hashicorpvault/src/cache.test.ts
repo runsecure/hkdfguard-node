@@ -9,13 +9,15 @@ import { InvalidSecretDataError, ProtectedCache, ProtectedCacheCollection } from
 import { AttributeNames, HkdfGuardTelemetry, MetricNames, SpanNames, type Logger } from '@runsecure/hkdfguard-diagnostics';
 import { KeyRing } from '@runsecure/hkdfguard-dek';
 import { capturingLogger, RecordingKey, useMetricRecorder, useSpanRecorder } from '@runsecure/hkdfguard-test-support';
-import { retryDelay } from '@runsecure/hkdfguard-integration-hashicorpvault';
+import {
+  MAX_RETRY_COUNT, MAX_RETRY_DELAY_MS, MAX_TIMEOUT_MS, MIN_RETRY_COUNT, retryDelay,
+} from '@runsecure/hkdfguard-integration-hashicorpvault';
 import { HashiCorpVaultSecretCache } from './cache.js';
-import { HashiCorpVaultSecretCacheOptions, VaultKvVersion } from './options.js';
+import { VaultKvVersion, type HashiCorpVaultSecretCacheOptions } from './options.js';
 import { StaticVaultToken, VaultRequestError, type VaultTokenProvider } from './index.js';
 
 const TOKEN_PURPOSE = HashiCorpVaultSecretCache.TOKEN_PURPOSE;
-const Limits = HashiCorpVaultSecretCacheOptions;
+const Limits = { MIN_RETRY_COUNT, MAX_RETRY_COUNT, MAX_RETRY_DELAY_MS, MAX_TIMEOUT_MS };
 
 // --- A fake Vault ------------------------------------------------------------------------------
 
@@ -861,12 +863,12 @@ describe('HashiCorpVaultSecretCache: what Vault answers', () => {
 
   const otherAnswers: [Answer, string][] = [
     [{ status: 404, body: '{"errors":["no handler for route \\"nope/data/item\\". route entry not found."]}' }, 'no handler for route'],
-    [{ status: 404, body: '<html>Not Found</html>' }, 'HTTP 404'],
+    [{ status: 404, body: '<html>Not Found</html>' }, 'Vault answered 404'],
     [{ status: 503, body: '{"errors":["Vault is sealed"]}' }, 'Vault is sealed'],
-    [{ status: 500, body: '["internal"]' }, 'HTTP 500'],
-    [{ status: 500, body: '{"errors":"internal"}' }, 'HTTP 500'],
-    [{ status: 307, body: '' }, 'HTTP 307'],
-    [{ status: 502, body: '{"request_id":"x"}' }, 'HTTP 502'],
+    [{ status: 500, body: '["internal"]' }, 'Vault answered 500'],
+    [{ status: 500, body: '{"errors":"internal"}' }, 'Vault answered 500'],
+    [{ status: 307, body: '' }, 'Vault answered 307'],
+    [{ status: 502, body: '{"request_id":"x"}' }, 'Vault answered 502'],
     [{ status: 403, body: '{"errors":["permission denied","2 errors occurred"]}' }, 'permission denied; 2 errors occurred'],
   ];
   for (const [answer, expected] of otherAnswers) {
@@ -1191,7 +1193,7 @@ describe('HashiCorpVaultSecretCache: construction', () => {
   ] as unknown as HashiCorpVaultSecretCacheOptions[];
   for (const wrong of wrongTypes) {
     it(`rejects the option ${JSON.stringify(wrong)} of the wrong type`, () => {
-      assert.throws(() => newCache(undefined, wrong), TypeError);
+      assert.throws(() => newCache(undefined, wrong), InvalidArgumentError);
     });
   }
 

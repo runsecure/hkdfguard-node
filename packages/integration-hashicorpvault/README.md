@@ -54,10 +54,19 @@ after changing `generator.json`, or after pulling a newer `openapi.json` from Va
   `VaultTokenProvider` and `StaticVaultToken` hand it over protected by the key ring.
 - **`VaultRequestError`** (`ERR_HKDFGUARD_VAULT_REQUEST`): a request Vault refused, or that got no
   answer, with its status, never the token; `isTransient` for 429, a 5xx other than 501, or no answer.
-- **The address, path and token checks, the retry limits and backoff**, and the runner the
-  integrations make their requests with: `VaultConnector` (the agent, from the caller or built from
-  `VaultTlsOptions`), `vaultHeaders`, `putToken` and `putProtectedToken`, `sendAttempt` (one request
-  and its whole response within the timeout, abandoned on abort), `withRetries` and `runWithin`.
+- **`VaultConnectionOptions`**: the mount, namespace, timeout, retries, agent and TLS the transit
+  key wrapper's and the KV secret cache's options extend, checked by one `checkConnectionOptions`,
+  with one set of limits (`MIN_RETRY_COUNT`, `MAX_RETRY_COUNT`, `MAX_RETRY_DELAY_MS`,
+  `MAX_TIMEOUT_MS`) and defaults (`DEFAULT_TIMEOUT_MS`, `DEFAULT_RETRY_DELAY_MS`).
+- **The address, path and token checks** (`apiBase`, which `VaultClient` uses too), and the runner the
+  integrations make their requests with: `VaultConnector` (the agent, from the caller, built from
+  `VaultTlsOptions` or its own: `httpsAgentFor`, which `VaultClient` uses too), `vaultHeaders`,
+  `putToken` and `putProtectedToken`, `sendAttempt` (one request and its whole response within the
+  timeout, abandoned on abort), `withRetries` and `runWithin`.
+- **Reading Vault's answers**, for the wrapper, the cache and `VaultClient` alike: `readBody` (the
+  whole body, at most a limit, into a `SecureBuffer` that is zeroed, each chunk zeroed once copied),
+  `readVaultErrors` (the errors a refusal lists) and `vaultRefusal` (the `VaultRequestError` the
+  wrapper and the cache report: `Vault answered 403 Forbidden: permission denied`).
 
 ```ts
 import { VaultTlsOptions } from '@runsecure/hkdfguard-integration-hashicorpvault';

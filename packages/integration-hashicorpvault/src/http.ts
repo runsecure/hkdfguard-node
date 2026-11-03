@@ -6,7 +6,7 @@ import {
   Agent as HttpAgent, request as httpRequest, type ClientRequest, type IncomingMessage, type OutgoingHttpHeaders,
 } from 'node:http';
 import { Agent as HttpsAgent, request as httpsRequest, type AgentOptions } from 'node:https';
-import { HkdfGuardError, InvalidArgumentError, wipe, type DataProtector } from '@runsecure/hkdfguard-abstractions';
+import { HkdfGuardError, wipe, type DataProtector } from '@runsecure/hkdfguard-abstractions';
 import { delay, untilAborted } from '@runsecure/hkdfguard-abstractions/internal';
 import { checkTlsOptions, NAMESPACE_HEADER, REQUEST_HEADER, retryDelay, TOKEN_HEADER, type VaultApiBase } from './connection.js';
 import { VaultRequestError } from './errors.js';
