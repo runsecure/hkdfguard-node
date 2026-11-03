@@ -174,22 +174,71 @@ The options set a mount other than `transit`, a Vault Enterprise namespace, the 
 (`timeoutMs`, 30 seconds), and retries: a request that gets no answer, loses its connection, times
 out, or is answered 429 or a 5xx other than 501 is retried 3 times by default (`retryCount`, 3-10),
 waiting 200 ms (`retryDelayMs`) and doubling, up to 10 seconds, plus up to 100 ms of jitter. To
-trust a private CA, or present a client certificate, supply an `https.Agent`:
+trust a private CA, or present a client certificate (Vault's cert auth method, or a Vault requiring
+mutual TLS), give `tls`, a `VaultTlsOptions` - the same settings the .NET, Java and Python wrappers
+and Vault's own `VAULT_CACERT`, `VAULT_CLIENT_CERT`, `VAULT_CLIENT_KEY` and `VAULT_TLS_SERVER_NAME`
+take:
 
 ```ts
-import { readFileSync } from 'node:fs';
-import { Agent } from 'node:https';
-
-const agent = new Agent({ ca: readFileSync('vault-ca.pem'), keepAlive: true });
 const wrapper = new HashiCorpVaultTransitKeyWrapper('https://vault.example.com:8200', 'myapp-kek', token, {
   context: 'com.example.myapp',
   mountPath: 'transit/team-a',
   namespace: 'team-a/prod',
-  agent,
+  tls: {
+    serverCertificateFile: 'vault-ca.pem',
+    clientCertificateFile: 'myapp.pem',
+    clientCertificateKeyFile: 'myapp-key.pem',
+  },
 });
 ```
 
-An agent that is a proxy sends the token and the DEKs through it.
+### Certificates in a password-protected key store
+
+The CA certificates and the client key can come from PKCS#12 stores instead: a trust store in place
+of the PEM CA certificates, a client key store in place of the PEM certificate and key. A store's
+password is never held in the clear. Protect it once with a protector on a key ring, and give the
+options the result and that protector:
+
+```ts
+import { VaultTlsOptions } from '@runsecure/hkdfguard-keywrapping-hashicorpvault';
+
+const protector = keyRing.createProtector(VaultTlsOptions.PASSWORD_PURPOSE);
+const password = VaultTlsOptions.protectPassword(protector, process.env.MYAPP_KEYSTORE_PASSWORD!);
+
+const tls: VaultTlsOptions = {
+  trustStoreFile: 'vault-trust.p12', trustStorePassword: password,
+  clientKeyStoreFile: 'myapp.p12', clientKeyStorePassword: password,
+  clientKeyStoreAlias: 'myapp', // only if the store holds several keys
+  passwordProtector: protector,
+};
+```
+
+Store `password` - the protected form - in your configuration, not the password. The stores are read
+once, when the wrapper is created, into one TLS secure context every connection shares: each
+password is decrypted into a buffer only while its store is read, and zeroed at once. A password
+that `protector` didn't protect is refused without being quoted. The alias is matched ignoring case,
+as Java's PKCS#12 key store does.
+
+Some things to know:
+
+- The key ring that protects the password can't be the one this wrapper unwraps keys for, since that
+  ring isn't built until the wrapper exists. Use an earlier ring - for example one whose wrapper is
+  the native platform's - or pass PEM files, protected by file permissions, instead.
+- Only PKCS#12 is read. A JKS or JCEKS store is refused; convert one with
+  `keytool -importkeystore -srckeystore myapp.jks -destkeystore myapp.p12 -deststoretype PKCS12`.
+- Node's own `pfx` option takes the password only as a string, which JavaScript can't erase, and
+  presents only the first key a store holds. So the stores are read by HkdfGuard's own PKCS#12
+  reader instead, which takes the password as bytes. It reads what OpenSSL 3 and keytool (Java
+  11.0.12 or later) write - PBKDF2 with AES-CBC, or PKCS#12's triple-DES encryption, under an HMAC -
+  and refuses the legacy RC2 and RC4 that `openssl pkcs12 -legacy` and older Java write: re-export
+  such a store with a current `openssl pkcs12 -export` or keytool.
+- The client key reaches OpenSSL as PEM from a buffer zeroed once the secure context holds it. What
+  OpenSSL keeps of it, it keeps in its own memory.
+
+Without `tls`, Node's trust store (plus `NODE_EXTRA_CA_CERTS`) verifies the certificate and host
+name. An `https.Agent` of your own (`new Agent({ ca: readFileSync('vault-ca.pem'), keepAlive: true })`,
+say) can be given as `agent` instead of `tls`, but not with it; one that is a proxy sends the token
+and the DEKs through it.
 
 Use it as any other key wrapper, with ephemeral keys or key files, as in
 [Wrap keys with AWS KMS](use-aws-kms.md#5-build-a-key-ring-with-an-ephemeral-key). An ephemeral key
@@ -267,6 +316,9 @@ fails before Vault is called, as described for [AWS KMS](use-aws-kms.md#if-somet
 | `307 TemporaryRedirect` | A proxy or load balancer redirects, which the wrapper never follows | Point the address at Vault itself, or the active node's listener |
 | `no answer within` | No answer within `timeoutMs`, on every attempt | Check the address and network path |
 | `ECONNREFUSED`, `ENOTFOUND` | Nothing listens at the address, or the name doesn't resolve | Check the address |
-| `SELF_SIGNED_CERT_IN_CHAIN`, `UNABLE_TO_VERIFY_LEAF_SIGNATURE` | Vault's certificate isn't trusted | Supply an `https.Agent` with its CA |
+| `SELF_SIGNED_CERT_IN_CHAIN`, `UNABLE_TO_VERIFY_LEAF_SIGNATURE` | Vault's certificate isn't trusted | Give `tls` its CA (`serverCertificateFile` or `trustStoreFile`) |
+| `ERR_TLS_CERT_ALTNAME_INVALID` | Vault's certificate isn't issued to the address's host | Use the name it is issued to, or set `tls.serverName` |
+| `password is wrong, or the store was altered` | The key store's password isn't the one protected, or the file changed | Protect the store's password again |
+| `legacy RC2`, `JKS or JCEKS` | A key store Node can't read | Re-export it as PKCS#12 with AES, as the message says |
 | `must be https` (`InvalidArgumentError`) | An http address that isn't loopback | Use https, or a local Vault Agent on loopback |
 | `ERR_HKDFGUARD_INVALID_VAULT_TOKEN` | The token source supplied no token, or one with spaces or non-ASCII characters | Check what the source reads |

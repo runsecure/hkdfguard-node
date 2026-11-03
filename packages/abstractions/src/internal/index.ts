@@ -6,4 +6,3 @@
 export * from './abort.js';
 export * from './crc32c.js';
 export * from './json.js';
-export * from './vault.js';

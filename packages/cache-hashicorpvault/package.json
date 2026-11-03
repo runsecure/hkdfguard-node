@@ -23,7 +23,8 @@
     "@opentelemetry/api": "1.9.1",
     "@runsecure/hkdfguard-abstractions": "0.9.1",
     "@runsecure/hkdfguard-cache": "0.9.1",
-    "@runsecure/hkdfguard-diagnostics": "0.9.1"
+    "@runsecure/hkdfguard-diagnostics": "0.9.1",
+    "@runsecure/hkdfguard-integration-hashicorpvault": "0.9.1"
   },
   "devDependencies": {
     "@runsecure/hkdfguard-dek": "0.9.1",

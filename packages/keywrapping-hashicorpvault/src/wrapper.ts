@@ -1,20 +1,19 @@
-import { randomFillSync, randomInt } from 'node:crypto';
-import { Agent as HttpAgent, request as httpRequest, STATUS_CODES, type ClientRequest, type IncomingMessage } from 'node:http';
-import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
+import { randomFillSync } from 'node:crypto';
+import type { ClientRequest, IncomingMessage } from 'node:http';
 import {
-  ClosedError, HkdfGuardError, InvalidArgumentError, isWellFormed, MAX_WRAPPED_KEY_BYTES, wipe, type KeyWrapper,
+  ClosedError, InvalidArgumentError, isWellFormed, MAX_WRAPPED_KEY_BYTES, wipe, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
+import { JsonReader, JsonToken, MalformedJsonError } from '@runsecure/hkdfguard-abstractions/internal';
 import {
-  delay, isValidVaultPath, JsonReader, JsonToken, MalformedJsonError, untilAborted, vaultApiBase,
-} from '@runsecure/hkdfguard-abstractions/internal';
+  apiBase, checkConnectionOptions, chunksOf, copyTokenWithin, isTransient, isValidSegment, MAX_TOKEN_LENGTH, putToken, readBody, readVaultErrors,
+  sendAttempt, vaultHeaders, VaultConnector, vaultRefusal, VaultRequestError, withRetries, type VaultTokenSource,
+} from '@runsecure/hkdfguard-integration-hashicorpvault';
 import { KeyFileTrust, readTrustedKeyFile } from '@runsecure/hkdfguard-securefile';
 import { decodeInto, encodedLength, encodeInto } from './base64.js';
 import { HashiCorpVaultTransitError } from './errors.js';
-import { HashiCorpVaultTransitKeyWrapperOptions, MAX_CONTEXT_LENGTH } from './options.js';
-import { isValidToken, MAX_TOKEN_LENGTH, type VaultTokenSource } from './token.js';
+import { MAX_CONTEXT_LENGTH, type HashiCorpVaultTransitKeyWrapperOptions } from './options.js';
 
 export { MAX_CONTEXT_LENGTH } from './options.js';
-export { MAX_TOKEN_LENGTH } from './token.js';
 
 /** The length of the DEK {@link HashiCorpVaultTransitKeyWrapper.generateAndWrap} generates: 32 bytes (AES-256). */
 export const GENERATED_KEY_LENGTH = 32;
@@ -31,13 +30,8 @@ export const MAX_KEY_NAME_LENGTH = 128;
  */
 export const MAX_RESPONSE_LENGTH = 16 * 1024;
 
-const TOKEN_HEADER = 'X-Vault-Token';
-const SEGMENT = /^[A-Za-z0-9._-]+$/;
 // The deepest nesting read from Vault's answer, as .NET's wrapper limits it: a transit answer nests three deep.
 const MAX_JSON_DEPTH = 16;
-const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_RETRY_DELAY_MS = 200;
-const Limits = HashiCorpVaultTransitKeyWrapperOptions;
 
 const ascii = (text: string) => new Uint8Array(Buffer.from(text, 'latin1'));
 // Asks for a 256-bit key: GENERATED_KEY_LENGTH bytes.
@@ -94,7 +88,7 @@ const VAULT_PREFIX = ascii('vault:v');
  * followed, which would carry the token elsewhere - Vault's standbys forward requests to the active
  * node themselves, so a redirect is answered as an error. A request that fails transiently - no
  * answer, a connection lost mid-response, a timed-out attempt, 429 or a 5xx other than 501 - is
- * retried (see HashiCorpVaultTransitKeyWrapperOptions.retryCount). Aborting a call's `signal`
+ * retried (see VaultConnectionOptions.retryCount). Aborting a call's `signal`
  * abandons it at once - the token source's signal is aborted, or the request destroyed - and it
  * rejects with the signal's reason; no retry follows. {@link close} the wrapper to release its
  * connections, once nothing uses it - a key ring's background refresh included.
@@ -109,11 +103,7 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
   /** The transit key that wraps every DEK, as given. */
   readonly keyName: string;
   readonly #tokenSource: VaultTokenSource;
-  readonly #https: boolean;
-  readonly #hostname: string;
-  readonly #port: number | undefined;
-  readonly #agent: HttpAgent;
-  readonly #ownAgent: boolean;
+  readonly #connector: VaultConnector;
   readonly #encryptPath: string;
   readonly #decryptPath: string;
   readonly #dataKeyPath: string;
@@ -155,22 +145,18 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
     }
     const text = address instanceof URL ? address.href : address;
     if (typeof text !== 'string') throw new InvalidArgumentError('address must be a string or a URL.');
-    const api = vaultApiBase(text, 'a token and DEKs');
+    const api = apiBase(text, 'a token and DEKs');
     if (typeof keyName !== 'string' || keyName.length > MAX_KEY_NAME_LENGTH || !isValidSegment(keyName)) {
       throw new InvalidArgumentError(`The key name ${JSON.stringify(keyName) ?? String(keyName)} isn't one: 1-${MAX_KEY_NAME_LENGTH} ASCII `
         + 'letters, digits, \'-\', \'_\' and \'.\', and not "." or "..".');
     }
-    const settings = checked(options);
+    const settings = checkConnectionOptions(options, 'transit');
+    const keyFileTrust = checkedKeyFileTrust(options.keyFileTrust);
     const context = encodeContext(options.context);
 
     this.keyName = keyName;
     this.#tokenSource = tokenSource;
-    this.#https = api.https;
-    this.#hostname = api.hostname;
-    this.#port = api.port;
-    this.#ownAgent = !api.https || options.agent === undefined;
-    // Keep-alive, so a call reuses a connection; a stale one is reset, and that attempt retried.
-    this.#agent = !api.https ? new HttpAgent({ keepAlive: true }) : options.agent ?? new HttpsAgent({ keepAlive: true });
+    this.#connector = new VaultConnector(api, options.agent, options.tls);
     this.#encryptPath = `${api.base}${settings.mountPath}/encrypt/${keyName}`;
     this.#decryptPath = `${api.base}${settings.mountPath}/decrypt/${keyName}`;
     this.#dataKeyPath = `${api.base}${settings.mountPath}/datakey/wrapped/${keyName}`;
@@ -181,7 +167,7 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
     this.#timeoutMs = settings.timeoutMs;
     this.#retryCount = settings.retryCount;
     this.#retryDelayMs = settings.retryDelayMs;
-    this.#keyFileTrust = settings.keyFileTrust;
+    this.#keyFileTrust = keyFileTrust;
   }
 
   /**
@@ -292,7 +278,7 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
    */
   close(): void {
     this.#closed = true;
-    if (this.#ownAgent) this.#agent.destroy();
+    this.#connector.close();
   }
 
   // Encrypts `key` - read into the request body before anything is awaited - and checks the answer.
@@ -337,150 +323,51 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
     const token = Buffer.alloc(MAX_TOKEN_LENGTH);
     try {
       // A source's failure is its own to retry, so isn't retried here, and propagates as it is.
-      const tokenLength = await this.#copyToken(token, signal);
-
-      for (let retry = 0; ; retry++) {
-        this.#ensureOpen();
-        try {
-          return await this.#send(operation, path, body, token, tokenLength, signal);
-        } catch (error) {
-          if (signal?.aborted === true) throw signal.reason;
-          if (!TRANSIENT.has(error as object)) throw this.#failure(operation, error);
-          if (retry >= this.#retryCount || this.#closed) throw this.#failure(operation, error);
-        }
-        await delay(retryDelay(this.#retryDelayMs, retry, randomInt(0, 101)), signal);
+      const tokenLength = await copyTokenWithin(this.#tokenSource, token, this.#timeoutMs, signal);
+      try {
+        return await withRetries(() => {
+          this.#ensureOpen();
+          // One attempt: one request, and Vault's whole response, within the attempt's timeout.
+          return sendAttempt(() => this.#request(path, body.length, token, tokenLength), body,
+            (response) => this.#readResponse(operation, response), this.#timeoutMs, signal, `Vault's answer took longer than ${this.#timeoutMs} ms.`);
+        }, this.#retryCount, this.#retryDelayMs, signal, { stopped: () => this.#closed });
+      } catch (error) {
+        if (signal?.aborted === true) throw signal.reason;
+        throw this.#failure(operation, error);
       }
     } finally {
       wipe(token);
     }
   }
 
-  // The token the source copies into `token`, waited for within the timeout; the source's signal is
-  // aborted once it passes, or the call is aborted. Returns its length.
-  async #copyToken(token: Buffer, signal: AbortSignal | undefined): Promise<number> {
-    const timeout = new AbortController();
-    const timer = setTimeout(() => timeout.abort(), this.#timeoutMs);
-    const either = signal === undefined ? timeout.signal : AbortSignal.any([signal, timeout.signal]);
-    let length: unknown;
-    try {
-      length = await untilAborted(Promise.resolve().then(() => this.#tokenSource.copyToken(token, either)), either);
-    } catch (error) {
-      if (signal?.aborted === true) throw signal.reason;
-      if (timeout.signal.aborted) throw new DOMException(`The Vault token source supplied no token within ${this.#timeoutMs} ms.`, 'TimeoutError');
-      throw error;
-    } finally {
-      clearTimeout(timer);
-    }
-    if (typeof length !== 'number' || !Number.isInteger(length) || length <= 0 || length > MAX_TOKEN_LENGTH
-      || !isValidToken(token.subarray(0, length))) {
-      throw new HkdfGuardError('ERR_HKDFGUARD_INVALID_VAULT_TOKEN',
-        `The Vault token source supplied no token, or one that isn't a token: 1-${MAX_TOKEN_LENGTH} printable ASCII characters, with no spaces.`);
-    }
-    return length;
-  }
-
-  // One attempt: one request, and Vault's whole response, within the attempt's timeout. A successful
-  // response is returned in a buffer of its own; any other is thrown as a VaultAnswer carrying
-  // Vault's status and errors.
-  async #send(operation: string, path: string, body: Buffer, token: Buffer, tokenLength: number, signal: AbortSignal | undefined): Promise<Buffer> {
-    signal?.throwIfAborted();
-    const attempt = new AbortController();
-    const timer = setTimeout(() => attempt.abort(), this.#timeoutMs);
-    const either = signal === undefined ? attempt.signal : AbortSignal.any([signal, attempt.signal]);
-    let request: ClientRequest | undefined;
-    let response: IncomingMessage | undefined;
-    // Destroyed with an error, so whichever is being waited for fails at once; the catch below
-    // replaces it with the abort's reason or the timeout.
-    const abandon = () => {
-      const abandoned = new Error('The call to Vault was abandoned.');
-      request?.destroy(abandoned);
-      response?.destroy(abandoned);
-    };
-    either.addEventListener('abort', abandon, { once: true });
-
-    try {
-      const sent = this.#request(path, body.length, token, tokenLength);
-      request = sent;
-      response = await new Promise<IncomingMessage>((resolve, reject) => {
-        sent.on('response', resolve);
-        // Kept for the request's life: an error after the response must find a listener.
-        sent.on('error', (error) => reject(transient(error)));
-        // Sent from body itself, not a copy: Node writes a Buffer to the socket as it is.
-        sent.end(body);
-      });
-      // A body's errors reach the reader through its iterator; this one keeps a late one quiet.
-      response.on('error', () => undefined);
-      try {
-        return await this.#readResponse(operation, response);
-      } finally {
-        if (!response.complete) response.destroy();
-      }
-    } catch (error) {
-      if (signal?.aborted === true) throw signal.reason;
-      if (attempt.signal.aborted) throw transient(new DOMException(`Vault's answer took longer than ${this.#timeoutMs} ms.`, 'TimeoutError'));
-      throw error;
-    } finally {
-      clearTimeout(timer);
-      either.removeEventListener('abort', abandon);
-    }
-  }
-
   // The request, with the token `token` holds. Node takes a header only as a string: that string,
   // and the request head built from it, are the copies of the token this class can't erase.
   #request(path: string, contentLength: number, token: Buffer, tokenLength: number): ClientRequest {
-    const headers: Record<string, string | number> = {
-      'Content-Type': 'application/json',
-      'Content-Length': contentLength,
-      'X-Vault-Request': 'true',
-    };
-    if (this.#namespace !== undefined) headers['X-Vault-Namespace'] = this.#namespace;
-    // Checked by copyToken - printable ASCII - so latin1 is the token exactly.
-    headers[TOKEN_HEADER] = token.toString('latin1', 0, tokenLength);
-    return (this.#https ? httpsRequest : httpRequest)({
-      hostname: this.#hostname, port: this.#port, path, method: 'POST', agent: this.#agent, headers,
-    });
+    const headers = vaultHeaders(this.#namespace, { 'Content-Type': 'application/json', 'Content-Length': contentLength });
+    // Checked by copyTokenWithin - printable ASCII - so latin1 is the token exactly.
+    putToken(headers, token, tokenLength);
+    return this.#connector.request('POST', path, headers);
   }
 
-  // Reads Vault's whole response into a buffer of the wrapper's own, at most MAX_RESPONSE_LENGTH
-  // bytes, zeroing each chunk once copied. A success is returned in a copy just its size, for the
-  // caller to zero; anything else is thrown with Vault's status and errors.
+  // Reads Vault's whole response (readBody: each chunk zeroed once copied), at most
+  // MAX_RESPONSE_LENGTH bytes. A success is returned in a copy just its size, for the caller to
+  // zero; anything else is thrown with Vault's status and errors.
   async #readResponse(operation: string, response: IncomingMessage): Promise<Buffer> {
-    // One byte over the limit, so a body that doesn't fit is noticed rather than truncated.
-    const buffer = Buffer.alloc(MAX_RESPONSE_LENGTH + 1);
+    // A connection lost mid-response is transient.
+    const body = await readBody(chunksOf(response), MAX_RESPONSE_LENGTH);
+    if (body === undefined) {
+      throw this.#error(operation, `Vault's answer for key '${this.keyName}' is over ${MAX_RESPONSE_LENGTH} bytes; a transit answer is far smaller.`);
+    }
     try {
-      let length = 0;
-      try {
-        for await (const chunk of response) {
-          const bytes = chunk as Buffer;
-          const take = Math.min(bytes.length, buffer.length - length);
-          buffer.set(bytes.subarray(0, take), length);
-          length += take;
-          wipe(bytes);
-          if (length > MAX_RESPONSE_LENGTH) break;
-        }
-      } catch (error) {
-        // A connection lost mid-response.
-        throw transient(error);
-      }
-      if (length > MAX_RESPONSE_LENGTH) {
-        throw this.#error(operation, `Vault's answer for key '${this.keyName}' is over ${MAX_RESPONSE_LENGTH} bytes; a transit answer is far smaller.`);
-      }
-
       const status = response.statusCode ?? 0;
-      if (status >= 200 && status < 300) {
-        const answer = Buffer.alloc(length);
-        buffer.copy(answer, 0, 0, length);
-        return answer;
-      }
-
-      const errors = readErrors(buffer.subarray(0, length));
-      const detail = errors !== undefined && errors.length > 0 ? `: ${errors.join('; ')}` : '';
-      const name = STATUS_CODES[status]?.replace(/[^A-Za-z0-9]/g, '');
-      const answer = new VaultAnswer(`Vault answered ${status}${name ? ` ${name}` : ''}${detail}`, status);
-      if (status === 429 || (status >= 500 && status !== 501)) TRANSIENT.add(answer);
-      throw answer;
+      // 429 and a 5xx other than 501 are transient, and retried.
+      if (status < 200 || status >= 300) throw vaultRefusal(status, readVaultErrors(body.view()));
+      // Buffer.alloc, never the shared pool Buffer.from copies into, so zeroing it reaches every copy.
+      const answer = Buffer.alloc(body.length);
+      answer.set(body.view());
+      return answer;
     } finally {
-      wipe(buffer);
+      body.close();
     }
   }
 
@@ -598,10 +485,10 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
   // already one, or not a failure of the call to Vault - is left as it is.
   #failure(operation: string, error: unknown): unknown {
     const prefix = `Vault transit ${operation} failed for key '${this.keyName}'`;
-    if (error instanceof VaultAnswer) {
+    if (error instanceof VaultRequestError) {
       return new HashiCorpVaultTransitError(operation, this.keyName, `${prefix}: ${error.message}`, { statusCode: error.statusCode });
     }
-    if (!TRANSIENT.has(error as object)) return error;
+    if (!isTransient(error)) return error;
     const reason = error instanceof DOMException && error.name === 'TimeoutError' ? `no answer within ${this.#timeoutMs} ms`
       : error instanceof Error ? error.message : String(error);
     return new HashiCorpVaultTransitError(operation, this.keyName, `${prefix}: ${reason}`, { cause: error });
@@ -614,23 +501,6 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
   #error(operation: string, message: string): HashiCorpVaultTransitError {
     return new HashiCorpVaultTransitError(operation, this.keyName, message);
   }
-}
-
-/** Vault answered with a status other than success: its status, and the errors it listed. Never leaves the package. */
-class VaultAnswer extends Error {
-  constructor(message: string, readonly statusCode: number) {
-    super(message);
-  }
-}
-
-// Failures another attempt may not meet: no answer at all (connection refused or reset, DNS), a
-// connection lost mid-response, the attempt's own timeout, or Vault busy or briefly unable to
-// answer - 429, or a 5xx other than 501.
-const TRANSIENT = new WeakSet<object>();
-
-function transient<T>(error: T): T {
-  if (typeof error === 'object' && error !== null) TRANSIENT.add(error);
-  return error;
 }
 
 /**
@@ -655,74 +525,12 @@ export function isVaultCiphertext(value: Uint8Array): boolean {
   return true;
 }
 
-/**
- * The wait before retry number `retry` (0 for the first), in milliseconds: `baseDelayMs`, doubled
- * for each retry before it, at most MAX_RETRY_DELAY_MS - plus `jitterMs`. Exported for the
- * package's tests, never from the package index.
- */
-export function retryDelay(baseDelayMs: number, retry: number, jitterMs: number): number {
-  const maximum = Limits.MAX_RETRY_DELAY_MS;
-  const backoff = retry >= 30 ? maximum : baseDelayMs * 2 ** retry;
-  return Math.min(backoff, maximum) + jitterMs;
-}
-
-// The errors Vault listed in an error response; undefined if it isn't Vault's JSON. An error
-// response holds no key material, so is read as a string.
-function readErrors(body: Uint8Array): string[] | undefined {
-  let root: unknown;
-  try {
-    root = JSON.parse(new TextDecoder().decode(body));
-  } catch {
-    return undefined;
-  }
-  if (typeof root !== 'object' || root === null || Array.isArray(root)) return undefined;
-  if (!Object.hasOwn(root, 'errors')) return [];
-  const errors = (root as { errors: unknown }).errors;
-  return Array.isArray(errors) ? errors.map((e: unknown) => (typeof e === 'string' ? e : JSON.stringify(e))) : undefined;
-}
-
-interface Settings {
-  mountPath: string;
-  namespace: string | undefined;
-  timeoutMs: number;
-  retryCount: number;
-  retryDelayMs: number;
-  keyFileTrust: KeyFileTrust;
-}
-
-function checked(options: HashiCorpVaultTransitKeyWrapperOptions): Settings {
-  // Only an undefined member takes its default: null is a value of the wrong type.
-  const or = <T>(value: T | undefined, fallback: T): T => (value === undefined ? fallback : value);
-  const settings: Settings = {
-    mountPath: or(options.mountPath, 'transit'),
-    namespace: options.namespace,
-    timeoutMs: or(options.timeoutMs, DEFAULT_TIMEOUT_MS),
-    retryCount: or(options.retryCount, Limits.MIN_RETRY_COUNT),
-    retryDelayMs: or(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS),
-    keyFileTrust: or(options.keyFileTrust, KeyFileTrust.administratorsOnly),
-  };
-  if (typeof settings.mountPath !== 'string') throw new InvalidArgumentError('mountPath must be a string.');
-  if (settings.namespace !== undefined && typeof settings.namespace !== 'string') throw new InvalidArgumentError('namespace must be a string.');
-  for (const [name, value] of [['timeoutMs', settings.timeoutMs], ['retryCount', settings.retryCount], ['retryDelayMs', settings.retryDelayMs]] as const) {
-    if (typeof value !== 'number') throw new InvalidArgumentError(`${name} must be a number.`);
-  }
-  if (!(settings.keyFileTrust instanceof KeyFileTrust)) throw new InvalidArgumentError('keyFileTrust must be a KeyFileTrust.');
-  if (options.agent !== undefined && !(options.agent instanceof HttpAgent)) throw new InvalidArgumentError('agent must be an https.Agent.');
-
-  if (!isValidVaultPath(settings.mountPath)) throw new InvalidArgumentError(`The mount path '${settings.mountPath}' isn't a Vault path.`);
-  if (settings.namespace !== undefined && !isValidVaultPath(settings.namespace)) {
-    throw new InvalidArgumentError(`The namespace '${settings.namespace}' isn't a Vault path.`);
-  }
-  if (!(settings.timeoutMs > 0 && settings.timeoutMs <= Limits.MAX_TIMEOUT_MS)) {
-    throw new InvalidArgumentError(`The timeout must be positive, at most ${Limits.MAX_TIMEOUT_MS} ms; it is ${settings.timeoutMs}.`);
-  }
-  if (!Number.isInteger(settings.retryCount) || settings.retryCount < Limits.MIN_RETRY_COUNT || settings.retryCount > Limits.MAX_RETRY_COUNT) {
-    throw new InvalidArgumentError(`The retry count must be ${Limits.MIN_RETRY_COUNT}-${Limits.MAX_RETRY_COUNT}; it is ${settings.retryCount}.`);
-  }
-  if (!(settings.retryDelayMs >= 0 && settings.retryDelayMs <= Limits.MAX_RETRY_DELAY_MS)) {
-    throw new InvalidArgumentError(`The retry delay must be zero to ${Limits.MAX_RETRY_DELAY_MS} ms; it is ${settings.retryDelayMs}.`);
-  }
-  return settings;
+// Who may have written a key file, given or by default; refused unless a KeyFileTrust. Only an
+// undefined member takes its default: null is a value of the wrong type.
+function checkedKeyFileTrust(keyFileTrust: unknown): KeyFileTrust {
+  if (keyFileTrust === undefined) return KeyFileTrust.administratorsOnly;
+  if (!(keyFileTrust instanceof KeyFileTrust)) throw new InvalidArgumentError('keyFileTrust must be a KeyFileTrust.');
+  return keyFileTrust;
 }
 
 // The UTF-8 context, refusing a lone surrogate, which .NET would encode differently (as U+FFFD).
@@ -735,10 +543,6 @@ function encodeContext(context: unknown): Uint8Array {
     throw new InvalidArgumentError(`The context is ${encoded.length} bytes in UTF-8; at most ${MAX_CONTEXT_LENGTH} are allowed.`);
   }
   return encoded;
-}
-
-function isValidSegment(segment: string): boolean {
-  return SEGMENT.test(segment) && segment !== '.' && segment !== '..';
 }
 
 function requireBytes(value: unknown, name: string): asserts value is Uint8Array {

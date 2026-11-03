@@ -7,7 +7,7 @@ import { after, describe, it } from 'node:test';
 import { isZero, MAX_WRAPPED_KEY_BYTES } from '@runsecure/hkdfguard-abstractions';
 import { AesGcmCryptoProviderFactory } from '@runsecure/hkdfguard-cryptoprovider-aesgcm256';
 import { HashiCorpVaultTransitError } from './errors.js';
-import { StaticVaultTokenSource } from './token.js';
+import { StaticVaultTokenSource } from './index.js';
 import { HashiCorpVaultTransitKeyWrapper } from './wrapper.js';
 
 /*

@@ -14,10 +14,11 @@ import { decodeInto, encodedLength, encodeInto } from './base64.js';
 import { HashiCorpVaultTransitError } from './errors.js';
 import { KeyFileError, KeyFileTrust } from './index.js';
 import { HashiCorpVaultTransitKeyWrapperOptions } from './options.js';
-import { StaticVaultTokenSource, type VaultTokenSource } from './token.js';
+import { retryDelay } from '@runsecure/hkdfguard-integration-hashicorpvault';
+import { StaticVaultTokenSource, type VaultTokenSource } from './index.js';
 import {
   GENERATED_KEY_LENGTH, HashiCorpVaultTransitKeyWrapper, isVaultCiphertext, MAX_CONTEXT_LENGTH, MAX_KEY_NAME_LENGTH, MAX_PLAINTEXT_LENGTH,
-  MAX_RESPONSE_LENGTH, MAX_TOKEN_LENGTH, retryDelay,
+  MAX_RESPONSE_LENGTH, MAX_TOKEN_LENGTH,
 } from './wrapper.js';
 
 const CONTEXT = 'hkdfguard.test';
@@ -442,7 +443,8 @@ describe('constructing a HashiCorpVaultTransitKeyWrapper', () => {
   ];
   const wrongTypes = [
     { mountPath: 42 }, { mountPath: null }, { namespace: 7 }, { namespace: null }, { timeoutMs: '30' }, { retryCount: '3' }, { retryDelayMs: null },
-    { agent: 'tls' }, { keyFileTrust: 'administrators' }, { keyFileTrust: null },
+    { agent: 'tls' }, { keyFileTrust: 'administrators' }, { keyFileTrust: null }, { tls: 'tls' }, { tls: null }, { tls: { serverName: '' } },
+    { tls: { clientCertificateFile: 'myapp.pem' } }, { agent: new HttpsAgent(), tls: {} },
   ] as unknown as HashiCorpVaultTransitKeyWrapperOptions[];
   for (const invalid of [...invalidValues, ...wrongTypes]) {
     it(`refuses the option ${JSON.stringify(invalid)}`, () => {

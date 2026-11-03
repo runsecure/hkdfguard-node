@@ -1,0 +1,34 @@
+{
+  "name": "@runsecure/hkdfguard-integration-hashicorpvault",
+  "version": "0.9.1",
+  "description": "HkdfGuard's integration with HashiCorp Vault (Node's own HTTPS client, no third-party dependency): a Vault client with tokens held only protected by the key ring, and what every HkdfGuard Vault integration shares - address and token checks, TLS with password-protected PKCS#12 key stores, retries and the token sources.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test*"
+  ],
+  "scripts": {
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@runsecure/hkdfguard-abstractions": "0.9.1",
+    "@runsecure/hkdfguard-diagnostics": "0.9.1"
+  },
+  "devDependencies": {
+    "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.1",
+    "@runsecure/hkdfguard-dek": "0.9.1",
+    "@runsecure/hkdfguard-test-support": "0.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

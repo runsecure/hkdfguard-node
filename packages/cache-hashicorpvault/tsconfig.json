@@ -18,6 +18,9 @@
       "path": "../cache"
     },
     {
+      "path": "../integration-hashicorpvault"
+    },
+    {
       "path": "../dek"
     },
     {

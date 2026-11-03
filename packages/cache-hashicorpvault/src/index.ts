@@ -8,7 +8,8 @@
  *    "myapp/db#password"; "myapp/db" reads the default key ("value"). One read caches every key
  *    the secret holds. KV version 2 (the default) or 1, any mount, an Enterprise namespace.
  *  - HashiCorpVaultSecretCacheOptions: the mount, KV version, default key, namespace, timeout,
- *    retries, the https agent (a private CA, a client certificate) and the logger.
+ *    retries, the https agent or the TLS (VaultTlsOptions: a private CA, a client certificate, PKCS#12
+ *    key stores whose passwords the key ring protects) and the logger.
  *  - VaultTokenProvider: supplies the token, protected by the cache's token protector
  *    (keyRing.createProtector(HashiCorpVaultSecretCache.TOKEN_PURPOSE)); StaticVaultToken holds one
  *    issued elsewhere. The token is decrypted only to build each request.
@@ -16,6 +17,5 @@
  *    status and errors, never the token.
  */
 export { HashiCorpVaultSecretCache } from './cache.js';
-export { VaultRequestError } from './errors.js';
 export { HashiCorpVaultSecretCacheOptions, VaultKvVersion } from './options.js';
-export { StaticVaultToken, type VaultTokenProvider } from './token.js';
+export { StaticVaultToken, VaultRequestError, VaultTlsOptions, type VaultTokenProvider } from '@runsecure/hkdfguard-integration-hashicorpvault';

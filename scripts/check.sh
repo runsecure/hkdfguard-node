@@ -65,6 +65,7 @@ readonly PUBLISHED_PACKAGES=(
     packages/keywrapping-awskms
     packages/keywrapping-azurekeyvault
     packages/keywrapping-googlekms
+    packages/integration-hashicorpvault
     packages/keywrapping-hashicorpvault
     packages/dek
     packages/cache

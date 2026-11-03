@@ -26,6 +26,7 @@ implements no interface.)
 | `@runsecure/hkdfguard-keywrapping-awskms` | HkdfGuard.KeyWrapping.AwsKms | `KeyWrapper` over one symmetric AWS KMS key, through the AWS SDK for JavaScript v3 (`KMSClient`) |
 | `@runsecure/hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault | `KeyWrapper` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through `@azure/keyvault-keys` |
 | `@runsecure/hkdfguard-keywrapping-googlekms` | HkdfGuard.KeyWrapping.GoogleKms | `KeyWrapper` over one symmetric Google Cloud KMS key, through `@google-cloud/kms` (`KeyManagementServiceClient`) |
+| `@runsecure/hkdfguard-integration-hashicorpvault` | HkdfGuard.Integration.HashiCorpVault | `VaultClient`, a vault-client-go port with tokens held only protected by the key ring; and what the Vault key wrapper and cache share - `VaultTlsOptions` (PEM, or PKCS#12 key stores whose passwords the key ring protects), the token sources, retries and address checks |
 | `@runsecure/hkdfguard-keywrapping-hashicorpvault` | HkdfGuard.KeyWrapping.HashiCorpVault | `KeyWrapper` over one key in a HashiCorp Vault transit secrets engine, through Node's own HTTP client |
 | `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through |
 | `@runsecure/hkdfguard-cryptoprovider-aesgcm256` | HkdfGuard.CryptoProvider.AesGcm256 | The AES-256-GCM `CryptoProviderFactory` and `PipelineDataProtector` |
@@ -357,7 +358,9 @@ refused, so a context is never silently dropped. A key file is Vault's ciphertex
 about 89 bytes of ASCII, byte for byte that of the .NET, Go, Java and Python wrappers, and is read
 through `@runsecure/hkdfguard-securefile`, as for AWS KMS. The address must be https, except on
 loopback; no redirect is followed; a transient failure (no answer, 429, a 5xx other than 501) is
-retried with exponential backoff and jitter. A failure rejects with `HashiCorpVaultTransitError`
+retried with exponential backoff and jitter. A private CA, a client certificate, or both from password-protected
+PKCS#12 key stores, are set as `tls` (`VaultTlsOptions`, from
+`@runsecure/hkdfguard-integration-hashicorpvault`, which the wrapper and the cache share). A failure rejects with `HashiCorpVaultTransitError`
 (`ERR_HKDFGUARD_VAULT_TRANSIT`), naming the operation, the key, and Vault's status and errors
 (`Vault answered 400 BadRequest: cipher: message authentication failed`).
 

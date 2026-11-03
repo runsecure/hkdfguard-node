@@ -15,6 +15,9 @@
       "path": "../securefile"
     },
     {
+      "path": "../integration-hashicorpvault"
+    },
+    {
       "path": "../cryptoprovider-aesgcm256"
     },
     {

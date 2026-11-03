@@ -9,10 +9,10 @@ import { InvalidSecretDataError, ProtectedCache, ProtectedCacheCollection } from
 import { AttributeNames, HkdfGuardTelemetry, MetricNames, SpanNames, type Logger } from '@runsecure/hkdfguard-diagnostics';
 import { KeyRing } from '@runsecure/hkdfguard-dek';
 import { capturingLogger, RecordingKey, useMetricRecorder, useSpanRecorder } from '@runsecure/hkdfguard-test-support';
-import { HashiCorpVaultSecretCache, retryDelay } from './cache.js';
-import { VaultRequestError } from './errors.js';
+import { retryDelay } from '@runsecure/hkdfguard-integration-hashicorpvault';
+import { HashiCorpVaultSecretCache } from './cache.js';
 import { HashiCorpVaultSecretCacheOptions, VaultKvVersion } from './options.js';
-import { StaticVaultToken, type VaultTokenProvider } from './token.js';
+import { StaticVaultToken, VaultRequestError, type VaultTokenProvider } from './index.js';
 
 const TOKEN_PURPOSE = HashiCorpVaultSecretCache.TOKEN_PURPOSE;
 const Limits = HashiCorpVaultSecretCacheOptions;
@@ -1176,7 +1176,8 @@ describe('HashiCorpVaultSecretCache: construction', () => {
   const invalidValues: HashiCorpVaultSecretCacheOptions[] = [
     { mountPath: '' }, { mountPath: '../sys' }, { mountPath: 'kv/' }, { defaultKey: '' }, { defaultKey: 'a b' }, { defaultKey: 'a#b' },
     { defaultKey: 'bang!' }, { namespace: 'team a' }, { namespace: '' }, { kvVersion: 3 as VaultKvVersion }, { timeoutMs: 0 },
-    { timeoutMs: -1 }, { timeoutMs: Number.NaN }, { timeoutMs: Limits.MAX_TIMEOUT_MS + 1 },
+    { timeoutMs: -1 }, { timeoutMs: Number.NaN }, { timeoutMs: Limits.MAX_TIMEOUT_MS + 1 }, { tls: { serverName: '' } },
+    { tls: { clientCertificateFile: 'myapp.pem' } }, { agent: new HttpsAgent(), tls: {} },
   ];
   for (const invalid of invalidValues) {
     it(`rejects the option ${JSON.stringify(invalid)}`, () => {
@@ -1186,7 +1187,7 @@ describe('HashiCorpVaultSecretCache: construction', () => {
 
   const wrongTypes = [
     { mountPath: 42 }, { defaultKey: null }, { namespace: 7 }, { kvVersion: 'v2' }, { timeoutMs: '30' }, { retryCount: '3' },
-    { retryDelayMs: null }, { namespace: null }, { mountPath: null }, { agent: 'tls' },
+    { retryDelayMs: null }, { namespace: null }, { mountPath: null }, { agent: 'tls' }, { tls: 'tls' }, { tls: null },
   ] as unknown as HashiCorpVaultSecretCacheOptions[];
   for (const wrong of wrongTypes) {
     it(`rejects the option ${JSON.stringify(wrong)} of the wrong type`, () => {

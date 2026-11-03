@@ -8,8 +8,7 @@ import type { ProtectedReadOnlyCache } from '@runsecure/hkdfguard-abstractions';
 import { KeyRing } from '@runsecure/hkdfguard-dek';
 import { RecordingKey } from '@runsecure/hkdfguard-test-support';
 import { HashiCorpVaultSecretCache } from './cache.js';
-import { VaultRequestError } from './errors.js';
-import { StaticVaultToken } from './token.js';
+import { StaticVaultToken, VaultRequestError } from './index.js';
 
 /*
  * Real reads of a secret the caller provides, in a KV version 2 engine mounted at "secret" (a dev

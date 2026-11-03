@@ -11,8 +11,11 @@
  *
  *  - HashiCorpVaultTransitKeyWrapper: the wrapper. {@link HashiCorpVaultTransitKeyWrapper.close}
  *    releases its connections.
- *  - HashiCorpVaultTransitKeyWrapperOptions: the context, key file trust, mount, namespace, timeout,
- *    retries and the https agent (a private CA, a client certificate).
+ *  - HashiCorpVaultTransitKeyWrapperOptions: the context and key file trust, and - shared with every
+ *    HkdfGuard Vault integration (VaultConnectionOptions) - the mount, namespace, timeout, retries and
+ *    the https agent or the TLS (VaultTlsOptions: a private CA, a client certificate, PKCS#12 key
+ *    stores). The limits are @runsecure/hkdfguard-integration-hashicorpvault's MIN_RETRY_COUNT,
+ *    MAX_RETRY_COUNT, MAX_RETRY_DELAY_MS and MAX_TIMEOUT_MS.
  *  - VaultTokenSource: supplies the token, copied into a buffer the wrapper zeroes;
  *    StaticVaultTokenSource holds one issued elsewhere.
  *  - HashiCorpVaultTransitError: Vault refused a call (403, 400 for a ciphertext that doesn't
@@ -27,9 +30,12 @@
  * ```
  */
 export {
-  GENERATED_KEY_LENGTH, HashiCorpVaultTransitKeyWrapper, MAX_CONTEXT_LENGTH, MAX_KEY_NAME_LENGTH, MAX_PLAINTEXT_LENGTH, MAX_TOKEN_LENGTH,
+  GENERATED_KEY_LENGTH, HashiCorpVaultTransitKeyWrapper, MAX_CONTEXT_LENGTH, MAX_KEY_NAME_LENGTH, MAX_PLAINTEXT_LENGTH,
 } from './wrapper.js';
-export { HashiCorpVaultTransitKeyWrapperOptions } from './options.js';
-export { StaticVaultTokenSource, type VaultTokenSource } from './token.js';
+export type { HashiCorpVaultTransitKeyWrapperOptions } from './options.js';
+// What a wrapper is created with, from the package every HkdfGuard Vault integration shares.
+export {
+  MAX_TOKEN_LENGTH, StaticVaultTokenSource, VaultTlsOptions, type VaultConnectionOptions, type VaultTokenSource,
+} from '@runsecure/hkdfguard-integration-hashicorpvault';
 export { HashiCorpVaultTransitError } from './errors.js';
 export { KeyFileError, KeyFileTrust, type KeyFileTrustOptions } from '@runsecure/hkdfguard-securefile';
