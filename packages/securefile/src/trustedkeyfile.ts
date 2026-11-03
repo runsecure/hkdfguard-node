@@ -1,14 +1,10 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
-import { win32 } from 'node:path';
 import { InvalidArgumentError, MAX_WRAPPED_KEY_BYTES, wipe } from '@runsecure/hkdfguard-abstractions';
-import { INVALID_KEY_FILE, KeyFileError, UnsupportedPlatformError } from './errors.js';
-import { windowsAddon, type OpenFileHandle, type WindowsAddon } from './native.js';
+import { INVALID_KEY_FILE, KeyFileError } from './errors.js';
 import { KeyFileTrust } from './trust.js';
-import { readLink, resolveTrusted, statusOrUndefined, untrusted as unixUntrusted } from './unix.js';
-import {
-  DriveType, GUARDED_RIGHTS, GUARDED_ROOT_RIGHTS, trustedPrincipals, verifyFinalPath, verifyNotReparsePoint, verifyPathForm, verifyTrustedOnly,
-  type WinSecurity,
-} from './windows.js';
+import { fillBounded, withTrustedFile } from './trustedfile.js';
+
+// Exported from this module for the tests, which have always found it here.
+export { expandShortNames } from './trustedfile.js';
 
 /** The length of an unwrapped DEK; a file this size, or this size plus a line ending (LF or CRLF), is probably a plaintext key. */
 export const PLAINTEXT_KEY_LENGTH = 32;
@@ -21,6 +17,7 @@ export const PLAINTEXT_TEXT_SCAN_LIMIT = 96;
  * administrators and `trust` could have written or replaced it, and refusing contents that aren't a
  * wrapped key: the TypeScript equivalent of the native library's hkdfguard_open_file, for a
  * KeyWrapper.readKeyFile with no native library to read through - a network KMS's key wrapper, say.
+ * It is opened through the same checks as {@link readTrustedFile}, then held to a key file's rules.
  *
  * - Windows: the file must be on a local fixed drive, reached through real folders (no symbolic
  *   link, junction, mount point or substituted drive; an 8.3 short name that exists is expanded
@@ -65,151 +62,7 @@ export function readOnPlatform(platform: string, arch: string, path: string, tru
   if (path.includes('\0')) throw new InvalidArgumentError("A key file path can't contain a NUL character.");
   if (!(trust instanceof KeyFileTrust)) throw new InvalidArgumentError('trust must be a KeyFileTrust.');
 
-  // Dispatches to one platform's wiring; each is exercised by the real-file tests on its own platform.
-  switch (platform) {
-    case 'win32':
-      return readWindows(windowsAddon(), path, trust);
-    case 'linux':
-      return readUnix(path, trust);
-    case 'darwin':
-      // .NET and Java read struct stat at arm64 offsets; Node's lstat has no such limit, but the
-      // supported platforms are kept the same in every port.
-      if (arch !== 'arm64') throw new UnsupportedPlatformError(`Key files are read on Apple silicon Macs only; this process is ${arch}.`);
-      return readUnix(path, trust);
-    default:
-      throw new UnsupportedPlatformError('Key files are read on Windows, Linux and macOS only.');
-  }
-}
-
-// Windows errors (winerror.h) the read reports by Node's codes.
-const ERROR_FILE_NOT_FOUND = 2;
-const ERROR_PATH_NOT_FOUND = 3;
-const ERROR_ACCESS_DENIED = 5;
-const ERROR_SHARING_VIOLATION = 32;
-const ERROR_INVALID_NAME = 123;
-
-// Wires the windows.ts rules to real files through the add-on; exercised by the Windows-only real-file tests.
-function readWindows(addon: WindowsAddon, path: string, trust: KeyFileTrust): Uint8Array {
-  const trusted = trustedPrincipals(trust, addon.canonicalSid, addon.accountName);
-  const full = fullPath(addon, path);
-  verifyPathForm(full, full.startsWith('\\\\') ? DriveType.network : addon.driveType(win32.parse(full).root));
-
-  // Read sharing only: refused if another process has it open for writing, and no one can open it
-  // for writing while it's read.
-  const file = open(addon, full);
-  try {
-    verifyFinalPath(full, native(full, () => addon.finalPath(file)));
-
-    // The file through its own handle; the folders by path, which the final-path check ties to the
-    // folders it was opened through, and which no untrusted principal can then change.
-    verifyTrustedOnly(security(addon.fileSecurity(file), full, full), full, full, GUARDED_RIGHTS, trusted, addon.accountName);
-    for (let folder = win32.dirname(full); ; folder = win32.dirname(folder)) {
-      const descriptor = security(addon.namedSecurity(folder), full, folder);
-      if (win32.dirname(folder) === folder) {
-        verifyTrustedOnly(descriptor, full, folder, GUARDED_ROOT_RIGHTS, trusted, addon.accountName);
-        break;
-      }
-      verifyNotReparsePoint(addon.fileAttributes(folder), full, folder);
-      verifyTrustedOnly(descriptor, full, folder, GUARDED_RIGHTS, trusted, addon.accountName);
-    }
-
-    return readContents((view) => native(full, () => addon.readFile(file, view)), full);
-  } finally {
-    addon.closeFile(file);
-  }
-}
-
-/**
- * What .NET's Path.GetFullPath returns: GetFullPathNameW's absolute, normalized form (a relative path
- * resolved against the working directory), with every 8.3 short name that exists on disk expanded to
- * its long name. A short name for something that doesn't exist stays short, and the final-path check
- * then refuses it.
- */
-function fullPath(addon: WindowsAddon, path: string): string {
-  const full = native(path, () => addon.fullPath(path));
-  return full.includes('~') ? expandShortNames(full, addon.longPath) : full;
-}
-
-/**
- * Expands the longest leading part of `full` that exists, as .NET does: GetLongPathNameW fails
- * outright for a path whose last component is missing. Exported from this module for the tests.
- */
-export function expandShortNames(full: string, longPath: (path: string) => string | null): string {
-  let prefix = full;
-  let rest = '';
-  for (;;) {
-    const expanded = longPath(prefix);
-    if (expanded !== null) return expanded + rest;
-    const separator = prefix.lastIndexOf('\\');
-    // Stop at the root ("C:\" or "\\server\share\"): nothing left to expand.
-    if (separator <= 2) return full;
-    rest = prefix.slice(separator) + rest;
-    prefix = prefix.slice(0, separator);
-  }
-}
-
-function open(addon: WindowsAddon, full: string): OpenFileHandle {
-  const opened = addon.openFile(full);
-  if (typeof opened !== 'number') return opened;
-  switch (opened) {
-    case ERROR_FILE_NOT_FOUND:
-    case ERROR_PATH_NOT_FOUND:
-    case ERROR_INVALID_NAME:
-      throw new KeyFileError('ENOENT', full, `Key file '${full}' was not found.`);
-    case ERROR_ACCESS_DENIED:
-      throw new KeyFileError('EACCES', full, `This account may not read key file '${full}' (or it is a folder).`);
-    case ERROR_SHARING_VIOLATION:
-      throw new KeyFileError('EBUSY', full, `Key file '${full}' is open for writing by another process.`);
-    default:
-      throw new KeyFileError('EIO', full, `Could not open key file '${full}' (Windows error ${opened}).`);
-  }
-}
-
-function security(descriptor: WinSecurity | number, full: string, item: string): WinSecurity {
-  if (typeof descriptor !== 'number') return descriptor;
-  if (descriptor === ERROR_ACCESS_DENIED) {
-    throw new KeyFileError('EACCES', full, `Key file '${full}': this account may not read the permissions of '${item}'.`);
-  }
-  throw new KeyFileError('EIO', full, `Key file '${full}': could not read the security descriptor of '${item}' (Windows error ${descriptor}).`);
-}
-
-// A call into the add-on, whose own failures are reported as the key file's.
-function native<T>(path: string, call: () => T): T {
-  try {
-    return call();
-  } catch (error) {
-    throw new KeyFileError('EIO', path, `Could not read key file '${path}': ${(error as Error).message}.`, { cause: error });
-  }
-}
-
-// Wires the unix.ts rules to real files; exercised by the Unix-only real-file tests.
-function readUnix(path: string, trust: KeyFileTrust): Uint8Array {
-  // The working directory is already a resolved path; resolveTrusted handles ".." itself.
-  let absolute = path;
-  if (!path.startsWith('/')) {
-    const workingDirectory = process.cwd();
-    absolute = workingDirectory.endsWith('/') ? workingDirectory + path : `${workingDirectory}/${path}`;
-  }
-  const resolved = resolveTrusted(absolute, trust, statusOrUndefined, readLink);
-
-  // resolved holds no symbolic link, so O_NOFOLLOW changes nothing for a file that passed; it only
-  // makes certain the last component is still not one when it is opened. (libuv adds O_CLOEXEC.)
-  let descriptor: number;
-  try {
-    descriptor = openSync(resolved, constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code ?? 'EIO';
-    if (code === 'ELOOP') throw unixUntrusted(path, `'${resolved}' became a symbolic link after it was checked`);
-    throw new KeyFileError(code, path, `Could not open key file '${path}' (${code}).`, { cause: error });
-  }
-  try {
-    // The descriptor itself is still a regular file: never a FIFO or device swapped in, which an
-    // untrusted account can't do here anyway.
-    if (!fstatSync(descriptor).isFile()) throw unixUntrusted(path, `'${resolved}' is no longer a regular file`);
-    return readContents((view) => readSync(descriptor, view, 0, view.length, null), path);
-  } finally {
-    closeSync(descriptor);
-  }
+  return withTrustedFile(platform, arch, path, trust, (file) => readContents(file.read, file.path));
 }
 
 /**
@@ -226,12 +79,7 @@ function readUnix(path: string, trust: KeyFileTrust): Uint8Array {
 export function readContents(read: (view: Uint8Array) => number, path: string): Uint8Array {
   const buffer = new Uint8Array(MAX_WRAPPED_KEY_BYTES + 1);
   try {
-    let total = 0;
-    while (total < buffer.length) {
-      const count = read(buffer.subarray(total));
-      if (count <= 0) break;
-      total += count;
-    }
+    const total = fillBounded(read, buffer);
 
     if (total === 0) throw new KeyFileError(INVALID_KEY_FILE, path, `Key file '${path}' is empty.`);
     if (total > MAX_WRAPPED_KEY_BYTES) {

@@ -3,9 +3,10 @@ import { KeyFileError } from './errors.js';
 import type { KeyFileTrust } from './trust.js';
 
 /*
- * The Windows key-file location rules - the native library's (hkdfguard_open_file's) - kept free of
- * system calls: a security descriptor, attributes and paths are passed in as plain data, so the
- * rules are tested on every platform. trustedkeyfile.ts wires them to the add-on's Win32 calls.
+ * The Windows location rules for key files and every other trusted file - the native library's
+ * (hkdfguard_open_file's) - kept free of system calls: a security descriptor, attributes and paths
+ * are passed in as plain data, so the rules are tested on every platform. trustedfile.ts wires them
+ * to the add-on's Win32 calls.
  *
  * - The path names a file on a local fixed drive. UNC paths, device paths (\\?\, \\.\) and network
  *   drives are refused before anything is opened, so no server named in a path is ever contacted.
@@ -138,7 +139,7 @@ export function trustedPrincipals(trust: KeyFileTrust, canonicalSid: (sid: strin
     }
     if (NEVER_TRUSTED.has(sid)) {
       throw new InvalidArgumentError(`KeyFileTrust.windowsPrincipals holds ${describe(sid, accountName)}, which every account (or every signed-in one) is in; `
-        + 'trusting it would trust anyone to replace a key file.');
+        + 'trusting it would trust anyone to replace a trusted file.');
     }
     trusted.push(sid);
   }
@@ -154,10 +155,10 @@ export function trustedPrincipals(trust: KeyFileTrust, canonicalSid: (sid: strin
  */
 export function verifyPathForm(fullPath: string, driveType: number): void {
   if (fullPath.startsWith('\\\\') || fullPath.startsWith('//')) {
-    throw untrusted(fullPath, 'it is a UNC or device path; key files are only read from a local drive');
+    throw untrusted(fullPath, 'it is a UNC or device path; trusted files are only read from a local drive');
   }
   if (driveType !== DriveType.fixed) {
-    throw untrusted(fullPath, `it is on a ${driveTypeName(driveType)} drive; key files are only read from a local fixed drive`);
+    throw untrusted(fullPath, `it is on a ${driveTypeName(driveType)} drive; trusted files are only read from a local fixed drive`);
   }
 }
 
@@ -247,9 +248,9 @@ export function describeRights(mask: number): string {
   return `0x${hex(value, 8)}${names.length > 0 ? ` (${names.join(', ')})` : ''}`;
 }
 
-/** The refusal of a key file whose location isn't trusted: `code` 'EACCES', as Node reports a path it may not use. */
+/** The refusal of a file whose location isn't trusted (a key file, or any trusted file): `code` 'EACCES', as Node reports a path it may not use. */
 export function untrusted(path: string, why: string): KeyFileError {
-  return new KeyFileError('EACCES', path, `Key file '${path}' is not trusted: ${why}. Keep key files in a folder of their own that only administrators `
+  return new KeyFileError('EACCES', path, `'${path}' is not trusted: ${why}. Keep it in a folder of its own that only administrators `
     + '(or a trusted deployer, see KeyFileTrust) can modify, with inherited permissions removed.');
 }
 

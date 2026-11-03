@@ -6,6 +6,10 @@
  *  - ReadOnlyProtectedCache: filled on demand from a CacheSource, such as a secret store. A backend
  *    supplies only the source; encryption, name binding and telemetry stay here.
  *  - ProtectedCacheCollection: several read-only caches behind one lookup, checked in order.
+ *  - FilePerSecretCache: read-only, over a local folder of one already-encrypted file per secret,
+ *    each read through @runsecure/hkdfguard-securefile's readTrustedFile on its first lookup,
+ *    authenticated under its file name (configurationPurpose(name)) and cached still encrypted, as
+ *    the file holds it. Names that can't be a file name inside the folder are reported missing.
  *  - RemoteSecretCache: the base of the caches over a remote secret store (the AWS Secrets Manager,
  *    Azure Key Vault, Google Secret Manager and HashiCorp Vault packages). A subclass supplies
  *    isValidName and fetch - one read of one secret by name - and hands what it read to the
@@ -24,10 +28,16 @@
  * again under the current key, and a read/write cache accepts a new add. Every value is bound to its
  * name (see cacheAad); names match ignoring ASCII case only. Only ciphertext is retained, and every
  * buffer of the library's that held plaintext is zeroed on every path.
+ *
+ * FilePerSecretCache is the exception to the paragraph above: its values were encrypted where they
+ * were written, so it keeps each exactly as its file holds it, under the key version it names, for
+ * the life of the cache. Each is bound by configurationPurpose(name), as pipeline-protected values
+ * are, and names are matched exactly.
  */
 export { EmptyValueError, type CacheSource } from './store.js';
 export { ProtectedCache, ReadOnlyProtectedCache, type ProtectedCacheOptions } from './cache.js';
 export { ProtectedCacheCollection } from './collection.js';
+export { FilePerSecretCache } from './filepersecret.js';
 export { RemoteSecretCache, SecretNameMatching, SecretValueSink } from './remote.js';
 export { SecretJsonBody, type SecretJsonCaptureOptions } from './secretjson.js';
 export { ErrorResponseBody } from './errorbody.js';

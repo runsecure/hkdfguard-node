@@ -15,8 +15,8 @@ lists every page.
 
 Each package is published separately. Implementations depend only on the abstractions, never on each
 other, so the key wrapper, the cipher and the cache can each be swapped for another implementation.
-(The AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit key wrappers use `securefile`, a helper that
-implements no interface.)
+(The AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit key wrappers, and the
+`cache` package's `FilePerSecretCache`, use `securefile`, a helper that implements no interface.)
 
 | Package | Port of | What it is |
 |---|---|---|
@@ -28,10 +28,10 @@ implements no interface.)
 | `@runsecure/hkdfguard-keywrapping-googlekms` | HkdfGuard.KeyWrapping.GoogleKms | `KeyWrapper` over one symmetric Google Cloud KMS key, through `@google-cloud/kms` (`KeyManagementServiceClient`) |
 | `@runsecure/hkdfguard-integration-hashicorpvault` | HkdfGuard.Integration.HashiCorpVault | `VaultClient`, a vault-client-go port with tokens held only protected by the key ring; and what the Vault key wrapper and cache share - `VaultTlsOptions` (PEM, or PKCS#12 key stores whose passwords the key ring protects), the token sources, retries and address checks |
 | `@runsecure/hkdfguard-keywrapping-hashicorpvault` | HkdfGuard.KeyWrapping.HashiCorpVault | `KeyWrapper` over one key in a HashiCorp Vault transit secrets engine, through Node's own HTTP client |
-| `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through |
+| `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through; `readTrustedFile` and `readTrustedFileWith`: the same location checks for any other file (secret files, certificates), with only a caller-chosen size limit, read at most one byte past it |
 | `@runsecure/hkdfguard-cryptoprovider-aesgcm256` | HkdfGuard.CryptoProvider.AesGcm256 | The AES-256-GCM `CryptoProviderFactory` and `PipelineDataProtector` |
 | `@runsecure/hkdfguard-dek` | HkdfGuard.DataEncryptionKey, HkdfGuard.Options | Key rings with rotation, data protectors, the stored format, `buildKeyRing`, and options read from an `appsettings.json` section |
-| `@runsecure/hkdfguard-cache` | HkdfGuard.Cache | Protected caches, pull-through `CacheSource`s and collections; `RemoteSecretCache`, `SecretValueSink`, `SecretJsonBody` for caches over a secret store |
+| `@runsecure/hkdfguard-cache` | HkdfGuard.Cache | Protected caches, pull-through `CacheSource`s and collections; `FilePerSecretCache` over a trusted local folder of one already-encrypted file per secret, each read through `readTrustedFile` on its first lookup and cached still encrypted; `RemoteSecretCache`, `SecretValueSink`, `SecretJsonBody` for caches over a secret store. Depends on `securefile` |
 | `@runsecure/hkdfguard-cache-awssecretsmanager` | HkdfGuard.Cache.AwsSecretsManager | `AwsSecretsManagerSecretCache` over AWS Secrets Manager, through the application's `SecretsManagerClient` |
 | `@runsecure/hkdfguard-cache-azurekeyvault` | HkdfGuard.Cache.AzureKeyVault | `AzureKeyVaultSecretCache` over Azure Key Vault secrets, through `@azure/keyvault-secrets` |
 | `@runsecure/hkdfguard-cache-googlesecretmanager` | HkdfGuard.Cache.GoogleSecretManager | `GoogleSecretManagerSecretCache` over Google Cloud Secret Manager, through a `SecretManagerServiceClient` |
@@ -371,6 +371,48 @@ headers only as strings) and the socket's and OpenSSL's buffers.
 
 [Wrap keys with HashiCorp Vault transit](docs/how-to/use-hashicorp-vault-transit.md) covers the key,
 the policies for each role, tokens, key files and troubleshooting.
+
+## Reading secrets from a folder, one file per secret
+
+`FilePerSecretCache` (package `@runsecure/hkdfguard-cache`) is a `ProtectedReadOnlyCache` over a
+local folder holding one file per secret: the file named `Db-Password` holds that secret's value,
+already encrypted and formatted (`enc::v3::...`). Nothing is read up front: the first lookup of a
+name reads that one file, checks its value authenticates, and caches it in memory still encrypted,
+exactly as the file holds it. Every later lookup is served from memory:
+
+```ts
+import { DefaultFormatProvider } from '@runsecure/hkdfguard-dek';
+import { FilePerSecretCache } from '@runsecure/hkdfguard-cache';
+import { KeyFileTrust } from '@runsecure/hkdfguard-securefile';
+
+const deployers = new KeyFileTrust({ windowsPrincipals: ['S-1-5-21-...-1005'] }); // the account that deploys secrets
+const secrets = new FilePerSecretCache('C:\\HkdfGuardSecrets\\myapp', deployers, ring, new DefaultFormatProvider());
+
+const result = new Uint8Array((await secrets.maxDecryptedLength('Db-Password')) ?? 0);
+const written = await secrets.decrypt('Db-Password', result); // 0 if there's no such file
+```
+
+Each file must be encrypted for its own name, with the purpose `configurationPurpose(name)` (from
+`@runsecure/hkdfguard-abstractions`). That is what a `PipelineDataProtector` writes for the secret
+identifier `name`, and what `ring.createProtector(configurationPurpose(name))` writes. A file copied
+under another name fails with an `AuthenticationFailedError` when it is loaded, and isn't cached, so
+a corrected file is read on the next lookup.
+
+Every file is read through `readTrustedFile` (package `@runsecure/hkdfguard-securefile`), so it is
+refused, with a `KeyFileError` whose `code` is `'EACCES'`, unless it and every folder above it are
+owned and modifiable only by the operating system's administrators and the principals the
+`KeyFileTrust` adds. Add the account that deploys secrets, never the one the application runs as:
+one that can rewrite its own secrets can be made to roll one back.
+
+A name is a file name: 1-255 ASCII letters, digits, `-`, `_` and `.`, not starting with `.`, so it
+can't reach outside the folder. Any other name (for example `ConnectionStrings:Admin`), a missing
+or empty file and a missing folder all resolve to 0, so the cache can sit in a
+`ProtectedCacheCollection` beside other sources (before any remote one: a source that fails fails
+the lookup); a missing secret isn't remembered, so a file added later is found. A file over 64 KiB
+is refused with a `KeyFileError` whose `code` is `ERR_HKDFGUARD_FILE_TOO_LARGE`, read no more than
+one byte past that; any other read failure rejects with the `KeyFileError` `readTrustedFile` reports.
+A file is read on the calling thread, as key files are. A cached value isn't refreshed: a changed
+file is picked up by a new cache instance.
 
 ## Caching secrets from a secret store
 
