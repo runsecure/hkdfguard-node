@@ -1,0 +1,36 @@
+{
+  "name": "@runsecure/hkdfguard-pipeline-azurekeyvault",
+  "version": "0.9.1",
+  "description": "HkdfGuard secret pipeline writer over Azure Key Vault secrets (Azure SDK for JavaScript): pulls a fixed list of secrets, taken out of the response before the SDK can make them strings, encrypts each at once with a PipelineDataProtector bound to its file name, and writes one file per secret for FilePerSecretCache.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test*"
+  ],
+  "scripts": {
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@azure/core-rest-pipeline": "1.25.0",
+    "@azure/keyvault-secrets": "4.11.2",
+    "@runsecure/hkdfguard-abstractions": "0.9.1",
+    "@runsecure/hkdfguard-pipeline": "0.9.1"
+  },
+  "devDependencies": {
+    "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.1",
+    "@runsecure/hkdfguard-dek": "0.9.1",
+    "@runsecure/hkdfguard-test-support": "0.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

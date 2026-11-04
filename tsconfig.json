@@ -50,6 +50,21 @@
       "path": "packages/cache-hashicorpvault"
     },
     {
+      "path": "packages/pipeline"
+    },
+    {
+      "path": "packages/pipeline-hashicorpvault"
+    },
+    {
+      "path": "packages/pipeline-awssecretsmanager"
+    },
+    {
+      "path": "packages/pipeline-azurekeyvault"
+    },
+    {
+      "path": "packages/pipeline-googlesecretmanager"
+    },
+    {
       "path": "packages/encryptedconfig"
     },
     {

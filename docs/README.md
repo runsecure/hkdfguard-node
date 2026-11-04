@@ -15,6 +15,11 @@ platform protects (TPM or Secure Enclave), then to a durable key file.
 instead: see [Wrap keys with Google Cloud KMS](how-to/use-google-kms.md). **Using a HashiCorp Vault
 transit key** instead: see [Wrap keys with HashiCorp Vault transit](how-to/use-hashicorp-vault-transit.md).
 
+**Delivering secrets from a secret store as encrypted files** in a provisioning pipeline, before a
+durable KEK exists, for `FilePerSecretCache` to read: see the README's
+[Writing secrets from a store as files, in a pipeline](../README.md#writing-secrets-from-a-store-as-files-in-a-pipeline)
+and the `pipeline-*` packages.
+
 **Filling `${name}` templates with secrets** - a connection string, a configuration file - from the
 protected caches: see [Resolve configuration templates](how-to/resolve-configuration-templates.md).
 

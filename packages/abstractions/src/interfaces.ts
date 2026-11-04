@@ -177,6 +177,48 @@ export interface PipelineDataProtector {
 }
 
 /**
+ * The end of a provisioning pipeline that delivers secrets from a secret store as one encrypted file
+ * per secret - the folder layout FilePerSecretCache reads at runtime - before a durable KEK exists.
+ * An implementation is given the secrets to pull and a {@link PipelineDataProtector} when it is
+ * created; {@link pullSecrets} reads each secret and encrypts it at once, bound to its file name,
+ * keeping only the encrypted value; {@link writeProtectedSecretFiles} then writes one file per
+ * secret. No key ring is involved: the protector's key is the only one, and it is handed to the
+ * native platform's wrap process once the files are written.
+ *
+ * The protector belongs to the caller and is never closed by the writer. Closing the writer
+ * releases its connection to the secret store.
+ */
+export interface SecretPipelineWriter {
+  /**
+   * Every secret pulled, by file name: its value encrypted by the protector and formatted, as its
+   * file will hold it. Empty until {@link pullSecrets} completes.
+   */
+  readonly protectedSecrets: ReadonlyMap<string, string>;
+
+  /**
+   * Reads every secret the writer was created with and encrypts each value, keeping it in
+   * {@link protectedSecrets} - replacing whatever an earlier pull kept.
+   * @param signal cancels the reads
+   * @throws SecretsNotFoundError (rejecting; ERR_HKDFGUARD_SECRETS_NOT_FOUND) a secret has no value;
+   *   every other secret is kept
+   */
+  pullSecrets(signal?: AbortSignal): Promise<void>;
+
+  /**
+   * Writes every secret in {@link protectedSecrets} as a file in `folderPath`, creating the folder if
+   * it doesn't exist: the file named for it, holding its encrypted, formatted value as UTF-8.
+   * @param folderPath the folder to write to, absolute or relative to the working directory
+   * @throws TypeError (rejecting) folderPath isn't a string
+   * @throws InvalidArgumentError (rejecting) folderPath is empty
+   * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed
+   */
+  writeProtectedSecretFiles(folderPath: string): Promise<void>;
+
+  /** Releases the writer's connection to the secret store. Safe to call more than once. */
+  close(): Promise<void>;
+}
+
+/**
  * The read surface of a name -> encrypted-value cache. Names match ignoring ASCII case only, and each
  * value is bound to its name. Reads are asynchronous because a cache may fetch a missing value from a
  * remote store.

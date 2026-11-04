@@ -16,12 +16,14 @@ lists every page.
 Each package is published separately. Implementations depend only on the abstractions, never on each
 other, so the key wrapper, the cipher and the cache can each be swapped for another implementation.
 (The AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit key wrappers, and the
-`cache` package's `FilePerSecretCache`, use `securefile`, a helper that implements no interface.)
+`cache` package's `FilePerSecretCache`, use `securefile`, a helper that implements no interface; the
+`pipeline-*` writers use `pipeline`, which uses `cache` only for `FilePerSecretCache`'s file-name
+rule.)
 
 | Package | Port of | What it is |
 |---|---|---|
 | `@runsecure/hkdfguard-diagnostics` | HkdfGuard.Diagnostics | OpenTelemetry names and helpers, sensitive-logging flags, logging (any console-shaped logger) |
-| `@runsecure/hkdfguard-abstractions` | HkdfGuard.Abstractions | Interfaces (`KeyWrapper`, `CryptoProviderFactory`, `KeyRing`, `ProtectedCache`, ...), shared rules and errors |
+| `@runsecure/hkdfguard-abstractions` | HkdfGuard.Abstractions | Interfaces (`KeyWrapper`, `CryptoProviderFactory`, `KeyRing`, `ProtectedCache`, `PipelineDataProtector`, `SecretPipelineWriter`, ...), shared rules and errors |
 | `@runsecure/hkdfguard-keywrapping-native-v1` | HkdfGuard.KeyWrapping.V1 | `KeyWrapper` over the OS's native KMS library (TPM2, Secure Enclave, Platform Crypto Provider) |
 | `@runsecure/hkdfguard-keywrapping-awskms` | HkdfGuard.KeyWrapping.AwsKms | `KeyWrapper` over one symmetric AWS KMS key, through the AWS SDK for JavaScript v3 (`KMSClient`) |
 | `@runsecure/hkdfguard-keywrapping-azurekeyvault` | HkdfGuard.KeyWrapping.AzureKeyVault | `KeyWrapper` over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault, through `@azure/keyvault-keys` |
@@ -36,6 +38,11 @@ other, so the key wrapper, the cipher and the cache can each be swapped for anot
 | `@runsecure/hkdfguard-cache-azurekeyvault` | HkdfGuard.Cache.AzureKeyVault | `AzureKeyVaultSecretCache` over Azure Key Vault secrets, through `@azure/keyvault-secrets` |
 | `@runsecure/hkdfguard-cache-googlesecretmanager` | HkdfGuard.Cache.GoogleSecretManager | `GoogleSecretManagerSecretCache` over Google Cloud Secret Manager, through a `SecretManagerServiceClient` |
 | `@runsecure/hkdfguard-cache-hashicorpvault` | HkdfGuard.Cache.HashiCorpVault | `HashiCorpVaultSecretCache` over HashiCorp Vault's KV secrets engine, through Node's own HTTP client |
+| `@runsecure/hkdfguard-pipeline` | HkdfGuard.Pipeline | `SecretPipelineWriter`, the shared base of the secret stores' pipeline writers: a fixed list of secret names (`name` or `name#key`) and a `PipelineDataProtector`; each secret read once however many of its keys are listed, every value encrypted at once bound to its file name (`/` and `#` become `__`), only the ciphertext kept, and written as one file per secret - the layout `FilePerSecretCache` reads. No key ring; a value that isn't UTF-8 text is refused. `PinnedBody` reads a response body into a buffer of the library's own. Depends on `cache` (for `FilePerSecretCache`'s file-name rule), never on the runtime caches |
+| `@runsecure/hkdfguard-pipeline-hashicorpvault` | HkdfGuard.Pipeline.HashiCorpVault | `HashiCorpVaultSecretPipelineWriter` over one HashiCorp Vault KV engine, version 1 or 2 (`path` or `path#key`, a name without a key reading `defaultKey`), the token from a `VaultTokenSource` in a buffer zeroed after each read, through Node's own HTTP client |
+| `@runsecure/hkdfguard-pipeline-awssecretsmanager` | HkdfGuard.Pipeline.AwsSecretsManager | `AwsSecretsManagerSecretPipelineWriter` over AWS Secrets Manager (`name` for the whole SecretString, `name#key` for a member of a key/value secret), through the caller's `SecretsManagerClient` or one of its own (`create`); a middleware on each `GetSecretValueCommand` takes the body before the SDK parses it and hands the SDK `{}`; a SecretBinary is refused |
+| `@runsecure/hkdfguard-pipeline-azurekeyvault` | HkdfGuard.Pipeline.AzureKeyVault | `AzureKeyVaultSecretPipelineWriter` over one Azure Key Vault (`name` or `name#key` for a member of a JSON object value), through its own `SecretClient` whose per-retry policy takes the body before the SDK parses it; any `TokenCredential` - Workload Identity on AKS |
+| `@runsecure/hkdfguard-pipeline-googlesecretmanager` | HkdfGuard.Pipeline.GoogleSecretManager | `GoogleSecretManagerSecretPipelineWriter` over one Google Cloud project's Secret Manager (`id` or `id#key`), the latest version read on the client's gRPC stub with the writer's own deserializer; each payload checked against its CRC32C and the secret it names, and zeroed, as is gRPC's received message; `create` for a client of its own (Application Default Credentials - Workload Identity on GKE) |
 | `@runsecure/hkdfguard-encryptedconfig` | HkdfGuard.EncryptedConfiguration | Reads pipeline-encrypted secrets from any configuration source (`envLookup`, `flattenJson`, `mapLookup`) |
 | `@runsecure/hkdfguard-integration-configurationresolver` | HkdfGuard.Integration.ConfigurationResolver, with the parts of ConfigurationResolver it uses | Resolves `${name}` templates from the protected caches: `ProtectedCacheValueProvider` over any cache, and `ResolvingProtectedCacheCollection`, which resolves the templates its sources hold and caches each result encrypted |
 
@@ -475,7 +482,60 @@ The how-to guides set up each store:
 [Google Cloud Secret Manager](docs/how-to/run-google-secret-manager-cache-integration-tests.md),
 [HashiCorp Vault](docs/how-to/run-hashicorp-vault-cache-integration-tests.md). Every other secret
 cache test runs against a fake store, reached through the store's own client where it has one, and
-sends nothing over the network.
+sends nothing over the network. The `pipeline-*` writers' tests run the same way, against the same fakes, and
+each runs the shared `SecretPipelineWriter` contract (`secretPipelineWriterContract` in
+`packages/test-support`, the port of .NET's `SecretPipelineWriterContractTests`) as well as its own.
+
+## Writing secrets from a store as files, in a pipeline
+
+The four `pipeline-*` packages are the end of a provisioning pipeline that runs before a durable
+KEK exists. Each `SecretPipelineWriter` is given a fixed list of secret names and a
+`PipelineDataProtector`; `pullSecrets()` reads each secret once - however many of its keys are
+listed - and encrypts every value at once, bound to its file name, keeping only the ciphertext;
+`writeProtectedSecretFiles(folder)` then writes one file per secret, the folder layout
+`FilePerSecretCache` reads at runtime. No key ring is involved: the protector's key is the only one,
+handed to the native wrap process once the files are written. The writers never depend on the
+runtime `cache-*` packages.
+
+A name is a secret's name, optionally followed by `#` and a key: `prod/app#password` is the
+`password` member of the JSON object `prod/app` holds, written as `prod__app__password` (each `/`
+and `#` becomes `__`) and bound to that file name, so it decrypts as that name in
+`FilePerSecretCache` and a renamed file fails authentication. A name whose file name
+`FilePerSecretCache` can't read, or two whose file names differ only in case, are refused when the
+writer is created. A missing secret, key or empty value is reported once every secret has been
+read, by a `SecretsNotFoundError` naming them all - the rest are kept, and can still be written; any
+other failure keeps nothing. A value that isn't UTF-8 text is refused with `InvalidSecretDataError`:
+the protector encrypts text. As in the caches, each response body is taken before the SDK parses
+it, so no value becomes a JavaScript string, and every buffer that held one is zeroed.
+
+```ts
+import { AesGcmPipelineDataProtector } from '@runsecure/hkdfguard-cryptoprovider-aesgcm256';
+import { DefaultFormatProvider } from '@runsecure/hkdfguard-dek';
+import { AwsSecretsManagerSecretPipelineWriter } from '@runsecure/hkdfguard-pipeline-awssecretsmanager';
+
+const protector = new AesGcmPipelineDataProtector(new DefaultFormatProvider(), 3);
+const writer = AwsSecretsManagerSecretPipelineWriter.create(protector, ['prod/app#username', 'prod/app#password', 'prod/api-key']);
+try {
+  await writer.pullSecrets();
+  await writer.writeProtectedSecretFiles('/etc/hkdfguard/secrets/myapp'); // prod__app__username, prod__app__password, prod__api-key
+} finally {
+  await writer.close();
+}
+// Then hand protector.keyBase64() to the wrap tool on standard input, register the key at version 3,
+// and close the protector.
+```
+
+| Store | Package | Writer |
+|---|---|---|
+| AWS Secrets Manager | `@runsecure/hkdfguard-pipeline-awssecretsmanager` | `AwsSecretsManagerSecretPipelineWriter`: the caller's `SecretsManagerClient`, or `create(protector, names, config)` for one of its own |
+| Azure Key Vault | `@runsecure/hkdfguard-pipeline-azurekeyvault` | `AzureKeyVaultSecretPipelineWriter(vaultUrl, credential, protector, names)` |
+| Google Cloud Secret Manager | `@runsecure/hkdfguard-pipeline-googlesecretmanager` | `GoogleSecretManagerSecretPipelineWriter`: the caller's `SecretManagerServiceClient`, or `create(projectId, protector, names)` for one of its own |
+| HashiCorp Vault | `@runsecure/hkdfguard-pipeline-hashicorpvault` | `HashiCorpVaultSecretPipelineWriter(address, tokenSource, protector, names, options)`, a name without a key reading `defaultKey` (`value`) |
+
+Only encrypted values are written, but `FilePerSecretCache` refuses a folder or file anyone but the
+administrators and the principals its `KeyFileTrust` adds can modify: write them where the
+deployment can set that, or set it once they're written. Each package's module documentation
+(`src/index.ts`) covers its names, options and errors.
 
 ## Resolving configuration templates from the caches
 

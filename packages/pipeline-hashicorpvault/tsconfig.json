@@ -1,0 +1,30 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../abstractions"
+    },
+    {
+      "path": "../pipeline"
+    },
+    {
+      "path": "../cryptoprovider-aesgcm256"
+    },
+    {
+      "path": "../integration-hashicorpvault"
+    },
+    {
+      "path": "../dek"
+    },
+    {
+      "path": "../test-support"
+    }
+  ]
+}
