@@ -80,6 +80,7 @@ readonly PUBLISHED_PACKAGES=(
     packages/pipeline-googlesecretmanager
     packages/encryptedconfig
     packages/integration-configurationresolver
+    packages/options-certificate
 )
 # Tested, never published: the end-to-end tests across the packages over the native KEK.
 readonly TEST_ONLY_PACKAGES=(packages/integration)
@@ -97,7 +98,8 @@ if [[ ${HKDFGUARD_CHECK_INSTALL:-1} == 1 ]]; then
     # lockfile are this repository's own add-on builds, run by name next - npm still runs a script
     # named on the command line under --ignore-scripts, but not its pre- or post- scripts.
     npm ci --ignore-scripts
-    npm run install --ignore-scripts --workspace packages/keywrapping-native-v1 --workspace packages/securefile
+    npm run install --ignore-scripts --workspace packages/keywrapping-native-v1 --workspace packages/securefile \
+        --workspace packages/options-certificate
 fi
 
 note "build: every package, type-checked for every platform"

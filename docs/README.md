@@ -23,6 +23,10 @@ and the `pipeline-*` packages.
 **Filling `${name}` templates with secrets** - a connection string, a configuration file - from the
 protected caches: see [Resolve configuration templates](how-to/resolve-configuration-templates.md).
 
+**Opening a TLS or signing certificate** from the Windows certificate store, a macOS keychain, a TPM
+or PKCS#11 token on Linux, or a password-protected PKCS#12 or PEM file: see
+[Open a certificate from a store, a provider or a file](how-to/use-certificate-options.md).
+
 **Porting from the .NET or Go libraries:** the same pages exist in `hkdfguard-dotnet/docs` and
 `hkdfguard-go/docs`, with the same structure. Everything a value or a key file is made of - the
 `enc::v<version>::<base64>` format, the AES-256-GCM ciphertext, the purpose and name binding, the
@@ -46,6 +50,7 @@ native key files - is byte-identical between the ports, so one deployment serves
 | How-to | [Run the Google Secret Manager cache integration tests](how-to/run-google-secret-manager-cache-integration-tests.md) | Draft |
 | How-to | [Run the HashiCorp Vault cache integration tests](how-to/run-hashicorp-vault-cache-integration-tests.md) | Draft |
 | How-to | [Resolve configuration templates from protected caches](how-to/resolve-configuration-templates.md) | Draft |
+| How-to | [Open a certificate from a store, a provider or a file](how-to/use-certificate-options.md) | Draft (macOS keychain steps not yet run on a Mac) |
 | How-to | Provision a service on each platform | Planned (the test-host scripts under `packages/keywrapping-native-v1/scripts` show each platform's steps) |
 | How-to | Create key files in a deployment pipeline | Planned (see [Getting started, step 5](getting-started.md#5-create-a-key-file)) |
 | How-to | Rotate keys | Planned (see [Getting started, step 6](getting-started.md#6-use-the-key-file)) |

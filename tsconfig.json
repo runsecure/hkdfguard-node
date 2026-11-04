@@ -74,6 +74,9 @@
       "path": "packages/integration-configurationresolver"
     },
     {
+      "path": "packages/options-certificate"
+    },
+    {
       "path": "packages/integration"
     }
   ]

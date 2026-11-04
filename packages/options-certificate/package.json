@@ -1,0 +1,36 @@
+{
+  "name": "@runsecure/hkdfguard-options-certificate",
+  "version": "0.9.1",
+  "description": "Opens one X.509 certificate and its private key from where configuration says it is - the Windows certificate store, a macOS keychain, an OpenSSL 3 provider on Linux (TPM, PKCS#11), or a password-protected PKCS#12 or PEM file - without ever exporting a key the operating system holds.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "gypfile": true,
+  "files": [
+    "dist",
+    "!dist/**/*.test*",
+    "native",
+    "binding.gyp",
+    "scripts"
+  ],
+  "scripts": {
+    "install": "node scripts/build-addon.js",
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@runsecure/hkdfguard-abstractions": "0.9.1"
+  },
+  "devDependencies": {
+    "@runsecure/hkdfguard-test-support": "0.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

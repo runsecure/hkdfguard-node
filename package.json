@@ -28,6 +28,7 @@
     "packages/pipeline-googlesecretmanager",
     "packages/encryptedconfig",
     "packages/integration-configurationresolver",
+    "packages/options-certificate",
     "packages/integration"
   ],
   "scripts": {

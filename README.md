@@ -45,6 +45,7 @@ rule.)
 | `@runsecure/hkdfguard-pipeline-googlesecretmanager` | HkdfGuard.Pipeline.GoogleSecretManager | `GoogleSecretManagerSecretPipelineWriter` over one Google Cloud project's Secret Manager (`id` or `id#key`), the latest version read on the client's gRPC stub with the writer's own deserializer; each payload checked against its CRC32C and the secret it names, and zeroed, as is gRPC's received message; `create` for a client of its own (Application Default Credentials - Workload Identity on GKE) |
 | `@runsecure/hkdfguard-encryptedconfig` | HkdfGuard.EncryptedConfiguration | Reads pipeline-encrypted secrets from any configuration source (`envLookup`, `flattenJson`, `mapLookup`) |
 | `@runsecure/hkdfguard-integration-configurationresolver` | HkdfGuard.Integration.ConfigurationResolver, with the parts of ConfigurationResolver it uses | Resolves `${name}` templates from the protected caches: `ProtectedCacheValueProvider` over any cache, and `ResolvingProtectedCacheCollection`, which resolves the templates its sources hold and caches each result encrypted |
+| `@runsecure/hkdfguard-options-certificate` | HkdfGuard.Options.Certificate | `CertificateOptions` (Windows store, macOS keychain, Linux OpenSSL provider, or a password-protected PKCS#12/PEM file), its validator and `CertificateOptionsLoader`: a `LoadedCertificate` that signs and decrypts through the store - whose key is never exported - and serves TLS from a file or provider key. Its own N-API add-on on Windows and macOS |
 
 ```ts
 import { NativeKeyWrapperV1 } from '@runsecure/hkdfguard-keywrapping-native-v1';
@@ -563,6 +564,28 @@ sources hold, on their first lookup, and caches each result encrypted under the 
 that reads a cache reads resolved templates. See
 [Resolve configuration templates](docs/how-to/resolve-configuration-templates.md).
 
+## Opening a certificate from a store, a provider or a file
+
+`@runsecure/hkdfguard-options-certificate` opens the certificate a `Certificate` configuration section
+names - the .NET port's keys, read by `certificateOptionsFromJson` - from the Windows certificate
+store, a macOS keychain, an OpenSSL 3 provider on Linux (tpm2-openssl, pkcs11-provider) or a
+password-protected PKCS#12 or PEM file whose password comes from a protected cache. A store's key
+stays in CNG or the keychain: `sign` and `decrypt` call the store through the package's own add-on,
+and TLS from it is refused, as Node's OpenSSL can't reach it. A file's key is decrypted by the
+package's own PKCS#12/PBES2 reader and held sealed; a provider's key is the provider's object in
+Node's OpenSSL, which loads the provider from `--openssl-config`.
+
+```ts
+import { createServer } from 'node:https';
+import { CertificateOptionsLoader, certificateOptionsFromJson } from '@runsecure/hkdfguard-options-certificate';
+
+const certificate = await new CertificateOptionsLoader({ passwords: caches }).load(certificateOptionsFromJson(appsettings));
+const server = createServer(handler);
+certificate.configureServer(server); // a File or Linux source; a store's key signs and decrypts only
+```
+
+See [Open a certificate from a store, a provider or a file](docs/how-to/use-certificate-options.md).
+
 ## Development
 
 Node.js 22 or later (see `.nvmrc`), with Python 3 and a C compiler for the add-on.
@@ -612,6 +635,12 @@ securefile package's rules are tested against simulated filesystems and security
 platform, and against real files on Windows, Linux and macOS (each platform's suite skipped on the
 others); on Linux the real-file tests use `keyFileDirectory`'s private folder, so run them as a
 non-root user to cover the refusals root would pass.
+
+The certificate options' tests run against certificates they make and other tools' PKCS#12 and PKCS#8
+files, with TLS handshakes over a local server; their suites against real key storage are opt-in -
+`HKDFGUARD_TEST_WINDOWS_CERT_STORE=1` (throwaway CNG certificates in CurrentUser\My, removed
+afterwards), `HKDFGUARD_TEST_MACOS_KEYCHAIN=1`, and `HKDFGUARD_TEST_OPENSSL_PROVIDER` with a provider
+key - see [Open a certificate from a store, a provider or a file](docs/how-to/use-certificate-options.md).
 
 The native key wrapper's tests make real calls against a provisioned service. They are reported as
 skipped, never passed, unless the test service exists: on Windows and macOS the tests find it by

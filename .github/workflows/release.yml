@@ -34,7 +34,8 @@
 #     GitHub Release: `gh attestation verify <file> --repo runsecure/hkdfguard-node`.
 #
 # Nothing here is Authenticode- or codesign-signed, because nothing shipped is a binary: the
-# native add-ons (keywrapping-native-v1's, and securefile's on Windows) are compiled from their C
+# native add-ons (keywrapping-native-v1's, securefile's on Windows, and options-certificate's on
+# Windows and macOS) are compiled from their C
 # source on each consumer's machine at install, and the native KMS library keywrapping-native-v1
 # loads is installed, signed and verified separately. If prebuilt add-on
 # binaries (prebuildify and the like) are ever shipped, they need a sign job between build and
@@ -151,7 +152,8 @@ jobs:
           # a script named on the command line under --ignore-scripts, but not its pre- or post-
           # scripts.
           npm ci --ignore-scripts
-          npm run install --ignore-scripts --workspace packages/keywrapping-native-v1 --workspace packages/securefile
+          npm run install --ignore-scripts --workspace packages/keywrapping-native-v1 --workspace packages/securefile \
+            --workspace packages/options-certificate
           node_modules/.bin/tsc --build --force
 
       # Every published package, in the workspace order - which is dependency order - into
