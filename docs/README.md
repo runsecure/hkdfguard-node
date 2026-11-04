@@ -15,6 +15,9 @@ platform protects (TPM or Secure Enclave), then to a durable key file.
 instead: see [Wrap keys with Google Cloud KMS](how-to/use-google-kms.md). **Using a HashiCorp Vault
 transit key** instead: see [Wrap keys with HashiCorp Vault transit](how-to/use-hashicorp-vault-transit.md).
 
+**Filling `${name}` templates with secrets** - a connection string, a configuration file - from the
+protected caches: see [Resolve configuration templates](how-to/resolve-configuration-templates.md).
+
 **Porting from the .NET or Go libraries:** the same pages exist in `hkdfguard-dotnet/docs` and
 `hkdfguard-go/docs`, with the same structure. Everything a value or a key file is made of - the
 `enc::v<version>::<base64>` format, the AES-256-GCM ciphertext, the purpose and name binding, the
@@ -37,6 +40,7 @@ native key files - is byte-identical between the ports, so one deployment serves
 | How-to | [Run the Azure Key Vault secret cache integration tests](how-to/run-azure-key-vault-secret-cache-integration-tests.md) | Draft |
 | How-to | [Run the Google Secret Manager cache integration tests](how-to/run-google-secret-manager-cache-integration-tests.md) | Draft |
 | How-to | [Run the HashiCorp Vault cache integration tests](how-to/run-hashicorp-vault-cache-integration-tests.md) | Draft |
+| How-to | [Resolve configuration templates from protected caches](how-to/resolve-configuration-templates.md) | Draft |
 | How-to | Provision a service on each platform | Planned (the test-host scripts under `packages/keywrapping-native-v1/scripts` show each platform's steps) |
 | How-to | Create key files in a deployment pipeline | Planned (see [Getting started, step 5](getting-started.md#5-create-a-key-file)) |
 | How-to | Rotate keys | Planned (see [Getting started, step 6](getting-started.md#6-use-the-key-file)) |

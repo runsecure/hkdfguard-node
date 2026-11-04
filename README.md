@@ -37,6 +37,7 @@ other, so the key wrapper, the cipher and the cache can each be swapped for anot
 | `@runsecure/hkdfguard-cache-googlesecretmanager` | HkdfGuard.Cache.GoogleSecretManager | `GoogleSecretManagerSecretCache` over Google Cloud Secret Manager, through a `SecretManagerServiceClient` |
 | `@runsecure/hkdfguard-cache-hashicorpvault` | HkdfGuard.Cache.HashiCorpVault | `HashiCorpVaultSecretCache` over HashiCorp Vault's KV secrets engine, through Node's own HTTP client |
 | `@runsecure/hkdfguard-encryptedconfig` | HkdfGuard.EncryptedConfiguration | Reads pipeline-encrypted secrets from any configuration source (`envLookup`, `flattenJson`, `mapLookup`) |
+| `@runsecure/hkdfguard-integration-configurationresolver` | HkdfGuard.Integration.ConfigurationResolver, with the parts of ConfigurationResolver it uses | Resolves `${name}` templates from the protected caches: `ProtectedCacheValueProvider` over any cache, and `ResolvingProtectedCacheCollection`, which resolves the templates its sources hold and caches each result encrypted |
 
 ```ts
 import { NativeKeyWrapperV1 } from '@runsecure/hkdfguard-keywrapping-native-v1';
@@ -475,6 +476,32 @@ The how-to guides set up each store:
 [HashiCorp Vault](docs/how-to/run-hashicorp-vault-cache-integration-tests.md). Every other secret
 cache test runs against a fake store, reached through the store's own client where it has one, and
 sends nothing over the network.
+
+## Resolving configuration templates from the caches
+
+`@runsecure/hkdfguard-integration-configurationresolver` fills the `${name}` items in a template - a
+connection string, a configuration file - with values from any protected cache. It is the port of
+.NET's `HkdfGuard.Integration.ConfigurationResolver`, and holds the parts of ConfigurationResolver it
+needs too, so it depends only on the abstractions and diagnostics packages. Each value is decrypted
+straight into the destination, or into a buffer that is zeroed, and never becomes a string.
+
+```ts
+import { ConfigurationItemReader, ConfigurationResolverBuilder, DefaultToken } from '@runsecure/hkdfguard-integration-configurationresolver';
+
+const template = 'Host=db.internal;Password=${prod/app-config#password}';
+const token = new DefaultToken();
+const reader = new ConfigurationItemReader(token);
+reader.readKeys(template); // only the keys read from the trusted template are looked up
+
+const resolver = new ConfigurationResolverBuilder().withToken(token).withReader(reader).addProtectedCache(caches).build();
+const connectionString = new Uint8Array(1024);
+const length = await resolver.resolve(template, connectionString);
+```
+
+`ResolvingProtectedCacheCollection` is a `ProtectedCacheCollection` that resolves the templates its
+sources hold, on their first lookup, and caches each result encrypted under the key ring, so anything
+that reads a cache reads resolved templates. See
+[Resolve configuration templates](docs/how-to/resolve-configuration-templates.md).
 
 ## Development
 

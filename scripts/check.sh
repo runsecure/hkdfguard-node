@@ -74,6 +74,7 @@ readonly PUBLISHED_PACKAGES=(
     packages/cache-googlesecretmanager
     packages/cache-hashicorpvault
     packages/encryptedconfig
+    packages/integration-configurationresolver
 )
 # Tested, never published: the end-to-end tests across the packages over the native KEK.
 readonly TEST_ONLY_PACKAGES=(packages/integration)

@@ -22,6 +22,7 @@
     "packages/cache-googlesecretmanager",
     "packages/cache-hashicorpvault",
     "packages/encryptedconfig",
+    "packages/integration-configurationresolver",
     "packages/integration"
   ],
   "scripts": {

@@ -56,6 +56,9 @@
       "path": "packages/cryptoprovider-aesgcm256"
     },
     {
+      "path": "packages/integration-configurationresolver"
+    },
+    {
       "path": "packages/integration"
     }
   ]

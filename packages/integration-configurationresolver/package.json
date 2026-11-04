@@ -1,0 +1,34 @@
+{
+  "name": "@runsecure/hkdfguard-integration-configurationresolver",
+  "version": "0.9.1",
+  "description": "Resolves configuration templates - \"Password=${db-password}\" - from HkdfGuard's protected caches: a value provider over any protected cache, and a cache collection that resolves the templates its sources hold. Includes the parts of ConfigurationResolver it needs.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test*"
+  ],
+  "scripts": {
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@runsecure/hkdfguard-abstractions": "0.9.1",
+    "@runsecure/hkdfguard-diagnostics": "0.9.1"
+  },
+  "devDependencies": {
+    "@runsecure/hkdfguard-cache": "0.9.1",
+    "@runsecure/hkdfguard-dek": "0.9.1",
+    "@runsecure/hkdfguard-test-support": "0.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
