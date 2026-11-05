@@ -26,7 +26,7 @@
   },
   "devDependencies": {
     "@azure/core-rest-pipeline": "1.25.0",
-    "@azure/identity": "4.13.3",
+    "@azure/identity": "4.14.1",
     "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.1",
     "@runsecure/hkdfguard-test-support": "0.0.0"
   },

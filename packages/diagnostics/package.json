@@ -26,6 +26,6 @@
     "@runsecure/hkdfguard-test-support": "0.0.0"
   },
   "dependencies": {
-    "@opentelemetry/api": "1.9.1"
+    "@opentelemetry/api": "1.10.0"
   }
 }

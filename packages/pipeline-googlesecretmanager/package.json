@@ -20,12 +20,12 @@
     "test": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@google-cloud/secret-manager": "7.1.1",
+    "@google-cloud/secret-manager": "7.2.0",
     "@runsecure/hkdfguard-abstractions": "0.9.1",
     "@runsecure/hkdfguard-pipeline": "0.9.1"
   },
   "devDependencies": {
-    "@grpc/grpc-js": "1.14.6",
+    "@grpc/grpc-js": "1.14.7",
     "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.1",
     "@runsecure/hkdfguard-dek": "0.9.1",
     "@runsecure/hkdfguard-test-support": "0.0.0"

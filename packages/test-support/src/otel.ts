@@ -1,12 +1,12 @@
 // Test support (not part of the package API): in-memory OpenTelemetry providers registered as the
 // global ones, so tests can inspect the spans and metrics a component records.
 import { metrics, trace } from '@opentelemetry/api';
-import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor, type ReadableSpan } from '@opentelemetry/sdk-trace-base';
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider, type ReadableSpan } from '@opentelemetry/sdk-trace';
 import { AggregationTemporality, InMemoryMetricExporter, MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 
 export function useSpanRecorder(): { spans(): ReadableSpan[]; dispose(): Promise<void> } {
   const exporter = new InMemorySpanExporter();
-  const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
+  const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
   trace.disable();
   trace.setGlobalTracerProvider(provider);
   return {
