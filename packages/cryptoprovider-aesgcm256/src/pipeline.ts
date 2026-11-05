@@ -1,8 +1,10 @@
 import { randomFillSync } from 'node:crypto';
+import type { Writable } from 'node:stream';
 import {
   ClosedError, configurationAad, InvalidArgumentError, KeyNotFoundError, wipe,
   type EncryptedFormatProvider, type PipelineDataProtector,
 } from '@runsecure/hkdfguard-abstractions';
+import { isWritable, writeChunks } from '@runsecure/hkdfguard-abstractions/internal';
 import { AttributeNames, HkdfGuardTelemetry, SpanNames } from '@runsecure/hkdfguard-diagnostics';
 import { AesGcmSession, EncryptionBudget, KEY_SIZE, OVERHEAD } from './session.js';
 
@@ -68,6 +70,30 @@ export class AesGcmPipelineDataProtector implements PipelineDataProtector {
     this.#requireOpen();
     this.#base64 ??= base64Bytes(this.#key);
     return this.#base64;
+  }
+
+  /**
+   * Writes the key to `destination` as the wrap tool's `--dek-stdin` reads it: its base64 form as
+   * ASCII, no line ending. Encoded straight from the key into a Buffer of its own - never through a
+   * string, nor the buffer {@link keyBase64} returns - which is zeroed once the stream's write calls
+   * back (or the call is aborted). Resolves once the stream has accepted the bytes; `destination`
+   * is left open. See PipelineDataProtector.writeDek.
+   * @throws TypeError (rejecting) destination isn't a Writable
+   * @throws ClosedError (rejecting) the protector has been closed; nothing is written
+   * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) destination has already ended or been destroyed
+   */
+  async writeDek(destination: Writable, signal?: AbortSignal): Promise<void> {
+    if (!isWritable(destination)) throw new TypeError('destination must be a Writable stream.');
+    this.#requireOpen();
+    signal?.throwIfAborted();
+
+    const encoded = base64Bytes(this.#key);
+    const ascii = Buffer.from(encoded.buffer, encoded.byteOffset, encoded.length);
+    try {
+      await writeChunks(destination, [ascii], signal, wipe);
+    } finally {
+      wipe(ascii);
+    }
   }
 
   encrypt(plaintext: Uint8Array | string, secretIdentifier: string): string {

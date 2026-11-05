@@ -21,6 +21,9 @@
       "path": "../dek"
     },
     {
+      "path": "../securefile"
+    },
+    {
       "path": "../test-support"
     }
   ]

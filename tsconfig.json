@@ -50,6 +50,9 @@
       "path": "packages/cache-hashicorpvault"
     },
     {
+      "path": "packages/cache-jsonsecretsfile"
+    },
+    {
       "path": "packages/pipeline"
     },
     {

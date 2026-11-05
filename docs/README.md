@@ -18,7 +18,9 @@ transit key** instead: see [Wrap keys with HashiCorp Vault transit](how-to/use-h
 **Delivering secrets from a secret store as encrypted files** in a provisioning pipeline, before a
 durable KEK exists, for `FilePerSecretCache` to read: see the README's
 [Writing secrets from a store as files, in a pipeline](../README.md#writing-secrets-from-a-store-as-files-in-a-pipeline)
-and the `pipeline-*` packages.
+and the `pipeline-*` packages. The same writers can deliver all the secrets as one JSON file, for
+`JsonSecretsFileReadOnlyCache` (`@runsecure/hkdfguard-cache-jsonsecretsfile`) to read, and stream
+either form - a tar archive of the files, or the JSON - to a remote command's stdin over `ssh`.
 
 **Filling `${name}` templates with secrets** - a connection string, a configuration file - from the
 protected caches: see [Resolve configuration templates](how-to/resolve-configuration-templates.md).

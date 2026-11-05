@@ -73,6 +73,7 @@ readonly PUBLISHED_PACKAGES=(
     packages/cache-azurekeyvault
     packages/cache-googlesecretmanager
     packages/cache-hashicorpvault
+    packages/cache-jsonsecretsfile
     packages/pipeline
     packages/pipeline-hashicorpvault
     packages/pipeline-awssecretsmanager

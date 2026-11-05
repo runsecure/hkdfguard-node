@@ -1,13 +1,16 @@
 import { isUtf8 } from 'node:buffer';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { EOL } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import type { Writable } from 'node:stream';
 import {
   ClosedError, HkdfGuardError, InvalidArgumentError, wipe,
   type PipelineDataProtector, type SecretPipelineWriter as SecretPipelineWriterContract,
 } from '@runsecure/hkdfguard-abstractions';
-import { JsonReader, JsonToken, MalformedJsonError } from '@runsecure/hkdfguard-abstractions/internal';
+import { isWritable, JsonReader, JsonToken, MalformedJsonError, writeChunks } from '@runsecure/hkdfguard-abstractions/internal';
 import { FilePerSecretCache, InvalidSecretDataError } from '@runsecure/hkdfguard-cache';
 import { SecretsNotFoundError } from './errors.js';
+import { tarArchive } from './tar.js';
 
 /** One secret name a {@link SecretPipelineWriter} pulls: what to read, and the file it is written as. */
 export interface SecretRequest {
@@ -22,12 +25,18 @@ export interface SecretRequest {
 const KEY_SEPARATOR = '#';
 const FILE_NAME_SEPARATOR = '__';
 
+// rw-r--r--: what each file in a tar archive is unpacked as.
+const SECRET_FILE_MODE = 0o644;
+
+const encoder = new TextEncoder();
+
 /**
  * The shared plumbing of a {@link SecretPipelineWriterContract SecretPipelineWriter} over one secret
  * store - the Node port of .NET's HkdfGuard.Pipeline.SecretPipelineWriter: the store's writer supplies
  * only {@link readSecret}, which reads one secret and hands its values to {@link protect},
  * {@link protectSecret} or {@link protectKeys}. Everything else - naming, grouping, encrypting,
- * keeping and writing - is here. No key ring is involved: the protector's key is the only one.
+ * keeping and writing - as one file per secret, one JSON file of them all, or either to a stream
+ * as a tar archive or the JSON - is here. No key ring is involved: the protector's key is the only one.
  *
  * A secret name is the store's name for a secret, optionally followed by {@link KEY_SEPARATOR} and a
  * key it holds: "prod/app#password" is the password key of the secret prod/app. A name without one
@@ -168,11 +177,102 @@ export abstract class SecretPipelineWriter implements SecretPipelineWriterContra
   async writeProtectedSecretFiles(folderPath: string): Promise<void> {
     if (typeof folderPath !== 'string') throw new TypeError('folderPath must be a string.');
     if (folderPath.length === 0) throw new InvalidArgumentError('folderPath must not be empty.');
-    if (!this.#pulled) throw new HkdfGuardError('ERR_HKDFGUARD_INVALID_STATE', 'No secrets have been pulled: call pullSecrets first.');
+    this.#requirePulled();
 
     const folder = resolve(folderPath);
     await mkdir(folder, { recursive: true });
     for (const [fileName, value] of this.#protectedSecrets) await writeFile(join(folder, fileName), value, 'utf8');
+  }
+
+  /**
+   * Writes every secret in {@link protectedSecrets} to one JSON file at `filePath`, creating its
+   * folder if it doesn't exist: a single object with a member per secret, its file name mapped to
+   * its encrypted, formatted value, in file-name order (ordinal), indented by two spaces with the
+   * platform's line ending and none after the closing brace, as UTF-8 without a BOM - byte for byte
+   * what .NET's WriteJsonSecrets writes on the same platform. A file already there is replaced.
+   * Each value is bound to its member's name - decrypt(value, name) - as it is to its file name in
+   * {@link writeProtectedSecretFiles}; JsonSecretsFileReadOnlyCache
+   * (@runsecure/hkdfguard-cache-jsonsecretsfile) reads it.
+   * @param filePath the file to write, absolute or relative to the working directory
+   * @throws TypeError (rejecting) filePath isn't a string
+   * @throws InvalidArgumentError (rejecting) filePath is empty
+   * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed
+   */
+  async writeJsonSecrets(filePath: string): Promise<void> {
+    if (typeof filePath !== 'string') throw new TypeError('filePath must be a string.');
+    if (filePath.length === 0) throw new InvalidArgumentError('filePath must not be empty.');
+    this.#requirePulled();
+
+    const path = resolve(filePath);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, this.#jsonSecrets());
+  }
+
+  /**
+   * Writes every secret in {@link protectedSecrets} to `destination` as a tar archive of the files
+   * {@link writeProtectedSecretFiles} would write - for a remote tar to unpack, e.g. the stdin of
+   * `ssh -T host sudo -n tar -x --no-same-owner -f - -C folder`. The archive is PAX, which GNU tar
+   * and bsdtar (macOS, and Windows' tar.exe) both read: one regular file per secret, in file-name
+   * order (ordinal), mode 0644 - the values are encrypted, and only who may write them matters to
+   * FilePerSecretCache; with --no-same-owner they belong to whoever unpacks them - modified now.
+   * Each file is handed to the stream once it has accepted the one before, so a slow reader holds
+   * back the writes rather than the archive piling up in memory. Resolves once the stream has
+   * accepted the end of the archive; `destination` is left open: end it afterwards.
+   * @param destination where to write the archive: a process's standard input
+   * @param signal cancels the write; the destination then holds part of an archive - destroy it
+   * @throws TypeError (rejecting) destination isn't a Writable
+   * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed, or
+   *   destination has already ended or been destroyed
+   *
+   * A failed write rejects with the stream's error.
+   */
+  async writeProtectedSecretFilesTo(destination: Writable, signal?: AbortSignal): Promise<void> {
+    if (!isWritable(destination)) throw new TypeError('destination must be a Writable stream.');
+    this.#requirePulled();
+
+    const mtime = Math.floor(Date.now() / 1000);
+    const files = this.#sortedSecrets().map(([name, value]) => ({ name, data: encoder.encode(value), mode: SECRET_FILE_MODE, mtime }));
+    await writeChunks(destination, tarArchive(files), signal);
+  }
+
+  /**
+   * Writes every secret in {@link protectedSecrets} to `destination` as the JSON object
+   * {@link writeJsonSecrets} would write, byte for byte - for a remote command to store, e.g. the
+   * stdin of `ssh -T host sudo -n tee /etc/app/secrets.json`. Resolves once the stream has accepted
+   * it; `destination` is left open: end it afterwards.
+   * @param destination where to write the JSON: a process's standard input
+   * @param signal cancels the write
+   * @throws TypeError (rejecting) destination isn't a Writable
+   * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed, or
+   *   destination has already ended or been destroyed
+   *
+   * A failed write rejects with the stream's error.
+   */
+  async writeJsonSecretsTo(destination: Writable, signal?: AbortSignal): Promise<void> {
+    if (!isWritable(destination)) throw new TypeError('destination must be a Writable stream.');
+    this.#requirePulled();
+
+    await writeChunks(destination, [this.#jsonSecrets()], signal);
+  }
+
+  // The secrets object as .NET's Utf8JsonWriter writes it - indented by two spaces, the platform's
+  // line ending (Environment.NewLine), relaxed escaping - in UTF-8. The values are formatted
+  // ciphertext and the names [A-Za-z0-9._-], so neither needs escaping; JSON.stringify escapes
+  // anything else a format provider might write as valid JSON.
+  #jsonSecrets(): Uint8Array {
+    const secrets = this.#sortedSecrets();
+    if (secrets.length === 0) return encoder.encode('{}');
+    const members = secrets.map(([name, value]) => `  ${JSON.stringify(name)}: ${JSON.stringify(value)}`);
+    return encoder.encode(`{${EOL}${members.join(`,${EOL}`)}${EOL}}`);
+  }
+
+  // Every secret kept, in ordinal file-name order.
+  #sortedSecrets(): [string, string][] {
+    return [...this.#protectedSecrets].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  }
+
+  #requirePulled(): void {
+    if (!this.#pulled) throw new HkdfGuardError('ERR_HKDFGUARD_INVALID_STATE', 'No secrets have been pulled: call pullSecrets first.');
   }
 
   /** Releases the writer's connection to the store ({@link closeStore}). Safe to call more than once. */

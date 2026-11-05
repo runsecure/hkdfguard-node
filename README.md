@@ -15,10 +15,10 @@ lists every page.
 
 Each package is published separately. Implementations depend only on the abstractions, never on each
 other, so the key wrapper, the cipher and the cache can each be swapped for another implementation.
-(The AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit key wrappers, and the
-`cache` package's `FilePerSecretCache`, use `securefile`, a helper that implements no interface; the
-`pipeline-*` writers use `pipeline`, which uses `cache` only for `FilePerSecretCache`'s file-name
-rule.)
+(The AWS KMS, Azure Key Vault, Google Cloud KMS and HashiCorp Vault transit key wrappers, the
+`cache` package's `FilePerSecretCache` and `cache-jsonsecretsfile`, use `securefile`, a helper that
+implements no interface; the `pipeline-*` writers use `pipeline`, which uses `cache` only for
+`FilePerSecretCache`'s file-name rule.)
 
 | Package | Port of | What it is |
 |---|---|---|
@@ -31,14 +31,15 @@ rule.)
 | `@runsecure/hkdfguard-integration-hashicorpvault` | HkdfGuard.Integration.HashiCorpVault | `VaultClient`, a vault-client-go port with tokens held only protected by the key ring; and what the Vault key wrapper and cache share - `VaultTlsOptions` (PEM, or PKCS#12 key stores whose passwords the key ring protects), the token sources, retries and address checks |
 | `@runsecure/hkdfguard-keywrapping-hashicorpvault` | HkdfGuard.KeyWrapping.HashiCorpVault | `KeyWrapper` over one key in a HashiCorp Vault transit secrets engine, through Node's own HTTP client |
 | `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through; `readTrustedFile` and `readTrustedFileWith`: the same location checks for any other file (secret files, certificates), with only a caller-chosen size limit, read at most one byte past it |
-| `@runsecure/hkdfguard-cryptoprovider-aesgcm256` | HkdfGuard.CryptoProvider.AesGcm256 | The AES-256-GCM `CryptoProviderFactory` and `PipelineDataProtector` |
+| `@runsecure/hkdfguard-cryptoprovider-aesgcm256` | HkdfGuard.CryptoProvider.AesGcm256 | The AES-256-GCM `CryptoProviderFactory` and `PipelineDataProtector` (whose `writeDek` writes its key to the wrap tool's stdin from a buffer zeroed once written) |
 | `@runsecure/hkdfguard-dek` | HkdfGuard.DataEncryptionKey, HkdfGuard.Options | Key rings with rotation, data protectors, the stored format, `buildKeyRing`, and options read from an `appsettings.json` section |
 | `@runsecure/hkdfguard-cache` | HkdfGuard.Cache | Protected caches, pull-through `CacheSource`s and collections; `FilePerSecretCache` over a trusted local folder of one already-encrypted file per secret, each read through `readTrustedFile` on its first lookup and cached still encrypted; `RemoteSecretCache`, `SecretValueSink`, `SecretJsonBody` for caches over a secret store. Depends on `securefile` |
+| `@runsecure/hkdfguard-cache-jsonsecretsfile` | HkdfGuard.Cache.JsonSecretsFile | `JsonSecretsFileReadOnlyCache` over one trusted JSON file holding every secret, as a pipeline's `writeJsonSecrets` writes it: a single object mapping each secret's name to its already-encrypted value. The whole file is read through `readTrustedFile` on the first lookup, every value authenticated under its name (any failure refuses the whole file, which is read again next time), and the values kept still encrypted; names match ignoring ASCII case and follow `FilePerSecretCache`'s name rule. Depends on `cache` and `securefile` |
 | `@runsecure/hkdfguard-cache-awssecretsmanager` | HkdfGuard.Cache.AwsSecretsManager | `AwsSecretsManagerSecretCache` over AWS Secrets Manager, through the application's `SecretsManagerClient` |
 | `@runsecure/hkdfguard-cache-azurekeyvault` | HkdfGuard.Cache.AzureKeyVault | `AzureKeyVaultSecretCache` over Azure Key Vault secrets, through `@azure/keyvault-secrets` |
 | `@runsecure/hkdfguard-cache-googlesecretmanager` | HkdfGuard.Cache.GoogleSecretManager | `GoogleSecretManagerSecretCache` over Google Cloud Secret Manager, through a `SecretManagerServiceClient` |
 | `@runsecure/hkdfguard-cache-hashicorpvault` | HkdfGuard.Cache.HashiCorpVault | `HashiCorpVaultSecretCache` over HashiCorp Vault's KV secrets engine, through Node's own HTTP client |
-| `@runsecure/hkdfguard-pipeline` | HkdfGuard.Pipeline | `SecretPipelineWriter`, the shared base of the secret stores' pipeline writers: a fixed list of secret names (`name` or `name#key`) and a `PipelineDataProtector`; each secret read once however many of its keys are listed, every value encrypted at once bound to its file name (`/` and `#` become `__`), only the ciphertext kept, and written as one file per secret - the layout `FilePerSecretCache` reads. No key ring; a value that isn't UTF-8 text is refused. `PinnedBody` reads a response body into a buffer of the library's own. Depends on `cache` (for `FilePerSecretCache`'s file-name rule), never on the runtime caches |
+| `@runsecure/hkdfguard-pipeline` | HkdfGuard.Pipeline | `SecretPipelineWriter`, the shared base of the secret stores' pipeline writers: a fixed list of secret names (`name` or `name#key`) and a `PipelineDataProtector`; each secret read once however many of its keys are listed, every value encrypted at once bound to its file name (`/` and `#` become `__`), only the ciphertext kept, and written as one file per secret - the layout `FilePerSecretCache` reads - or as one JSON file of them all (`writeJsonSecrets`), the file `JsonSecretsFileReadOnlyCache` reads; each also to a stream (`writeProtectedSecretFilesTo`, a PAX tar archive of the files; `writeJsonSecretsTo`, the JSON) for a remote command's stdin, such as `ssh -T host sudo -n tar -x ...`. No key ring; a value that isn't UTF-8 text is refused. `PinnedBody` reads a response body into a buffer of the library's own. Depends on `cache` (for `FilePerSecretCache`'s file-name rule), never on the runtime caches |
 | `@runsecure/hkdfguard-pipeline-hashicorpvault` | HkdfGuard.Pipeline.HashiCorpVault | `HashiCorpVaultSecretPipelineWriter` over one HashiCorp Vault KV engine, version 1 or 2 (`path` or `path#key`, a name without a key reading `defaultKey`), the token from a `VaultTokenSource` in a buffer zeroed after each read, through Node's own HTTP client |
 | `@runsecure/hkdfguard-pipeline-awssecretsmanager` | HkdfGuard.Pipeline.AwsSecretsManager | `AwsSecretsManagerSecretPipelineWriter` over AWS Secrets Manager (`name` for the whole SecretString, `name#key` for a member of a key/value secret), through the caller's `SecretsManagerClient` or one of its own (`create`); a middleware on each `GetSecretValueCommand` takes the body before the SDK parses it and hands the SDK `{}`; a SecretBinary is refused |
 | `@runsecure/hkdfguard-pipeline-azurekeyvault` | HkdfGuard.Pipeline.AzureKeyVault | `AzureKeyVaultSecretPipelineWriter` over one Azure Key Vault (`name` or `name#key` for a member of a JSON object value), through its own `SecretClient` whose per-retry policy takes the body before the SDK parses it; any `TokenCredential` - Workload Identity on AKS |
@@ -423,6 +424,29 @@ one byte past that; any other read failure rejects with the `KeyFileError` `read
 A file is read on the calling thread, as key files are. A cached value isn't refreshed: a changed
 file is picked up by a new cache instance.
 
+### All the secrets in one JSON file
+
+`JsonSecretsFileReadOnlyCache` (package `@runsecure/hkdfguard-cache-jsonsecretsfile`) reads the
+same values from one JSON file instead - the object a pipeline's `writeJsonSecrets` writes, each
+member a secret's name mapped to its encrypted value:
+
+```ts
+import { JsonSecretsFileReadOnlyCache } from '@runsecure/hkdfguard-cache-jsonsecretsfile';
+
+const secrets = new JsonSecretsFileReadOnlyCache('/etc/myapp/secrets.json', deployers, ring, new DefaultFormatProvider());
+const result = new Uint8Array((await secrets.maxDecryptedLength('Db-Password')) ?? 0);
+const written = await secrets.decrypt('Db-Password', result); // 0 if the file holds no such secret
+```
+
+The whole file is read through `readTrustedFile` on the first lookup, under the same trust rules,
+and every value in it is authenticated under its name before any is kept: one that fails, names a
+key version the ring doesn't hold, or a file that isn't exactly that object (an
+`InvalidSecretDataError`: a name that isn't a secret's name or appears twice in any case, a value
+that isn't a non-empty string) refuses the whole file, which is read again on the next lookup.
+Names follow `FilePerSecretCache`'s rule and match ignoring ASCII case; a missing file reports every
+secret missing, and isn't remembered. A file over 1 MiB (`maxFileLength`) is refused with a
+`KeyFileError` `ERR_HKDFGUARD_FILE_TOO_LARGE`. Concurrent lookups share one load.
+
 ## Caching secrets from a secret store
 
 The four `cache-*` packages are `ProtectedReadOnlyCache`s over a secret store. Each one fetches a
@@ -522,8 +546,35 @@ try {
 } finally {
   await writer.close();
 }
-// Then hand protector.keyBase64() to the wrap tool on standard input, register the key at version 3,
-// and close the protector.
+// Then hand the key to the wrap tool on standard input - protector.writeDek(wrap.stdin), then
+// wrap.stdin.end() - register the key at version 3, and close the protector.
+```
+
+The same secrets can go to another host without touching the local disk: each writer streams them
+to a `Writable`, such as the stdin of an `ssh` child process. `writeProtectedSecretFilesTo` writes a
+PAX tar archive of the files `writeProtectedSecretFiles` would write (one regular file per secret,
+mode 0644, readable by GNU tar and bsdtar) for `ssh -T host sudo -n tar -x --no-same-owner -f - -C
+/etc/hkdfguard/secrets/myapp`; `writeJsonSecretsTo` writes the JSON `writeJsonSecrets` would, for
+`ssh -T host sudo -n tee /etc/myapp/secrets.json`. `writeJsonSecrets(file)` writes that JSON - one
+object, each file name mapped to its encrypted value, in ordinal order, indented, UTF-8 without a
+BOM, byte for byte what the .NET writer writes on the same platform - for
+`JsonSecretsFileReadOnlyCache` to read. Each resolves once the stream has accepted the last byte,
+writing the next piece only once the stream has accepted the one before, and leaves the stream
+open: end it, so the remote command sees the end of its input. The protector's
+`writeDek(stdin)` writes its key the same way, as the wrap tool's `--dek-stdin` reads it, from a
+buffer zeroed once the write calls back - so use a stream that is done with the bytes by then, as a
+child process's stdin is, never one that hands the buffer on, such as a `PassThrough`.
+
+```ts
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+
+const tar = spawn('ssh', ['-T', 'deploy@app1', 'sudo', '-n', 'tar', '-x', '--no-same-owner', '-f', '-', '-C', '/etc/hkdfguard/secrets/myapp'],
+  { stdio: ['pipe', 'inherit', 'inherit'] });
+await writer.writeProtectedSecretFilesTo(tar.stdin);
+tar.stdin.end();
+const [code] = await once(tar, 'exit');
+if (code !== 0) throw new Error(`tar on app1 failed with ${code}`);
 ```
 
 | Store | Package | Writer |

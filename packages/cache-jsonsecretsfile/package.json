@@ -1,0 +1,38 @@
+{
+  "name": "@runsecure/hkdfguard-cache-jsonsecretsfile",
+  "version": "0.9.1",
+  "description": "HkdfGuard protected read-only cache over one trusted JSON file of already-encrypted secrets, as a pipeline's writeJsonSecrets writes it: read through readTrustedFile on the first lookup, every value authenticated under its name, and kept still encrypted.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test*"
+  ],
+  "scripts": {
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@runsecure/hkdfguard-abstractions": "0.9.1",
+    "@runsecure/hkdfguard-cache": "0.9.1",
+    "@runsecure/hkdfguard-diagnostics": "0.9.1",
+    "@runsecure/hkdfguard-securefile": "0.9.1"
+  },
+  "devDependencies": {
+    "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.1",
+    "@runsecure/hkdfguard-dek": "0.9.1",
+    "@runsecure/hkdfguard-pipeline": "0.9.1",
+    "@runsecure/hkdfguard-test-support": "0.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

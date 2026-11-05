@@ -6,5 +6,6 @@ export { icacls, windowsCurrentUserSid, windowsShortPath } from './windowsaccoun
 export { awaitNativeAccess, NATIVE_ACCESS_TIMEOUT_MS, probeNativeAccess } from './nativeaccess.js';
 export { LOAD_LIBRARY_SEARCH_SYSTEM32, peDependentLoadFlags } from './pe.js';
 export {
-  decryptPipelineValue, LARGE_VALUE_LENGTH, PIPELINE_FORMAT_LIMIT, secretPipelineWriterContract, type PipelineStoreUnderTest, type PipelineWriterFixture,
+  CollectingStream, decryptPipelineValue, LARGE_VALUE_LENGTH, PIPELINE_FORMAT_LIMIT, readTar, secretPipelineWriterContract, type PipelineStoreUnderTest,
+  type PipelineWriterFixture, type TarEntry,
 } from './pipeline.js';

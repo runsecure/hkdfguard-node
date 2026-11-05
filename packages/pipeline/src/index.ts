@@ -3,7 +3,9 @@
  * HkdfGuard.Pipeline library. A provisioning pipeline pulls a fixed list of secrets from a secret
  * store, encrypts each at once with a PipelineDataProtector (@runsecure/hkdfguard-abstractions)
  * bound to its file name, keeps only the ciphertext, and writes one file per secret - the folder
- * layout FilePerSecretCache (@runsecure/hkdfguard-cache) reads at runtime. No key ring is involved:
+ * layout FilePerSecretCache (@runsecure/hkdfguard-cache) reads at runtime - or one JSON file of them
+ * all, which JsonSecretsFileReadOnlyCache (@runsecure/hkdfguard-cache-jsonsecretsfile) reads; either
+ * can also be streamed to a remote command's stdin (a PAX tar archive of the files, or the JSON). No key ring is involved:
  * the protector's key is the only one, handed to the native platform's wrap process once the files
  * are written.
  *
@@ -25,7 +27,9 @@
  * } finally {
  *   await writer.close();
  * }
- * // Then hand protector.keyBase64() to the wrap tool on standard input, and register the key at its version.
+ * // Then hand the key to the wrap tool on standard input - await protector.writeDek(wrap.stdin) - and
+ * // register the key at its version.
+ * // Or, to another host: await writer.writeProtectedSecretFilesTo(sshTar.stdin), then sshTar.stdin.end().
  * ```
  */
 export { SecretPipelineWriter, type SecretRequest } from './writer.js';

@@ -26,6 +26,7 @@
   "devDependencies": {
     "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.1",
     "@runsecure/hkdfguard-dek": "0.9.1",
+    "@runsecure/hkdfguard-securefile": "0.9.1",
     "@runsecure/hkdfguard-test-support": "0.0.0"
   },
   "engines": {
