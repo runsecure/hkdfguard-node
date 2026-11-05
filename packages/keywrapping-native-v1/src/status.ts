@@ -48,6 +48,9 @@ export const Status = {
   // Windows-specific (-64..-79), refining policyInvalid
   winGroupInvalid: -64,
 
+  // Linux-specific (-80..-95), refining policyInvalid
+  linuxGroupInvalid: -80,
+
   // macOS-specific (-96..-111), each refining providerError
   macAccessControlCreationFailed: -96,
   macKeyGenerationFailed: -97,
@@ -94,6 +97,7 @@ export const sharedStatusDescriptions: ReadonlyMap<number, string> = new Map([
   [Status.fileMalformed, 'the key file is the right size, but is not a valid wrapped DEK'],
   [Status.fileUntrusted, "the key file's path is not trusted: a link or reparse point, a short or network path, or a file or folder another account could replace"],
   [Status.winGroupInvalid, 'an HKLM\\Software\\Policies\\HkdfGuard\\KeyUseGroups entry is unresolvable, not a group, not host-local, or over-broad'],
+  [Status.linuxGroupInvalid, "a deployer group (deployer_groups in the policy, or hkdfguard-deployers) doesn't exist, is over-broad, or can't be looked up; every key-file read fails until it is fixed"],
   [Status.macAccessControlCreationFailed, 'the access policy for a new KEK could not be created'],
   [Status.macKeyGenerationFailed, 'the Secure Enclave refused to generate a key'],
   [Status.macKeychainWriteFailed, 'the new KEK could not be stored in the keychain'],
@@ -132,6 +136,7 @@ export const linuxStatusDescriptions: ReadonlyMap<number, string> = withHints([
 export const macStatusDescriptions: ReadonlyMap<number, string> = withHints([
   [Status.providerUnavailable, 'this Mac has no Secure Enclave'],
   [Status.payloadAuthFailed, 'AES-GCM authentication failed: the payload was altered, or wrapped for another service under this KEK'],
+  [Status.payloadUnsupported, "the wrapped payload's suite is one this native library doesn't implement, or one this Mac's policy refuses (RequirePostQuantum refuses a P-256 payload); check the KEK suite settings in the HkdfGuard policy"],
   [Status.kekNotFound, 'no KEK is provisioned for this service in this keychain mode; run hkdfguard provision'],
   [Status.kekAccessDenied, "the keychain denied access: it is locked, there is no session to prompt in, or this process isn't allowed"],
   [Status.kekInvalid, "the keychain item for this service can't be reconstructed into a key"],

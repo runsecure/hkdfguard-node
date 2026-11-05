@@ -302,11 +302,12 @@ describe('status codes', () => {
     kekFingerprintMismatch: -16, kekNotFound: -17, kekAccessDenied: -18, kekInvalid: -19, processHardeningFailed: -20,
     fileNotFound: -32, fileAccessDenied: -33, fileIo: -34, fileTooShort: -35, fileTooLong: -36, filePlaintextKey: -37, fileMalformed: -38, fileUntrusted: -39,
     winGroupInvalid: -64,
+    linuxGroupInvalid: -80,
     macAccessControlCreationFailed: -96, macKeyGenerationFailed: -97, macKeychainWriteFailed: -98, macKekVerificationFailed: -99, macKeychainReadFailed: -100,
   };
   const defined = Object.values(header).filter((s) => s !== 0);
   const reserved = [-7, -14, -15, ...Array.from({ length: 11 }, (_, i) => -21 - i), ...Array.from({ length: 24 }, (_, i) => -40 - i),
-    -65, -79, -80, -95, -101, -111, -112, 0, 1, -1000];
+    -65, -79, -81, -95, -101, -111, -112, 0, 1, -1000];
   const tables: [string, ReadonlyMap<number, string>][] = [
     ['shared', sharedStatusDescriptions], ['Windows', windowsStatusDescriptions], ['Linux', linuxStatusDescriptions], ['macOS', macStatusDescriptions],
   ];
@@ -329,7 +330,7 @@ describe('status codes', () => {
     const hinted = (table: ReadonlyMap<number, string>) => defined.filter((s) => table.get(s) !== sharedStatusDescriptions.get(s));
     assert.deepEqual(hinted(windowsStatusDescriptions), [Status.providerUnavailable, Status.providerError, Status.policyInvalid, Status.payloadVersionRefused, Status.kekNotFound, Status.kekAccessDenied, Status.kekInvalid, Status.processHardeningFailed]);
     assert.deepEqual(hinted(linuxStatusDescriptions), [Status.providerUnavailable, Status.providerError, Status.policyInvalid, Status.kekFingerprintMismatch, Status.processHardeningFailed]);
-    assert.deepEqual(hinted(macStatusDescriptions), [Status.providerUnavailable, Status.payloadAuthFailed, Status.kekNotFound, Status.kekAccessDenied, Status.kekInvalid, Status.processHardeningFailed]);
+    assert.deepEqual(hinted(macStatusDescriptions), [Status.providerUnavailable, Status.payloadAuthFailed, Status.payloadUnsupported, Status.kekNotFound, Status.kekAccessDenied, Status.kekInvalid, Status.processHardeningFailed]);
 
     const kekAccessDenied = windowsStatusDescriptions.get(Status.kekAccessDenied)!;
     assert.ok(kekAccessDenied.includes('not authorized') && kekAccessDenied.includes('HkdfGuardUsers') && kekAccessDenied.includes('KeyUseGroups'));
@@ -343,6 +344,7 @@ describe('status codes', () => {
     assert.ok(macStatusDescriptions.get(Status.kekAccessDenied)!.includes('keychain'));
     assert.ok(macStatusDescriptions.get(Status.providerUnavailable)!.includes('Secure Enclave'));
     assert.ok(macStatusDescriptions.get(Status.kekNotFound)!.includes('hkdfguard provision'));
+    assert.ok(macStatusDescriptions.get(Status.payloadUnsupported)!.includes('RequirePostQuantum'));
     assert.ok(sharedStatusDescriptions.get(Status.filePlaintextKey)!.includes('UNWRAPPED'));
   });
 });
