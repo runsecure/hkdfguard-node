@@ -88,7 +88,9 @@ export const secretCapturePolicy: PipelinePolicy = {
 // The body SecretClient is given: the secret's identifier, as the request named it, and nothing else.
 function placeholder(request: PipelineRequest): string {
   const url = new URL(request.url);
-  return JSON.stringify({ id: `${url.origin}${url.pathname.replace(/\/+$/, '')}` });
+  let end = url.pathname.length;
+  while (url.pathname[end - 1] === '/') end--;
+  return JSON.stringify({ id: `${url.origin}${url.pathname.slice(0, end)}` });
 }
 
 // Hands the response's body to take, however the HTTP client left it: a stream, read to its end (and

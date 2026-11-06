@@ -20,7 +20,7 @@ import { CertificateOptionsValidator, type CertificatePlatform } from './validat
 
 export const TESTDATA = join(__dirname, '..', 'testdata');
 export const SUBJECT = 'CN=api.example.com, O=Contoso';
-export const PASSWORD = 'pässwörd-123';
+export const PASSWORD = 'pässwörd-123'; // NOSONAR: protects only the throwaway stores these tests make
 /** The tests' clock: the time they started, so the fixtures (made by OpenSSL and .NET, valid for ten years) are valid now too. */
 export const NOW = new Date(Math.floor(Date.now() / 1000) * 1000);
 const DAY = 24 * 60 * 60 * 1000;
@@ -131,7 +131,7 @@ function pbes2Encrypt(plaintext: Buffer, password: Buffer, iterations: number): 
   const salt = randomBytes(16);
   const iv = randomBytes(16);
   const key = pbkdf2Sync(password, salt, iterations, 32, 'sha256');
-  const cipher = createCipheriv('aes-256-cbc', key, iv);
+  const cipher = createCipheriv('aes-256-cbc', key, iv); // NOSONAR: PBES2's AES-256-CBC, as OpenSSL 3 writes PKCS#12
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const algorithm = der.encode(der.SEQUENCE, der.encodeOid('1.2.840.113549.1.5.13'), der.encode(der.SEQUENCE,
     der.encode(der.SEQUENCE, der.encodeOid('1.2.840.113549.1.5.12'), der.encode(der.SEQUENCE, der.encode(der.OCTET_STRING, salt), der.encodeInteger(iterations),
@@ -145,7 +145,7 @@ function pkcs12TripleDesEncrypt(plaintext: Buffer, password: Buffer | undefined,
   const bmp = bmpPassword(password);
   const key = pkcs12Kdf('sha1', bmp, salt, iterations, 1, 24);
   const iv = pkcs12Kdf('sha1', bmp, salt, iterations, 2, 8);
-  const cipher = createCipheriv('des-ede3-cbc', key, iv);
+  const cipher = createCipheriv('des-ede3-cbc', key, iv); // NOSONAR: the legacy PKCS#12 encryption the loader is tested against
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const algorithm = der.encode(der.SEQUENCE, der.encodeOid('1.2.840.113549.1.12.1.3'),
     der.encode(der.SEQUENCE, der.encode(der.OCTET_STRING, salt), der.encodeInteger(iterations)));
@@ -217,13 +217,15 @@ export function pkcs12(spec: Pkcs12Spec): Buffer {
 
 // --- Fakes ----------------------------------------------------------------------------------------
 
+const DEFAULT_PASSWORDS: Readonly<Record<string, string>> = { 'tls-password': PASSWORD };
+
 /** A password source holding plaintext passwords, recording every buffer it decrypts into so a test can check the loader zeroes it. */
 export class FakePasswords implements ProtectedReadOnlyCache {
   readonly passwords: Map<string, Buffer>;
   readonly buffers: Uint8Array[] = [];
   failure: Error | undefined;
 
-  constructor(passwords: Record<string, string> = { 'tls-password': PASSWORD }) {
+  constructor(passwords: Readonly<Record<string, string>> = DEFAULT_PASSWORDS) {
     this.passwords = new Map(Object.entries(passwords).map(([name, value]) => [name, utf8(value)]));
   }
 

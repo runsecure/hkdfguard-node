@@ -61,7 +61,8 @@ const KEYWORDS = new Set([
   'var', 'void', 'while', 'with', 'yield',
 ]);
 // vault-client-go's .openapi-generator-ignore: model_*2_request.go, ..., model_enterprise_stub*.
-const EXCLUDED_SCHEMA = /^EnterpriseStub|[234](Request|Response)$/;
+const isExcludedSchema = (name) => name.startsWith('EnterpriseStub')
+  || ['Request', 'Response'].some((suffix) => name.endsWith(suffix) && /^[234]$/.test(name.charAt(name.length - suffix.length - 1)));
 const PLACEHOLDER = /([^{]*)\{([^}]*)\}/g;
 const NON_ALPHANUMERIC = /[^A-Za-z0-9]+/;
 const METHODS = ['get', 'put', 'post', 'delete', 'patch'];
@@ -261,7 +262,7 @@ export function generate(openApiJson, settingsJson) {
     operations = operations.filter((o) => include.some((p) => p.test(pascal(o.id))));
   }
 
-  let schemaNames = new Set(Object.keys(spec.schemas).filter((name) => !EXCLUDED_SCHEMA.test(name)));
+  let schemaNames = new Set(Object.keys(spec.schemas).filter((name) => !isExcludedSchema(name)));
   // Which operations send or return each schema, for its summary and how it's typed.
   const requestUses = new Map();
   const responseUses = new Map();
@@ -281,7 +282,7 @@ export function generate(openApiJson, settingsJson) {
   if (include !== undefined) schemaNames = referenced(spec, used);
 
   const byType = new Map();
-  for (const name of [...schemaNames].sort()) byType.set(pascal(name), [...(byType.get(pascal(name)) ?? []), name]);
+  for (const name of [...schemaNames].sort(byCodeUnits)) byType.set(pascal(name), [...(byType.get(pascal(name)) ?? []), name]);
   for (const [typeName, names] of byType) {
     if (names.length > 1) throw new Error(`Schemas ${names.join(', ')} would all be named ${typeName}.`);
   }
@@ -844,3 +845,8 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(p
   }
 }
 
+// Ordinal order, UTF-16 code unit by code unit, so the generated code is the same on every machine.
+function byCodeUnits(a, b) {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}

@@ -322,7 +322,7 @@ export function parseGoBool(value: string): boolean {
 function parseRateLimit(value: string): VaultRateLimiter {
   const colon = value.indexOf(':');
   const number = (text: string) => {
-    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(text.trim())) throw new RangeError(`'${text}' isn't a number.`);
+    if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(text.trim())) throw new RangeError(`'${text}' isn't a number.`);
     return Number(text);
   };
   if (colon >= 0) return new VaultRateLimiter(number(value.slice(0, colon)), parseInteger(value.slice(colon + 1)));

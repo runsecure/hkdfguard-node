@@ -216,7 +216,7 @@ function serverCertificates(tls: VaultTlsOptions): string[] | undefined {
     const directory = tls.serverCertificateDirectory;
     let names: string[];
     try {
-      names = readdirSync(directory).sort();
+      names = readdirSync(directory).sort(byCodeUnits);
     } catch (error) {
       throw new InvalidArgumentError(`The server CA certificate directory '${directory}' can't be read: ${(error as NodeJS.ErrnoException).code ?? error}.`);
     }
@@ -410,4 +410,10 @@ function pemFromPkcs8(der: Buffer): Buffer {
   if (column !== 0) out[position++] = 0x0a;
   position += footer.copy(out, position);
   return out.subarray(0, position);
+}
+
+// Ordinal order, UTF-16 code unit by code unit: the same on every machine, unlike localeCompare.
+function byCodeUnits(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
 }

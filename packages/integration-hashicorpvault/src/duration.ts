@@ -74,6 +74,9 @@ function fraction(value: bigint, unit: bigint): string {
   const whole = value / unit;
   const rest = value % unit;
   if (rest === 0n) return `${whole}`;
-  const digits = rest.toString().padStart(unit.toString().length - 1, '0').replace(/0+$/, '');
-  return `${whole}.${digits}`;
+  const digits = rest.toString().padStart(unit.toString().length - 1, '0');
+  // Trailing zeros dropped; rest isn't zero, so a nonzero digit remains.
+  let end = digits.length;
+  while (digits[end - 1] === '0') end--;
+  return `${whole}.${digits.slice(0, end)}`;
 }

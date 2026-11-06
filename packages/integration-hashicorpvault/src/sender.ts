@@ -30,7 +30,11 @@ export function mountPathOr(options: VaultRequestOptions | undefined, defaultMou
   const mountPath = options?.mountPath;
   if (mountPath === undefined || mountPath === null) return defaultMountPath;
   if (typeof mountPath !== 'string') throw new TypeError('mountPath must be a string.');
-  return mountPath.replace(/^\/+|\/+$/g, '') || defaultMountPath;
+  let start = 0;
+  let end = mountPath.length;
+  while (start < end && mountPath[start] === '/') start++;
+  while (end > start && mountPath[end - 1] === '/') end--;
+  return mountPath.slice(start, end) || defaultMountPath;
 }
 
 /**

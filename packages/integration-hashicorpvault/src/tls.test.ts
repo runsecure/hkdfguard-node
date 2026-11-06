@@ -113,7 +113,7 @@ describe('VaultTlsOptions: trusting Vault', () => {
   for (const file of ['truststore.p12', 'truststore-openssl.p12']) {
     it(`trusts the CA certificates in a PKCS#12 trust store (${file})`, async () => {
       const port = await startServer();
-      await call(createVaultAgent(trustStore(file)), port);
+      await assert.doesNotReject(call(createVaultAgent(trustStore(file)), port));
     });
   }
 
@@ -137,7 +137,7 @@ describe('VaultTlsOptions: trusting Vault', () => {
       { serverCertificatePem: readFileSync(fixture('ca.pem')) },
       { serverCertificateDirectory: directory },
     ]) {
-      await call(createVaultAgent({ ...tls, serverName: 'vault.test' }), port);
+      await assert.doesNotReject(call(createVaultAgent({ ...tls, serverName: 'vault.test' }), port));
     }
   });
 

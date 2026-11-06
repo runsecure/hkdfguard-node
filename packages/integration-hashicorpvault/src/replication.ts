@@ -114,7 +114,7 @@ export const VaultReplication = {
       else merged.push(old, newState);
     }
     // strutil.RemoveDuplicates: trimmed, empties dropped, distinct, sorted.
-    return [...new Set(merged.map((s) => s.trim()).filter((s) => s !== ''))].sort();
+    return [...new Set(merged.map((s) => s.trim()).filter((s) => s !== ''))].sort(byCodeUnits);
   },
 } as const;
 
@@ -173,4 +173,11 @@ function header(headers: IncomingHttpHeaders, name: string): string | undefined 
 function parseIndex(digits: string, which: string): bigint {
   if (!/^\d+$/.test(digits) || BigInt(digits) > MAX_INDEX) throw new RangeError(`Invalid ${which} index in replication state header.`);
   return BigInt(digits);
+}
+
+// Ordinal order, UTF-16 code unit by code unit: what sort() does without a compare function, and,
+// unlike localeCompare, the same on every machine.
+function byCodeUnits(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
 }
