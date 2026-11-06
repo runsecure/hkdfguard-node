@@ -1,6 +1,6 @@
 {
   "name": "@runsecure/hkdfguard-diagnostics",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "HkdfGuard OpenTelemetry tracing, metrics and logging names and helpers shared by every HkdfGuard package.",
   "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
@@ -26,6 +26,6 @@
     "@runsecure/hkdfguard-test-support": "0.0.0"
   },
   "dependencies": {
-    "@opentelemetry/api": "1.9.1"
+    "@opentelemetry/api": "1.10.0"
   }
 }

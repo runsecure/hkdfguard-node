@@ -4,8 +4,8 @@ import { KeyFileError } from './errors.js';
 import type { KeyFileTrust } from './trust.js';
 
 /*
- * The Linux and macOS key-file location rules, and the two system calls they need. Node has both,
- * so no add-on is needed here: lstat (fs.lstatSync) describes the path itself, never what a symbolic
+ * The Linux and macOS location rules for key files and every other trusted file, and the two system
+ * calls they need. Node has both, so no add-on is needed here: lstat (fs.lstatSync) describes the path itself, never what a symbolic
  * link points to - its owner, group, permission bits and type - and readlink (fs.readlinkSync)
  * returns a link's stored target. The rules take those two calls as arguments, so the tests run them
  * against simulated filesystems on every platform.
@@ -32,11 +32,12 @@ export const OTHER_WRITE = 0o002;
 export const MAX_SYMBOLIC_LINKS = 40;
 
 /**
- * Decides whether a key file's path on Linux or macOS can be trusted: resolves it the way the kernel
- * would, from `/`, checking everything it passes through, and returns the resolved path, which
- * contains no symbolic links. Every directory and the file itself must be owned by root or a
- * {@link KeyFileTrust.unixUserIds} user, must not be writable by others, and may be writable by its
- * group only if that is a {@link KeyFileTrust.unixGroupIds} group. A symbolic link is followed only
+ * Decides whether a file's path on Linux or macOS can be trusted (a key file's, or any file
+ * readTrustedFile reads): resolves it the way the kernel would, from `/`, checking everything it
+ * passes through, and returns the resolved path, which contains no symbolic links. Every directory
+ * and the file itself must be owned by root or a {@link KeyFileTrust.unixUserIds} user, must not be
+ * writable by others, and may be writable by its group only if that is a
+ * {@link KeyFileTrust.unixGroupIds} group. A symbolic link is followed only
  * if a trusted user owns it, and its target is then checked in turn - so macOS's root-owned /etc to
  * private/etc works, and a link anyone else made doesn't. Nothing under /tmp, /var/tmp or another
  * world-writable directory passes, sticky or not.
@@ -70,7 +71,7 @@ export function resolveTrusted(path: string, trust: KeyFileTrust, getStatus: (pa
     if (name === '' || name === '.') continue;
 
     if (resolvedType !== 'directory') {
-      throw new KeyFileError('ENOENT', path, `Key file '${path}' runs through '${resolved}', which is not a directory.`);
+      throw new KeyFileError('ENOENT', path, `'${path}' runs through '${resolved}', which is not a directory.`);
     }
 
     if (name === '..') {
@@ -82,7 +83,7 @@ export function resolveTrusted(path: string, trust: KeyFileTrust, getStatus: (pa
     const candidate = resolved === '/' ? `/${name}` : `${resolved}/${name}`;
     const status = getStatus(candidate);
     if (status === undefined) {
-      throw new KeyFileError('ENOENT', path, `Key file '${path}' was not found ('${candidate}' does not exist).`);
+      throw new KeyFileError('ENOENT', path, `'${path}' was not found ('${candidate}' does not exist).`);
     }
 
     if (status.type === 'symbolic link') {
@@ -121,10 +122,10 @@ function isTrustedUser(uid: number, trust: KeyFileTrust): boolean {
   return uid === 0 || trust.unixUserIds.includes(uid);
 }
 
-/** The refusal of a key file whose location isn't trusted: `code` 'EACCES', as Node reports a path it may not use. */
+/** The refusal of a file whose location isn't trusted (a key file, or any trusted file): `code` 'EACCES', as Node reports a path it may not use. */
 export function untrusted(path: string, why: string): KeyFileError {
   return new KeyFileError('EACCES', path,
-    `Key file '${path}' is not trusted: ${why}. Keep key files where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.`);
+    `'${path}' is not trusted: ${why}. Keep it where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.`);
 }
 
 // Empty components (from "//" or a trailing "/") are kept, as .NET's Split keeps them, and skipped like ".".

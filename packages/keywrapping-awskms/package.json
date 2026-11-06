@@ -1,6 +1,6 @@
 {
   "name": "@runsecure/hkdfguard-keywrapping-awskms",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "HkdfGuard KeyWrapper over one symmetric AWS KMS key (AWS SDK for JavaScript v3), reading key files only from where no untrusted account could have replaced them.",
   "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
@@ -20,12 +20,12 @@
     "test": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@aws-sdk/client-kms": "3.1149.0",
-    "@runsecure/hkdfguard-abstractions": "0.9.0",
-    "@runsecure/hkdfguard-securefile": "0.9.0"
+    "@aws-sdk/client-kms": "3.1162.0",
+    "@runsecure/hkdfguard-abstractions": "0.9.1",
+    "@runsecure/hkdfguard-securefile": "0.9.1"
   },
   "devDependencies": {
-    "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.0",
+    "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.1",
     "@runsecure/hkdfguard-test-support": "0.0.0"
   },
   "engines": {

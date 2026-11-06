@@ -13,16 +13,18 @@ import { keyFileDirectory, windowsCurrentUserSid } from '@runsecure/hkdfguard-te
 import { decodeInto, encodedLength, encodeInto } from './base64.js';
 import { HashiCorpVaultTransitError } from './errors.js';
 import { KeyFileError, KeyFileTrust } from './index.js';
-import { HashiCorpVaultTransitKeyWrapperOptions } from './options.js';
-import { StaticVaultTokenSource, type VaultTokenSource } from './token.js';
+import {
+  MAX_RETRY_COUNT, MAX_RETRY_DELAY_MS, MAX_TIMEOUT_MS, MIN_RETRY_COUNT, retryDelay,
+} from '@runsecure/hkdfguard-integration-hashicorpvault';
+import { MAX_TOKEN_LENGTH, StaticVaultTokenSource, type HashiCorpVaultTransitKeyWrapperOptions, type VaultTokenSource } from './index.js';
 import {
   GENERATED_KEY_LENGTH, HashiCorpVaultTransitKeyWrapper, isVaultCiphertext, MAX_CONTEXT_LENGTH, MAX_KEY_NAME_LENGTH, MAX_PLAINTEXT_LENGTH,
-  MAX_RESPONSE_LENGTH, MAX_TOKEN_LENGTH, retryDelay,
+  MAX_RESPONSE_LENGTH,
 } from './wrapper.js';
 
 const CONTEXT = 'hkdfguard.test';
 const CONTEXT_BASE64 = Buffer.from(CONTEXT).toString('base64');
-const Limits = HashiCorpVaultTransitKeyWrapperOptions;
+const Limits = { MIN_RETRY_COUNT, MAX_RETRY_COUNT, MAX_RETRY_DELAY_MS, MAX_TIMEOUT_MS };
 const isWindows = process.platform === 'win32';
 const isUnix = process.platform === 'linux' || (process.platform === 'darwin' && process.arch === 'arm64');
 
@@ -442,7 +444,8 @@ describe('constructing a HashiCorpVaultTransitKeyWrapper', () => {
   ];
   const wrongTypes = [
     { mountPath: 42 }, { mountPath: null }, { namespace: 7 }, { namespace: null }, { timeoutMs: '30' }, { retryCount: '3' }, { retryDelayMs: null },
-    { agent: 'tls' }, { keyFileTrust: 'administrators' }, { keyFileTrust: null },
+    { agent: 'tls' }, { keyFileTrust: 'administrators' }, { keyFileTrust: null }, { tls: 'tls' }, { tls: null }, { tls: { serverName: '' } },
+    { tls: { clientCertificateFile: 'myapp.pem' } }, { agent: new HttpsAgent(), tls: {} },
   ] as unknown as HashiCorpVaultTransitKeyWrapperOptions[];
   for (const invalid of [...invalidValues, ...wrongTypes]) {
     it(`refuses the option ${JSON.stringify(invalid)}`, () => {

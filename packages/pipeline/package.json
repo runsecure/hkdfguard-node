@@ -1,0 +1,35 @@
+{
+  "name": "@runsecure/hkdfguard-pipeline",
+  "version": "0.9.1",
+  "description": "HkdfGuard secret pipeline writers' shared base: pulls a fixed list of secrets from a secret store, encrypts each at once with a PipelineDataProtector bound to its file name, keeps only ciphertext, and writes one file per secret - the folder layout FilePerSecretCache reads.",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test*"
+  ],
+  "scripts": {
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@runsecure/hkdfguard-abstractions": "0.9.1",
+    "@runsecure/hkdfguard-cache": "0.9.1"
+  },
+  "devDependencies": {
+    "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.1",
+    "@runsecure/hkdfguard-dek": "0.9.1",
+    "@runsecure/hkdfguard-securefile": "0.9.1",
+    "@runsecure/hkdfguard-test-support": "0.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

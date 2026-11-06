@@ -5,6 +5,14 @@ import { AttributeNames, HkdfGuardTelemetry, SpanNames } from '@runsecure/hkdfgu
  * Several read-only caches behind one lookup: decrypt and maxDecryptedLength ask each source in the
  * order it was added and return the first match. It never stores a value of its own - add registers
  * a source - so writing stays with whichever sources support it (a ProtectedCache can be one).
+ *
+ * A source that throws fails the lookup, even when a later source holds the name: a source that
+ * couldn't answer can't say whether it holds the name, and answering from a later source could
+ * return a value an earlier one overrides. Order sources so that cannot cost availability: add local
+ * sources (ProtectedCache, FilePerSecretCache) before remote ones (a RemoteSecretCache such as the
+ * Key Vault or Secrets Manager caches). A remote cache doesn't remember a name its store lacks, so a
+ * remote source added first makes a network call for every local-only name on every lookup - enough
+ * to be throttled, and then to fail every lookup.
  */
 export class ProtectedCacheCollection implements ProtectedReadOnlyCache {
   readonly #sources: ProtectedReadOnlyCache[];

@@ -34,6 +34,9 @@ export interface KeyFileTrustOptions {
  * it is a developer machine: an application that can rewrite its own key files can be made to roll
  * back to an older one.
  *
+ * {@link readTrustedFile} holds secret files, certificates and any other file it reads to the same
+ * rules, with the same trust.
+ *
  * Immutable, and every list is copied, so a list changed afterwards doesn't change what is trusted:
  *
  * ```ts

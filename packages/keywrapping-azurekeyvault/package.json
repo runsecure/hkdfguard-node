@@ -1,6 +1,6 @@
 {
   "name": "@runsecure/hkdfguard-keywrapping-azurekeyvault",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "HkdfGuard KeyWrapper over an RSA wrapping key and an EC P-256 signing key in Azure Key Vault (Azure SDK for JavaScript), reading key files only from where no untrusted account could have replaced them.",
   "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
@@ -21,13 +21,13 @@
   },
   "dependencies": {
     "@azure/keyvault-keys": "4.10.2",
-    "@runsecure/hkdfguard-abstractions": "0.9.0",
-    "@runsecure/hkdfguard-securefile": "0.9.0"
+    "@runsecure/hkdfguard-abstractions": "0.9.1",
+    "@runsecure/hkdfguard-securefile": "0.9.1"
   },
   "devDependencies": {
     "@azure/core-rest-pipeline": "1.25.0",
-    "@azure/identity": "4.13.3",
-    "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.0",
+    "@azure/identity": "4.14.1",
+    "@runsecure/hkdfguard-cryptoprovider-aesgcm256": "0.9.1",
     "@runsecure/hkdfguard-test-support": "0.0.0"
   },
   "engines": {

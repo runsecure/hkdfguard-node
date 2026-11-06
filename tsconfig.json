@@ -26,6 +26,9 @@
       "path": "packages/keywrapping-googlekms"
     },
     {
+      "path": "packages/integration-hashicorpvault"
+    },
+    {
       "path": "packages/keywrapping-hashicorpvault"
     },
     {
@@ -47,10 +50,34 @@
       "path": "packages/cache-hashicorpvault"
     },
     {
+      "path": "packages/cache-jsonsecretsfile"
+    },
+    {
+      "path": "packages/pipeline"
+    },
+    {
+      "path": "packages/pipeline-hashicorpvault"
+    },
+    {
+      "path": "packages/pipeline-awssecretsmanager"
+    },
+    {
+      "path": "packages/pipeline-azurekeyvault"
+    },
+    {
+      "path": "packages/pipeline-googlesecretmanager"
+    },
+    {
       "path": "packages/encryptedconfig"
     },
     {
       "path": "packages/cryptoprovider-aesgcm256"
+    },
+    {
+      "path": "packages/integration-configurationresolver"
+    },
+    {
+      "path": "packages/options-certificate"
     },
     {
       "path": "packages/integration"

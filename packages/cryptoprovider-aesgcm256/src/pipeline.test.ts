@@ -1,5 +1,8 @@
 import { strict as assert } from 'node:assert';
-import { randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
+import { once } from 'node:events';
+import { Writable } from 'node:stream';
 import { describe, it } from 'node:test';
 import {
   AuthenticationFailedError, ClosedError, EncryptionLimitReachedError, InvalidArgumentError, InvalidConfigurationKeyError, isZero,
@@ -116,5 +119,102 @@ describe('AesGcmPipelineDataProtector', () => {
 
   it('requires a format provider', () => {
     assert.throws(() => new AesGcmPipelineDataProtector(undefined as unknown as EncryptedFormatProvider, 1), InvalidArgumentError);
+  });
+});
+
+describe('AesGcmPipelineDataProtector.writeDek', () => {
+  /** A Writable that keeps both the very chunk it is handed and a copy of it as it was then. */
+  class RecordingStream extends Writable {
+    readonly handed: Uint8Array[] = [];
+    readonly copies: Buffer[] = [];
+
+    constructor(private readonly delayMs = 0) {
+      super({ highWaterMark: 1 });
+    }
+
+    override _write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+      this.handed.push(chunk);
+      this.copies.push(Buffer.from(chunk));
+      setTimeout(callback, this.delayMs);
+    }
+  }
+
+  it('writes the base64 key as ASCII, without a line ending, and leaves the stream open', async () => {
+    const key = new Uint8Array(randomBytes(32));
+    const p = pipelineForTests(new TestFormatProvider(), 1, { key: Uint8Array.from(key) });
+    const stdin = new RecordingStream();
+
+    await p.writeDek(stdin);
+
+    const written = Buffer.concat(stdin.copies);
+    assert.deepEqual(written, Buffer.from(Buffer.from(key).toString('base64'), 'ascii'));
+    assert.equal(written.length, 44);
+    assert.ok(stdin.writable && !stdin.writableEnded);
+  });
+
+  it('zeroes the bytes it wrote once the stream accepts them, leaving keyBase64 alone', async () => {
+    const p = newPipeline();
+    const encoded = Uint8Array.from(p.keyBase64());
+    const stdin = new RecordingStream(20);
+
+    const writing = p.writeDek(stdin);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(stdin.handed.length === 1 && !isZero(stdin.handed[0]!), 'zeroed before the write called back');
+    await writing;
+
+    assert.ok(Buffer.isBuffer(stdin.handed[0]) && isZero(stdin.handed[0]!));
+    assert.deepEqual(new Uint8Array(stdin.copies[0]!), encoded);
+    assert.deepEqual(p.keyBase64(), encoded);
+  });
+
+  it('hands the key to a child process\'s standard input', async () => {
+    const key = new Uint8Array(randomBytes(32));
+    const p = pipelineForTests(new TestFormatProvider(), 1, { key: Uint8Array.from(key) });
+    // Prints the length and SHA-256 of everything it reads, never the bytes.
+    const child = spawn(process.execPath, ['-e', `
+      const chunks = [];
+      process.stdin.on('data', (c) => chunks.push(c)).on('end', () => {
+        const all = Buffer.concat(chunks);
+        process.stdout.write(all.length + ' ' + require('node:crypto').createHash('sha256').update(all).digest('hex'));
+      });`], { stdio: ['pipe', 'pipe', 'inherit'] });
+    let output = '';
+    child.stdout.setEncoding('utf8').on('data', (c: string) => { output += c; });
+    const exited = once(child, 'exit');
+
+    await p.writeDek(child.stdin);
+    child.stdin.end();
+    assert.deepEqual(await exited, [0, null]);
+
+    const expected = Buffer.from(Buffer.from(key).toString('base64'), 'ascii');
+    assert.equal(output, `44 ${createHash('sha256').update(expected).digest('hex')}`);
+  });
+
+  it('refuses no stream, a closed protector and an aborted signal, writing nothing', async () => {
+    const p = newPipeline();
+    await assert.rejects(p.writeDek(undefined as unknown as Writable), TypeError);
+    const stdin = new RecordingStream();
+    await assert.rejects(p.writeDek(stdin, AbortSignal.abort()), { name: 'AbortError' });
+
+    p.close();
+    await assert.rejects(p.writeDek(stdin), ClosedError);
+    assert.equal(stdin.copies.length, 0);
+  });
+
+  it('rejects with the stream\'s failure, and zeroes what it handed over', async () => {
+    const p = newPipeline();
+    let handed: Uint8Array | undefined;
+    const failing = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        handed = chunk;
+        setImmediate(() => callback(new Error('EPIPE')));
+      },
+    });
+
+    await assert.rejects(p.writeDek(failing), /EPIPE/);
+    assert.ok(handed !== undefined && isZero(handed));
+
+    const ended = new RecordingStream();
+    ended.end();
+    await assert.rejects(p.writeDek(ended), { code: 'ERR_HKDFGUARD_INVALID_STATE' });
   });
 });

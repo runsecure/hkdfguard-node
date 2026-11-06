@@ -1,3 +1,4 @@
+import type { Writable } from 'node:stream';
 import type { RefreshFailurePolicy } from './policy.js';
 
 /**
@@ -173,7 +174,103 @@ export interface PipelineDataProtector {
    */
   keyBase64(): Uint8Array;
 
+  /**
+   * Writes the key to `destination` exactly as the wrap tool's `--dek-stdin` reads it - its base64
+   * form as ASCII, with no line ending - resolving once the stream has accepted it: the stdin of
+   * `hkdfguard wrap ... --dek-stdin`, or of `ssh -T host sudo -n hkdfguard wrap ... --dek-stdin`.
+   * The bytes are written from a buffer of their own, zeroed once the write completes; no string is
+   * ever made of them. `destination` is left open: end it afterwards, so the tool sees the end of
+   * its input. The stream must be done with the bytes when its write calls back, as a process's
+   * stdin, a socket or a file stream is - not one that hands the same buffer on, such as a PassThrough.
+   * @param destination where to write the key: a process's standard input
+   * @param signal cancels the write; the destination is then unusable - destroy it
+   * @throws TypeError (rejecting) destination isn't a Writable
+   * @throws ClosedError (rejecting) the protector has been closed
+   * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) destination has already ended or been destroyed
+   */
+  writeDek(destination: Writable, signal?: AbortSignal): Promise<void>;
+
   close(): void;
+}
+
+/**
+ * The end of a provisioning pipeline that delivers secrets from a secret store as one encrypted file
+ * per secret - the folder layout FilePerSecretCache reads at runtime - before a durable KEK exists.
+ * An implementation is given the secrets to pull and a {@link PipelineDataProtector} when it is
+ * created; {@link pullSecrets} reads each secret and encrypts it at once, bound to its file name,
+ * keeping only the encrypted value; {@link writeProtectedSecretFiles} then writes one file per
+ * secret, or {@link writeJsonSecrets} one JSON file of them all - each also to a stream
+ * ({@link writeProtectedSecretFilesTo}, {@link writeJsonSecretsTo}), for a remote command's stdin. No key ring is involved: the protector's key is the only one, and it is handed to the
+ * native platform's wrap process once the files are written.
+ *
+ * The protector belongs to the caller and is never closed by the writer. Closing the writer
+ * releases its connection to the secret store.
+ */
+export interface SecretPipelineWriter {
+  /**
+   * Every secret pulled, by file name: its value encrypted by the protector and formatted, as its
+   * file will hold it. Empty until {@link pullSecrets} completes.
+   */
+  readonly protectedSecrets: ReadonlyMap<string, string>;
+
+  /**
+   * Reads every secret the writer was created with and encrypts each value, keeping it in
+   * {@link protectedSecrets} - replacing whatever an earlier pull kept.
+   * @param signal cancels the reads
+   * @throws SecretsNotFoundError (rejecting; ERR_HKDFGUARD_SECRETS_NOT_FOUND) a secret has no value;
+   *   every other secret is kept
+   */
+  pullSecrets(signal?: AbortSignal): Promise<void>;
+
+  /**
+   * Writes every secret in {@link protectedSecrets} as a file in `folderPath`, creating the folder if
+   * it doesn't exist: the file named for it, holding its encrypted, formatted value as UTF-8.
+   * @param folderPath the folder to write to, absolute or relative to the working directory
+   * @throws TypeError (rejecting) folderPath isn't a string
+   * @throws InvalidArgumentError (rejecting) folderPath is empty
+   * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed
+   */
+  writeProtectedSecretFiles(folderPath: string): Promise<void>;
+
+  /**
+   * Writes every secret in {@link protectedSecrets} to one JSON file at `filePath`, creating its
+   * folder if it doesn't exist: a single object with a member per secret, its file name mapped to
+   * its encrypted, formatted value. A file already there is replaced.
+   * @param filePath the file to write, absolute or relative to the working directory
+   * @throws TypeError (rejecting) filePath isn't a string
+   * @throws InvalidArgumentError (rejecting) filePath is empty
+   * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed
+   */
+  writeJsonSecrets(filePath: string): Promise<void>;
+
+  /**
+   * Writes every secret in {@link protectedSecrets} to `destination` as a tar archive of the files
+   * {@link writeProtectedSecretFiles} would write - for a remote tar to unpack, e.g. the stdin of
+   * `ssh -T host sudo -n tar -x --no-same-owner -f - -C folder` - resolving once the stream has
+   * accepted all of it. `destination` is left open: end it afterwards, so tar sees the end of its input.
+   * @param destination where to write the archive: a process's standard input
+   * @param signal cancels the write; the destination then holds part of an archive - destroy it
+   * @throws TypeError (rejecting) destination isn't a Writable
+   * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed, or
+   *   destination has already ended or been destroyed
+   */
+  writeProtectedSecretFilesTo(destination: Writable, signal?: AbortSignal): Promise<void>;
+
+  /**
+   * Writes every secret in {@link protectedSecrets} to `destination` as the JSON object
+   * {@link writeJsonSecrets} would write - for a remote command to store, e.g. the stdin of
+   * `ssh -T host sudo -n tee /etc/app/secrets.json` - resolving once the stream has accepted it.
+   * `destination` is left open: end it afterwards, so the remote command sees the end of its input.
+   * @param destination where to write the JSON: a process's standard input
+   * @param signal cancels the write
+   * @throws TypeError (rejecting) destination isn't a Writable
+   * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed, or
+   *   destination has already ended or been destroyed
+   */
+  writeJsonSecretsTo(destination: Writable, signal?: AbortSignal): Promise<void>;
+
+  /** Releases the writer's connection to the secret store. Safe to call more than once. */
+  close(): Promise<void>;
 }
 
 /**

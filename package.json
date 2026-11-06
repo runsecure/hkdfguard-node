@@ -13,6 +13,7 @@
     "packages/keywrapping-awskms",
     "packages/keywrapping-azurekeyvault",
     "packages/keywrapping-googlekms",
+    "packages/integration-hashicorpvault",
     "packages/keywrapping-hashicorpvault",
     "packages/dek",
     "packages/cache",
@@ -20,7 +21,15 @@
     "packages/cache-azurekeyvault",
     "packages/cache-googlesecretmanager",
     "packages/cache-hashicorpvault",
+    "packages/cache-jsonsecretsfile",
+    "packages/pipeline",
+    "packages/pipeline-hashicorpvault",
+    "packages/pipeline-awssecretsmanager",
+    "packages/pipeline-azurekeyvault",
+    "packages/pipeline-googlesecretmanager",
     "packages/encryptedconfig",
+    "packages/integration-configurationresolver",
+    "packages/options-certificate",
     "packages/integration"
   ],
   "scripts": {
@@ -33,6 +42,6 @@
   },
   "devDependencies": {
     "@types/node": "22.20.5",
-    "typescript": "5.9.3"
+    "typescript": "6.0.3"
   }
 }
