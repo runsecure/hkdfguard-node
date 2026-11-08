@@ -1,9 +1,10 @@
-// Reading certificate and key files: every file read whole into a Buffer sized once - libuv reads
-// straight into it, so a key file is never copied anywhere that can't be wiped - and its certificates
-// and keys found in it without its contents becoming a string. Never exported from the package index.
+// Reading certificate and key files: every file read whole, from a trusted location only, into a
+// Buffer sized once - libuv reads straight into it, so a key file is never copied anywhere that
+// can't be wiped - and its certificates and keys found in it without its contents becoming a string.
+// Never exported from the package index.
 import { createPrivateKey, createPublicKey, type KeyObject } from 'node:crypto';
-import { open } from 'node:fs/promises';
 import { wipe } from '@runsecure/hkdfguard-abstractions';
+import { FILE_TOO_LARGE, KeyFileError, readTrustedFile, type KeyFileTrust } from '@runsecure/hkdfguard-securefile';
 import { InvalidCertificateFileError, UnsupportedCertificateError } from './errors.js';
 import * as pbe from './pbe.js';
 import { decodeBase64, pemBlocks } from './pem.js';
@@ -13,34 +14,31 @@ import { parseCertificate, type ParsedCertificate } from './x509.js';
 const PLAIN_KEYS: Record<string, 'pkcs8' | 'pkcs1' | 'sec1'> = { 'PRIVATE KEY': 'pkcs8', 'RSA PRIVATE KEY': 'pkcs1', 'EC PRIVATE KEY': 'sec1' };
 
 /**
- * A whole file, read into a new Buffer sized once, which the caller wipes.
- * @throws the operating system's error (ENOENT, EACCES...) for a file that can't be read
- * @throws InvalidCertificateFileError it is far larger than any certificate or key file, or changed while it was read
+ * A whole certificate or key file, in a new Buffer the caller wipes - read through readTrustedFile
+ * (@runsecure/hkdfguard-securefile), so it is refused unless only the operating system's
+ * administrators and `trust` could have written or replaced it, or any folder above it, with no
+ * untrusted symbolic link on the way: whoever can replace a key file chooses the key the
+ * application serves TLS with, or signs as. At most one byte past {@link MAX_FILE_LENGTH} is read,
+ * whatever the file reports as its length.
+ * @param path the file, absolute or relative to the working directory
+ * @param trust who besides administrators may have written it
+ * @param signal checked before anything is examined
+ * @throws KeyFileError 'ENOENT' (no such file), 'EACCES' (this account may not read it, or its
+ *   location isn't trusted - the message says what), or the system's code
+ * @throws InvalidCertificateFileError it is far larger than any certificate or key file
  */
-export async function readWholeFile(path: string): Promise<Buffer> {
-  const handle = await open(path, 'r');
+export async function readWholeFile(path: string, trust: KeyFileTrust, signal?: AbortSignal): Promise<Buffer> {
+  let contents: Uint8Array;
   try {
-    const { size } = await handle.stat();
-    if (size > MAX_FILE_LENGTH) throw new InvalidCertificateFileError(`'${path}' is ${size} bytes: too large to be a certificate or key file.`);
-    const data = Buffer.alloc(size);
-    let read = 0;
-    while (read < size) {
-      const { bytesRead } = await handle.read(data, read, size - read, read);
-      if (bytesRead === 0) break;
-      read += bytesRead;
+    contents = await readTrustedFile(path, trust, MAX_FILE_LENGTH, signal);
+  } catch (error) {
+    if (error instanceof KeyFileError && error.code === FILE_TOO_LARGE) {
+      throw new InvalidCertificateFileError(`'${path}' is longer than ${MAX_FILE_LENGTH} bytes: too large to be a certificate or key file.`, { cause: error });
     }
-    // One byte more would mean the file grew while it was read.
-    const probe = Buffer.alloc(1);
-    const { bytesRead: extra } = await handle.read(probe, 0, 1, read);
-    if (read !== size || extra !== 0) {
-      wipe(data);
-      wipe(probe);
-      throw new InvalidCertificateFileError(`'${path}' changed while it was read.`);
-    }
-    return data;
-  } finally {
-    await handle.close();
+    throw error;
   }
+  // A view, not a copy: wiping the Buffer wipes the bytes readTrustedFile returned.
+  return Buffer.from(contents.buffer, contents.byteOffset, contents.byteLength);
 }
 
 const failIn = (path: string) => (problem: string) => new InvalidCertificateFileError(`'${path}': ${problem}`);

@@ -7,12 +7,11 @@
 // docs/how-to/use-certificate-options.md.
 import assert from 'node:assert/strict';
 import { constants, publicEncrypt, verify } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { createServer } from 'node:tls';
-import { certificate, ecKey, handshake, loader, pem } from './certificates.test-support.js';
+import { certificate, ecKey, FILE_TRUST, handshake, loader, pem, trustedDirectory } from './certificates.test-support.js';
 import * as der from './der.js';
 import {
   CertificateOptionsLoader, InvalidCertificateFileError, OpenSslProviderUnavailableError, UnsupportedCertificateError, type CertificateOptions,
@@ -20,8 +19,9 @@ import {
 import { decodeBase64, pemBlocks } from './pem.js';
 import { pkcs11UriPem } from './provider.js';
 
-const directory = mkdtempSync(join(tmpdir(), 'hkdfguard-certificate-provider-'));
-after(() => rmSync(directory, { recursive: true, force: true }));
+// Where the files the tests write go: a folder readTrustedFile trusts, or none, with those tests skipped.
+const { directory, skip, cleanUp } = trustedDirectory('hkdfguard-certificate-provider-');
+after(cleanUp);
 
 describe('Linux OpenSSL provider keys', () => {
   it("writes a pkcs11: URI as pkcs11-provider's URI PEM", () => {
@@ -36,12 +36,12 @@ describe('Linux OpenSSL provider keys', () => {
     assert.equal(uri!.contents.toString(), 'pkcs11:token=hkdfguard;object=tls;type=private');
   });
 
-  it("refuses at load time a provider key this Node's OpenSSL can't decode", async () => {
+  it("refuses at load time a provider key this Node's OpenSSL can't decode", { skip }, async () => {
     // A Node without the provider configured - as this test's is, unless it was started with one - has
     // no decoder for a TSS2 key or a PKCS#11 URI.
-    const certificatePath = join(directory, 'tls.crt');
+    const certificatePath = join(directory!,'tls.crt');
     writeFileSync(certificatePath, pem(certificate(ecKey())));
-    const keyPath = join(directory, 'tls-key.pem');
+    const keyPath = join(directory!,'tls-key.pem');
     writeFileSync(keyPath, '-----BEGIN TSS2 PRIVATE KEY-----\nAAAA\n-----END TSS2 PRIVATE KEY-----\n');
     for (const keyUri of [keyPath, 'pkcs11:token=hkdfguard-no-such-token;object=none;type=private']) {
       await assert.rejects(loader({ platform: 'linux' }).load({ linux: { provider: 'tpm2', keyUri, certificateFile: certificatePath } }),
@@ -54,10 +54,10 @@ describe('Linux OpenSSL provider keys', () => {
     }
   });
 
-  it('refuses a key file OpenSSL would read into the process', async () => {
-    const certificatePath = join(directory, 'plain.crt');
+  it('refuses a key file OpenSSL would read into the process', { skip }, async () => {
+    const certificatePath = join(directory!,'plain.crt');
     writeFileSync(certificatePath, pem(certificate(ecKey())));
-    const keyPath = join(directory, 'plain-key.pem');
+    const keyPath = join(directory!,'plain-key.pem');
     writeFileSync(keyPath, ecKey().privateKey.export({ format: 'pem', type: 'pkcs8' }));
     await assert.rejects(loader({ platform: 'linux' }).load({ linux: { keyUri: keyPath, certificateFile: certificatePath } }),
       (error: Error) => error instanceof InvalidCertificateFileError && /a key OpenSSL would read into the process/.test(error.message));
@@ -75,8 +75,8 @@ describe('a real OpenSSL provider key', {
   skip: provider === undefined ? 'set HKDFGUARD_TEST_OPENSSL_PROVIDER, HKDFGUARD_TEST_OPENSSL_PROVIDER_KEY_URI and HKDFGUARD_TEST_OPENSSL_PROVIDER_CERTIFICATE' : false,
 }, () => {
   it('serves TLS handshakes, and signs, through the provider', async () => {
-    const loaded = await new CertificateOptionsLoader().load(realOptions());
-    const trusted = await new CertificateOptionsLoader().load(realOptions(false));
+    const loaded = await new CertificateOptionsLoader({ fileTrust: FILE_TRUST }).load(realOptions());
+    const trusted = await new CertificateOptionsLoader({ fileTrust: FILE_TRUST }).load(realOptions(false));
     try {
       assert.equal(loaded.keyLocation, `the OpenSSL provider '${provider}'`);
       // The provisioning scripts' certificates name whatever they were given, not this host. Each

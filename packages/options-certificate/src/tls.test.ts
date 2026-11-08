@@ -2,23 +2,23 @@
 // and chain a PKCS#12 or PEM file gives (configureServer, and an SNICallback's context), a client
 // that trusts it alone, and client authentication.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import {
-  certificate, ecKey, FakePasswords, fixture, fixtureCertificateDer, handshake, loader, pem, pemOptions, pfxOptions, pkcs12, rsaKey, utf8,
+  certificate, ecKey, FakePasswords, fixture, fixtureCertificateDer, handshake, loader, pem, pemOptions, pfxOptions, pkcs12, rsaKey, trustedDirectory, utf8,
 } from './certificates.test-support.js';
 import { createServer, type Server } from 'node:tls';
 import { ClosedError, InvalidArgumentError } from '@runsecure/hkdfguard-abstractions';
 import { NoPrivateKeyError } from './index.js';
 
-const directory = mkdtempSync(join(tmpdir(), 'hkdfguard-certificate-tls-'));
-after(() => rmSync(directory, { recursive: true, force: true }));
+// Where the files the tests write go: a folder readTrustedFile trusts, or none, with the tests skipped.
+const { directory, skip, cleanUp } = trustedDirectory('hkdfguard-certificate-tls-');
+after(cleanUp);
 
 const realNow = {};
 
-describe('createSecureContext with a file key', () => {
+describe('createSecureContext with a file key', { skip }, () => {
   for (const [file, certificateFile] of [['openssl-aes.pfx', 'rsa.crt'], ['openssl-ec.pfx', 'ec.crt'], ['dotnet-default.pfx', 'rsa.crt']] as const) {
     it(`serves a TLS handshake from ${file}, to a client trusting the certificate alone`, async () => {
       const server = await loader({ passwords: new FakePasswords(), ...realNow }).load(pfxOptions(fixture(file)));
@@ -37,7 +37,7 @@ describe('createSecureContext with a file key', () => {
     const serverLeaf = certificate(ecKey(), { issuer: { key: caKey, name: 'CN=Test CA' }, ca: false, now: new Date(), notAfterDays: 2 });
     const clientLeaf = certificate(rsaKey(), { subject: 'CN=client.example.com', issuer: { key: caKey, name: 'CN=Test CA' }, ca: false, now: new Date(), notAfterDays: 2 });
     const write = (name: string, data: Buffer | string) => {
-      const path = join(directory, name);
+      const path = join(directory!, name);
       writeFileSync(path, data);
       return path;
     };

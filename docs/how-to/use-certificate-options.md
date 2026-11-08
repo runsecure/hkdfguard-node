@@ -24,6 +24,8 @@ import { CertificateOptionsLoader, certificateOptionsFromJson } from '@runsecure
 
 const options = certificateOptionsFromJson(readFileSync('appsettings.json', 'utf8'), 'Certificate');
 // passwords: the ProtectedReadOnlyCache a file's password is in - a FilePerSecretCache, say.
+// fileTrust: who besides administrators may have written the certificate and key files (a KeyFileTrust);
+// administrators only when left out.
 const certificate = await new CertificateOptionsLoader({ passwords }).load(options, 'tls');
 
 const server = createServer((request, response) => response.end('hello'));
@@ -180,6 +182,15 @@ Windows exports) is refused: re-export it with `openssl pkcs12 -export` from Ope
 > JavaScript - the copies OpenSSL makes, and the PEM a TLS context is made from - is listed in the
 > package README. `AllowUnprotectedPrivateKey` accepts a key file with no password; set it only for
 > development.
+>
+> Every certificate and key file - `Path`, `KeyPath`, a Linux source's `CertificateFile` and key
+> file - is read through `readTrustedFile` (`@runsecure/hkdfguard-securefile`), and refused unless
+> it, and every folder above it, is owned by an administrator (root; SYSTEM, Administrators or
+> TrustedInstaller) or a principal in the loader's `fileTrust`, and writable by no one else, with no
+> untrusted symbolic link on the way: whoever can replace a key file chooses the key the
+> application serves TLS with. Give `fileTrust` a `KeyFileTrust` naming the account your deployment
+> writes the files as - never the account the application runs as, outside a developer machine.
+> A refusal rejects with `KeyFileError`, code `EACCES`, saying what isn't trusted.
 
 ## 4. Run the opt-in tests
 

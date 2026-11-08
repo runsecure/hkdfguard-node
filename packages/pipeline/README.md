@@ -10,7 +10,9 @@ its file name, keeps only the ciphertext, and writes one file per secret - the f
   or `name#key` for a member of a secret holding a JSON object - groups them so each secret is read
   once, names each file (`/` and `#` become `__`: `prod/app#password` is `prod__app__password`),
   refuses names `FilePerSecretCache` couldn't read or that differ only in case, encrypts every value
-  bound to its file name, and writes the files (UTF-8, no BOM, replacing only its own) - or one
+  bound to its file name, and writes the files (UTF-8, no BOM, replacing only its own; each written
+  whole to a temporary name and renamed into place, mode 0644 in a 0755 folder, so a link planted at
+  a secret's path is replaced rather than written through, and a folder that is a link refused) - or one
   JSON file of them all (`writeJsonSecrets`, the file `JsonSecretsFileReadOnlyCache` reads), or
   either to a `Writable` such as an `ssh` child's stdin: `writeProtectedSecretFilesTo` (a PAX tar
   archive of the files, mode 0644, for `tar -x --no-same-owner -f -`) and `writeJsonSecretsTo`. A

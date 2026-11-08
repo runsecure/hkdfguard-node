@@ -46,7 +46,7 @@ implements no interface; the `pipeline-*` writers use `pipeline`, which uses `ca
 | `@runsecure/hkdfguard-pipeline-googlesecretmanager` | HkdfGuard.Pipeline.GoogleSecretManager | `GoogleSecretManagerSecretPipelineWriter` over one Google Cloud project's Secret Manager (`id` or `id#key`), the latest version read on the client's gRPC stub with the writer's own deserializer; each payload checked against its CRC32C and the secret it names, and zeroed, as is gRPC's received message; `create` for a client of its own (Application Default Credentials - Workload Identity on GKE) |
 | `@runsecure/hkdfguard-encryptedconfig` | HkdfGuard.EncryptedConfiguration | Reads pipeline-encrypted secrets from any configuration source (`envLookup`, `flattenJson`, `mapLookup`) |
 | `@runsecure/hkdfguard-integration-configurationresolver` | HkdfGuard.Integration.ConfigurationResolver, with the parts of ConfigurationResolver it uses | Resolves `${name}` templates from the protected caches: `ProtectedCacheValueProvider` over any cache, and `ResolvingProtectedCacheCollection`, which resolves the templates its sources hold and caches each result encrypted |
-| `@runsecure/hkdfguard-options-certificate` | HkdfGuard.Options.Certificate | `CertificateOptions` (Windows store, macOS keychain, Linux OpenSSL provider, or a password-protected PKCS#12/PEM file), its validator and `CertificateOptionsLoader`: a `LoadedCertificate` that signs and decrypts through the store - whose key is never exported - and serves TLS from a file or provider key. Its own N-API add-on on Windows and macOS |
+| `@runsecure/hkdfguard-options-certificate` | HkdfGuard.Options.Certificate | `CertificateOptions` (Windows store, macOS keychain, Linux OpenSSL provider, or a password-protected PKCS#12/PEM file), its validator and `CertificateOptionsLoader`: a `LoadedCertificate` that signs and decrypts through the store - whose key is never exported - and serves TLS from a file or provider key, every file read through `readTrustedFile`. Its own N-API add-on on Windows and macOS. Depends on `securefile` |
 
 ```ts
 import { NativeKeyWrapperV1 } from '@runsecure/hkdfguard-keywrapping-native-v1';
@@ -532,6 +532,10 @@ read, by a `SecretsNotFoundError` naming them all - the rest are kept, and can s
 other failure keeps nothing. A value that isn't UTF-8 text is refused with `InvalidSecretDataError`:
 the protector encrypts text. As in the caches, each response body is taken before the SDK parses
 it, so no value becomes a JavaScript string, and every buffer that held one is zeroed.
+`writeProtectedSecretFiles` and `writeJsonSecrets` write each file whole to a temporary name in its
+folder and rename it into place, mode 0644 in a 0755 folder (never wider, whatever the umask), so a
+reader never sees a partial file and a symbolic link planted at a secret's path is replaced rather
+than written through; a folder that is itself a symbolic link is refused.
 
 ```ts
 import { AesGcmPipelineDataProtector } from '@runsecure/hkdfguard-cryptoprovider-aesgcm256';
@@ -624,7 +628,11 @@ password-protected PKCS#12 or PEM file whose password comes from a protected cac
 stays in CNG or the keychain: `sign` and `decrypt` call the store through the package's own add-on,
 and TLS from it is refused, as Node's OpenSSL can't reach it. A file's key is decrypted by the
 package's own PKCS#12/PBES2 reader and held sealed; a provider's key is the provider's object in
-Node's OpenSSL, which loads the provider from `--openssl-config`.
+Node's OpenSSL, which loads the provider from `--openssl-config`. Every certificate and key file is
+read through `readTrustedFile` (`securefile`): one that anyone but administrators and the loader's
+`KeyFileTrust` (`fileTrust`, administrators only by default) could have written or replaced - or a
+folder above it, or a link on the way - is refused, since whoever can replace a key file chooses
+the key the application serves TLS with, or signs as.
 
 ```ts
 import { createServer } from 'node:https';

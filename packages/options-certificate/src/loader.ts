@@ -1,5 +1,6 @@
 import { createPublicKey, type KeyObject } from 'node:crypto';
 import { wipe, type ProtectedReadOnlyCache } from '@runsecure/hkdfguard-abstractions';
+import { KeyFileTrust } from '@runsecure/hkdfguard-securefile';
 import { DistinguishedName } from './dn.js';
 import {
   CertificateError, CertificateNotFoundError, CertificateNotValidNowError, InvalidCertificateFileError, InvalidCertificateOptionsError,
@@ -26,6 +27,17 @@ export interface CertificateOptionsLoaderConfig {
    * secret cache. Needed only for a file with a password.
    */
   passwords?: ProtectedReadOnlyCache;
+  /**
+   * Who, besides the operating system's administrators, may have written the certificate and key
+   * files the loader reads - a File source's path and keyPath, a Linux source's certificateFile and
+   * key file. Every file is read through readTrustedFile (@runsecure/hkdfguard-securefile): it is
+   * refused unless it, and every folder above it, is owned by a trusted principal and writable by no
+   * one else, with no untrusted symbolic link on the way - whoever can replace a key file chooses
+   * the key the application serves TLS with, or signs as. {@link KeyFileTrust.administratorsOnly}
+   * by default. Add the account your deployment writes the files as - never the account the
+   * application runs as, unless it is a developer machine.
+   */
+  fileTrust?: KeyFileTrust;
   /** The clock a certificate's validity is judged by; the system's by default. */
   now?: () => Date;
   /** The validator, for tests; this platform's by default. */
@@ -55,17 +67,23 @@ export function readOperatingSystemStore(location: StoreLocation, name: StoreNam
  *   buffer only while the key is read, and zeroed at once; it is never a string. The key is decrypted
  *   into a buffer of its own, sealed under a random key at once, and that buffer zeroed.
  *
- * Whatever the source, a certificate that isn't valid now, or that has no private key when one is
- * required, is refused.
+ * Every file - a certificate, a key, a provider's key file - is read from a trusted location only
+ * (see {@link CertificateOptionsLoaderConfig.fileTrust}). Whatever the source, a certificate that
+ * isn't valid now, or that has no private key when one is required, is refused.
  */
 export class CertificateOptionsLoader {
   readonly #passwords: ProtectedReadOnlyCache | undefined;
+  readonly #fileTrust: KeyFileTrust;
   readonly #now: () => Date;
   readonly #validator: CertificateOptionsValidator;
   readonly #readStore: StoreReader;
 
+  /** @throws TypeError fileTrust isn't a KeyFileTrust */
   constructor(config: CertificateOptionsLoaderConfig = {}) {
+    const trust = config.fileTrust ?? KeyFileTrust.administratorsOnly;
+    if (!(trust instanceof KeyFileTrust)) throw new TypeError('fileTrust must be a KeyFileTrust.');
     this.#passwords = config.passwords;
+    this.#fileTrust = trust;
     this.#now = config.now ?? (() => new Date());
     this.#validator = config.validator ?? new CertificateOptionsValidator();
     this.#readStore = config.storeReader ?? readOperatingSystemStore;
@@ -74,7 +92,7 @@ export class CertificateOptionsLoader {
   /**
    * Opens the certificate `options` describes.
    * @param name the options' name, for named options; only reported in a validation failure
-   * @param signal cancels reading the password
+   * @param signal cancels reading the password and the files
    * @throws InvalidCertificateOptionsError the options aren't valid on this operating system
    * @throws CertificateNotFoundError a store holds no certificate valid now (with its key, when required)
    * @throws CertificateNotValidNowError a file's certificate isn't valid now
@@ -85,13 +103,16 @@ export class CertificateOptionsLoader {
    * @throws WrongPasswordError the password doesn't open the key file
    * @throws OpenSslProviderUnavailableError a Linux key's provider isn't loaded into Node's OpenSSL
    * @throws UnsupportedCertificateError what this port can't open
-   * @throws the operating system's error (ENOENT, EACCES...) for a file that can't be read
+   * @throws KeyFileError (@runsecure/hkdfguard-securefile) a file can't be read - `code` 'ENOENT'
+   *   when it doesn't exist, 'EACCES' when this account may not read it or its location isn't
+   *   trusted (another account could have written or replaced it; see
+   *   {@link CertificateOptionsLoaderConfig.fileTrust})
    */
   async load(options: CertificateOptions, name?: string, signal?: AbortSignal): Promise<LoadedCertificate> {
     const failures = this.#validator.validate(options);
     if (failures.length > 0) throw new InvalidCertificateOptionsError(failures, name);
     const passwordName = passwordNameOf(options);
-    if (passwordName === undefined) return this.#open(options, undefined);
+    if (passwordName === undefined) return this.#open(options, undefined, signal);
 
     if (this.#passwords === undefined) {
       throw new NoPasswordSourceError("The certificate's key file has a password, but the loader was given no password source to read it from.");
@@ -102,18 +123,19 @@ export class CertificateOptionsLoader {
     try {
       const written = await this.#passwords.decrypt(passwordName, password, signal);
       if (written === 0) throw new PasswordNotFoundError(passwordName);
-      return await this.#open(options, password.subarray(0, written));
+      return await this.#open(options, password.subarray(0, written), signal);
     } finally {
       wipe(password);
     }
   }
 
-  async #open(options: CertificateOptions, password: Buffer | undefined): Promise<LoadedCertificate> {
+  async #open(options: CertificateOptions, password: Buffer | undefined, signal: AbortSignal | undefined): Promise<LoadedCertificate> {
     const requirePrivateKey = options.requirePrivateKey !== false;
+    const read: ReadFile = (path) => readWholeFile(path, this.#fileTrust, signal);
     const loaded = options.windows ? await this.#fromStore(options.windows, requirePrivateKey, 'the Windows certificate store')
       : options.macOS ? await this.#fromStore(options.macOS, requirePrivateKey, 'the macOS keychain')
-        : options.linux ? await fromProvider(options.linux, requirePrivateKey)
-          : await fromFile(options.file!, requirePrivateKey, password);
+        : options.linux ? await fromProvider(options.linux, requirePrivateKey, read)
+          : await fromFile(options.file!, requirePrivateKey, password, read);
     try {
       if (requirePrivateKey && !loaded.hasPrivateKey) throw new NoPrivateKeyError(`The certificate '${loaded.subject}' has no private key.`);
       if (!this.#isValidNow(loaded.notBefore, loaded.notAfter)) {
@@ -192,8 +214,11 @@ function passwordNameOf(options: CertificateOptions): string | undefined {
   return file.passwordSecretName;
 }
 
-async function readCertificates(path: string): Promise<ParsedCertificate[]> {
-  const data = await readWholeFile(path);
+/** Reads a whole file from a trusted location, as the loader's trust and signal say ({@link readWholeFile}). */
+type ReadFile = (path: string) => Promise<Buffer>;
+
+async function readCertificates(path: string, read: ReadFile): Promise<ParsedCertificate[]> {
+  const data = await read(path);
   try {
     return parseCertificates(data, path);
   } finally {
@@ -201,8 +226,8 @@ async function readCertificates(path: string): Promise<ParsedCertificate[]> {
   }
 }
 
-async function fromProvider(linux: LinuxOpenSslProviderOptions, requirePrivateKey: boolean): Promise<LoadedCertificate> {
-  const certificates = await readCertificates(linux.certificateFile!);
+async function fromProvider(linux: LinuxOpenSslProviderOptions, requirePrivateKey: boolean, read: ReadFile): Promise<LoadedCertificate> {
+  const certificates = await readCertificates(linux.certificateFile!, read);
   if (!requirePrivateKey) return new LoadedCertificate(certificates, undefined);
   const provider = linux.provider ?? DEFAULTS.provider;
   const keyUri = linux.keyUri!;
@@ -211,7 +236,7 @@ async function fromProvider(linux: LinuxOpenSslProviderOptions, requirePrivateKe
     pem = pkcs11UriPem(keyUri);
   } else {
     const path = keyUri.startsWith('file:') ? keyUri.slice('file:'.length) : keyUri;
-    pem = await readWholeFile(path);
+    pem = await read(path);
     try {
       checkProviderKeyFile(pem, path);
     } catch (error) {
@@ -236,12 +261,12 @@ async function fromProvider(linux: LinuxOpenSslProviderOptions, requirePrivateKe
   }
 }
 
-async function fromFile(file: CertificateFileOptions, requirePrivateKey: boolean, password: Buffer | undefined): Promise<LoadedCertificate> {
+async function fromFile(file: CertificateFileOptions, requirePrivateKey: boolean, password: Buffer | undefined, read: ReadFile): Promise<LoadedCertificate> {
   const format = file.format ?? DEFAULTS.format;
-  if (format === CertificateFileFormat.pkcs12) return fromPkcs12(file.path!, password);
-  const certificates = await readCertificates(file.path!);
+  if (format === CertificateFileFormat.pkcs12) return fromPkcs12(file.path!, password, read);
+  const certificates = await readCertificates(file.path!, read);
   if (!requirePrivateKey) return new LoadedCertificate(certificates, undefined);
-  const data = await readWholeFile(file.keyPath!);
+  const data = await read(file.keyPath!);
   let privateKeyInfo: Buffer;
   try {
     privateKeyInfo = password === undefined ? plainPemKey(data, file.keyPath!) : decryptPemKey(data, password, file.keyPath!);
@@ -262,8 +287,8 @@ function withKey(certificates: ParsedCertificate[], privateKeyInfo: Buffer, desc
   return new LoadedCertificate(ordered, new FileKeySource(privateKeyInfo, description));
 }
 
-async function fromPkcs12(path: string, password: Buffer | undefined): Promise<LoadedCertificate> {
-  const data = await readWholeFile(path);
+async function fromPkcs12(path: string, password: Buffer | undefined, read: ReadFile): Promise<LoadedCertificate> {
+  const data = await read(path);
   try {
     const contents = decodePkcs12(data, password);
     try {

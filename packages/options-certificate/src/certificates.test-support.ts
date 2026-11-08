@@ -6,10 +6,13 @@ import {
   createCipheriv, createHash, createHmac, generateKeyPairSync, pbkdf2Sync, randomBytes, sign, type KeyObject,
 } from 'node:crypto';
 import { once } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect, createServer, type SecureContext, type Server } from 'node:tls';
 import type { ProtectedReadOnlyCache } from '@runsecure/hkdfguard-abstractions';
+import { KeyFileTrust } from '@runsecure/hkdfguard-securefile';
+import { linuxKeyFileRoot, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
 import * as der from './der.js';
 import { CertificateOptionsLoader } from './loader.js';
 import type { CertificateOptions } from './options.js';
@@ -20,6 +23,32 @@ import { CertificateOptionsValidator, type CertificatePlatform } from './validat
 
 export const TESTDATA = join(__dirname, '..', 'testdata');
 export const SUBJECT = 'CN=api.example.com, O=Contoso';
+
+/**
+ * The trust the tests' loaders read files with: this account, besides administrators, so the files
+ * the tests write - and the fixtures, in this checkout - pass readTrustedFile's checks.
+ */
+export const FILE_TRUST: KeyFileTrust = process.platform === 'win32'
+  ? new KeyFileTrust({ windowsPrincipals: [windowsCurrentUserSid()] })
+  : new KeyFileTrust({ unixUserIds: [process.geteuid!()], unixGroupIds: [process.getegid!()] });
+
+/**
+ * A fresh folder, by its long path, that readTrustedFile accepts under {@link FILE_TRUST} for the
+ * files a test file writes; `cleanUp` removes it (call it from after()). On Linux the temp folder is
+ * world-writable, so the folder is made under $XDG_RUNTIME_DIR or ~/.cache instead (see
+ * test-support's keyFileDirectory); when this host has neither, `directory` is undefined and
+ * `skip` says why, for the describe blocks that write files.
+ */
+export function trustedDirectory(prefix: string): { directory?: string; skip: string | false; cleanUp(): void } {
+  let root = tmpdir();
+  if (process.platform === 'linux') {
+    const linux = linuxKeyFileRoot();
+    if (linux.root === undefined) return { skip: linux.skipReason!, cleanUp() {} };
+    root = linux.root;
+  }
+  const directory = realpathSync.native(mkdtempSync(join(root, prefix)));
+  return { directory, skip: false, cleanUp: () => rmSync(directory, { recursive: true, force: true }) };
+}
 export const PASSWORD = 'pässwörd-123'; // NOSONAR: protects only the throwaway stores these tests make
 /** The tests' clock: the time they started, so the fixtures (made by OpenSSL and .NET, valid for ten years) are valid now too. */
 export const NOW = new Date(Math.floor(Date.now() / 1000) * 1000);
@@ -379,10 +408,13 @@ export function entry(notBeforeDays: number, notAfterDays: number, options: { wi
   return new FakeStoreCertificate(certificate(key, { subject: options.subject ?? SUBJECT, notBeforeDays, notAfterDays }), options.withKey === false ? undefined : key);
 }
 
-export function loader(options: { passwords?: ProtectedReadOnlyCache; platform?: CertificatePlatform; store?: FakeStore; now?: Date } = {}): CertificateOptionsLoader {
+export function loader(
+  options: { passwords?: ProtectedReadOnlyCache; platform?: CertificatePlatform; store?: FakeStore; now?: Date; fileTrust?: KeyFileTrust } = {},
+): CertificateOptionsLoader {
   const now = options.now ?? NOW;
   return new CertificateOptionsLoader({
     ...(options.passwords === undefined ? {} : { passwords: options.passwords }),
+    fileTrust: options.fileTrust ?? FILE_TRUST,
     now: () => now,
     validator: new CertificateOptionsValidator(options.platform ?? (process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux')),
     ...(options.store === undefined ? {} : { storeReader: options.store.read }),

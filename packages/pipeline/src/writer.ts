@@ -1,7 +1,9 @@
 import { isUtf8 } from 'node:buffer';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, rename, unlink, type FileHandle } from 'node:fs/promises';
 import { EOL } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { Writable } from 'node:stream';
 import {
   ClosedError, HkdfGuardError, InvalidArgumentError, wipe,
@@ -25,8 +27,12 @@ export interface SecretRequest {
 const KEY_SEPARATOR = '#';
 const FILE_NAME_SEPARATOR = '__';
 
-// rw-r--r--: what each file in a tar archive is unpacked as.
+// rw-r--r--: what each file in a tar archive is unpacked as, and each file written locally is created
+// as - the values are encrypted, and only who may write them matters to FilePerSecretCache, which
+// refuses a file its group or others can write. Never wider, whatever the umask.
 const SECRET_FILE_MODE = 0o644;
+// rwxr-xr-x: a folder created for the files, for the same reason.
+const SECRET_FOLDER_MODE = 0o755;
 
 const encoder = new TextEncoder();
 
@@ -166,12 +172,19 @@ export abstract class SecretPipelineWriter implements SecretPipelineWriterContra
    * it doesn't exist: the file named for it, holding its encrypted, formatted value as UTF-8 (no
    * BOM). A file already there by that name is replaced; any other file is left as it is.
    *
+   * Each file is written whole to a temporary name in the folder - created exclusively, never
+   * through a link - flushed to disk, then renamed into place: a reader never sees a partial file,
+   * and a symbolic link planted at a secret's path is replaced, not written through. Files are
+   * created mode 0644 and the folder 0755, as the tar archive's entries are, and never wider
+   * whatever the umask (Windows ignores the modes: the files inherit the folder's access list). A
+   * folder that is itself a symbolic link is refused: the files go only where the path says.
+   *
    * Only encrypted values are written, but FilePerSecretCache refuses a folder or file anyone but
    * administrators and the principals it trusts can modify: write them where the deployment can set
    * that, or set it once they're written.
    * @param folderPath the folder to write to, absolute or relative to the working directory
    * @throws TypeError (rejecting) folderPath isn't a string
-   * @throws InvalidArgumentError (rejecting) folderPath is empty
+   * @throws InvalidArgumentError (rejecting) folderPath is empty, or names a symbolic link or something that isn't a folder
    * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed
    */
   async writeProtectedSecretFiles(folderPath: string): Promise<void> {
@@ -180,8 +193,9 @@ export abstract class SecretPipelineWriter implements SecretPipelineWriterContra
     this.#requirePulled();
 
     const folder = resolve(folderPath);
-    await mkdir(folder, { recursive: true });
-    for (const [fileName, value] of this.#protectedSecrets) await writeFile(join(folder, fileName), value, 'utf8');
+    await prepareFolder(folder);
+    for (const [fileName, value] of this.#protectedSecrets) await writeFileInto(folder, fileName, encoder.encode(value));
+    await syncFolder(folder);
   }
 
   /**
@@ -189,13 +203,16 @@ export abstract class SecretPipelineWriter implements SecretPipelineWriterContra
    * folder if it doesn't exist: a single object with a member per secret, its file name mapped to
    * its encrypted, formatted value, in file-name order (ordinal), indented by two spaces with the
    * platform's line ending and none after the closing brace, as UTF-8 without a BOM - byte for byte
-   * what .NET's WriteJsonSecrets writes on the same platform. A file already there is replaced.
-   * Each value is bound to its member's name - decrypt(value, name) - as it is to its file name in
+   * what .NET's WriteJsonSecrets writes on the same platform. A file already there is replaced -
+   * written whole to a temporary name in its folder and renamed into place, mode 0644, as
+   * {@link writeProtectedSecretFiles} writes each file, so a link at its path is replaced rather
+   * than written through, and a folder that is a symbolic link refused. Each value is bound to its
+   * member's name - decrypt(value, name) - as it is to its file name in
    * {@link writeProtectedSecretFiles}; JsonSecretsFileReadOnlyCache
    * (@runsecure/hkdfguard-cache-jsonsecretsfile) reads it.
    * @param filePath the file to write, absolute or relative to the working directory
    * @throws TypeError (rejecting) filePath isn't a string
-   * @throws InvalidArgumentError (rejecting) filePath is empty
+   * @throws InvalidArgumentError (rejecting) filePath is empty, or its folder is a symbolic link or isn't a folder
    * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed
    */
   async writeJsonSecrets(filePath: string): Promise<void> {
@@ -204,8 +221,10 @@ export abstract class SecretPipelineWriter implements SecretPipelineWriterContra
     this.#requirePulled();
 
     const path = resolve(filePath);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, this.#jsonSecrets());
+    const folder = dirname(path);
+    await prepareFolder(folder);
+    await writeFileInto(folder, basename(path), this.#jsonSecrets());
+    await syncFolder(folder);
   }
 
   /**
@@ -431,6 +450,53 @@ export abstract class SecretPipelineWriter implements SecretPipelineWriterContra
       if (requests === undefined) this.#requests.set(name, requests = []);
       requests.push(Object.freeze({ secretName, key, fileName }));
     }
+  }
+}
+
+// Creates `folder` if it doesn't exist, and refuses one that is a symbolic link or isn't a folder:
+// the files go only where the path itself says, never where a link someone planted points.
+async function prepareFolder(folder: string): Promise<void> {
+  await mkdir(folder, { recursive: true, mode: SECRET_FOLDER_MODE });
+  const status = await lstat(folder);
+  if (status.isSymbolicLink()) throw new InvalidArgumentError(`'${folder}' is a symbolic link: secrets are written only to a folder itself.`);
+  if (!status.isDirectory()) throw new InvalidArgumentError(`'${folder}' isn't a folder.`);
+}
+
+// Writes `contents` as `fileName` in `folder`, whole or not at all: to a temporary name first - one
+// FilePerSecretCache never reads (it starts with '.'), random, so nothing planted can bear it -
+// created exclusively and, where the platform can say so, never through a link; flushed; then
+// renamed over the destination, which replaces whatever is there, a symbolic link included, rather
+// than writing through it. On any failure the temporary file is removed.
+async function writeFileInto(folder: string, fileName: string, contents: Uint8Array): Promise<void> {
+  const temporary = join(folder, `.hkdfguard-${randomBytes(8).toString('hex')}.tmp`);
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), SECRET_FILE_MODE);
+    await handle.writeFile(contents);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporary, join(folder, fileName));
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await unlink(temporary).catch(() => undefined);
+    throw error;
+  }
+}
+
+// Makes the folder's new entries durable, where a folder can be synced (not on Windows); best effort,
+// as the files themselves are already flushed.
+async function syncFolder(folder: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  try {
+    const handle = await open(folder, constants.O_RDONLY);
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    // A filesystem that can't sync a folder.
   }
 }
 
