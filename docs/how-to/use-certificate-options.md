@@ -175,7 +175,9 @@ The password is a secret in the `ProtectedReadOnlyCache` given to the loader - a
 `FilePerSecretCache` folder named `tls-pfx-password`, say. A PEM key must be encrypted PKCS#8
 (`openssl pkcs8 -topk8 -v2 aes-256-cbc`). A legacy RC2 or RC4 PKCS#12 (`openssl pkcs12 -legacy`, old
 Windows exports) is refused: re-export it with `openssl pkcs12 -export` from OpenSSL 3, without
-`-legacy`.
+`-legacy`. With a password named, a PKCS#12 must carry its integrity MAC (not `-nomac`) and its key
+must be encrypted (not `-keypbe NONE`): otherwise nothing ties the file to the password, and a
+planted file of anyone's key would load under it.
 
 > **Security:** The password is read into a buffer and zeroed as soon as the key is read; it never
 > becomes a string. The key is held sealed in memory and wiped by `close()`. What can't be wiped from

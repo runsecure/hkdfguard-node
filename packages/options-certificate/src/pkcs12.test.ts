@@ -88,12 +88,49 @@ describe('decodePkcs12', () => {
     const key = ecKey();
     const leaf = certificate(key);
     for (const [keyEncryption, certificateEncryption, mac] of [['pbes2', 'pbes2', 'sha256'], ['3des', '3des', 'sha1'], ['pbes2', 'none', 'sha512'],
-      ['none', 'none', 'none'], ['3des', 'pbes2', 'sha256']] as const) {
+      ['3des', 'pbes2', 'sha256']] as const) {
       const file = pkcs12({ keys: [key.privateKey], certificates: [leaf], password: utf8(), keyEncryption, certificateEncryption, mac });
       const contents = decodePkcs12(file, utf8());
       assert.deepEqual(contents.certificates, [leaf], `${keyEncryption}/${certificateEncryption}/${mac}`);
       assert.deepEqual(publicKeyOf(contents.keys[0]!).export({ format: 'der', type: 'spki' }), key.publicKey.export({ format: 'der', type: 'spki' }));
     }
+    // Nothing protected and nothing claimed: read without a password, as AllowUnprotectedPrivateKey does.
+    const plain = decodePkcs12(pkcs12({ keys: [key.privateKey], certificates: [leaf], keyEncryption: 'none', certificateEncryption: 'none', mac: 'none' }), undefined);
+    assert.deepEqual(plain.certificates, [leaf]);
+    assert.equal(plain.keys.length, 1);
+  });
+
+  it('refuses, with a password, a file without its MAC - however its contents are protected', () => {
+    const key = ecKey();
+    const leaf = certificate(key);
+    for (const [keyEncryption, certificateEncryption] of [['pbes2', 'pbes2'], ['3des', 'none'], ['none', 'none']] as const) {
+      const file = pkcs12({ keys: [key.privateKey], certificates: [leaf], password: utf8(), keyEncryption, certificateEncryption, mac: 'none' });
+      assert.throws(() => decodePkcs12(file, utf8()), (error: Error) => error instanceof InvalidCertificateFileError && /no integrity MAC/.test(error.message),
+        `${keyEncryption}/${certificateEncryption}`);
+    }
+    // A real file with its MAC cut off.
+    const pfx = der.sequence(der.read(readFileSync(fixture('openssl-aes.pfx'))), 'pfx');
+    const stripped = der.encode(der.SEQUENCE, pfx[0]!.encoding, pfx[1]!.encoding);
+    assert.throws(() => decodePkcs12(stripped, utf8()), (error: Error) => error instanceof InvalidCertificateFileError && /no integrity MAC/.test(error.message));
+  });
+
+  it("refuses anyone's plaintext key and certificate under any password: what the MAC is for", () => {
+    // Someone who can write the file but doesn't know the password plants their own key, unencrypted, with no MAC.
+    const theirs = rsaKey(1);
+    const planted = pkcs12({ keys: [theirs.privateKey], certificates: [certificate(theirs)], keyEncryption: 'none', certificateEncryption: 'none', mac: 'none' });
+    for (const password of [utf8(), utf8('anything')]) {
+      assert.throws(() => decodePkcs12(planted, password), InvalidCertificateFileError);
+    }
+  });
+
+  it("refuses, with a password, a key that isn't encrypted, even under a MAC", () => {
+    const key = ecKey();
+    const file = pkcs12({ keys: [key.privateKey], certificates: [certificate(key)], password: utf8(), keyEncryption: 'none', certificateEncryption: 'pbes2', mac: 'sha256' });
+    assert.throws(() => decodePkcs12(file, utf8()),
+      (error: Error) => error instanceof InvalidCertificateFileError && /isn't encrypted/.test(error.message) && /AllowUnprotectedPrivateKey/.test(error.message));
+    // The same file, certificates alone: nothing to refuse.
+    const certificatesOnly = pkcs12({ certificates: [certificate(key)], password: utf8(), certificateEncryption: 'none', mac: 'sha256' });
+    assert.equal(decodePkcs12(certificatesOnly, utf8()).certificates.length, 1);
   });
 
   it('reads a BER file - indefinite lengths and segmented strings - as its DER', () => {

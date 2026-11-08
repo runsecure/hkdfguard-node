@@ -3,7 +3,10 @@
 // passphrase - so it can neither pick a key by alias nor read a trust store of certificates only.
 // Reads what OpenSSL 3 and Java's keytool write - PBES2 (PBKDF2, AES-CBC) or PKCS#12's own
 // triple-DES PBE, under an HMAC - and refuses RC2 and RC4, which OpenSSL 3 left to its legacy
-// provider. Never exported from the package index.
+// provider. The HMAC is required, though RFC 7292 makes it optional: it is the only thing that ties
+// a store to its password, and without it a trust store of anyone's CA in plain contents reads under
+// any password. A private key must be encrypted, as the password was set to protect it. Never
+// exported from the package index.
 import { createDecipheriv, createHash, createHmac, pbkdf2Sync, timingSafeEqual } from 'node:crypto';
 import { InvalidArgumentError, wipe } from '@runsecure/hkdfguard-abstractions';
 
@@ -93,7 +96,8 @@ export interface Pkcs12Contents {
  * its contents decrypted under `password` - the password's UTF-8 bytes, which the caller zeroes.
  * Every buffer this makes from the password is zeroed before it returns.
  * @param what names the store in errors, e.g. "client key store 'client.p12'"
- * @throws InvalidArgumentError the store isn't a PKCS#12 store this can read, or the password is wrong
+ * @throws InvalidArgumentError the store isn't a PKCS#12 store this can read, has no integrity MAC,
+ *   holds a key (when `readKeys`) that isn't encrypted, or the password is wrong
  */
 export function readPkcs12(store: Uint8Array, password: Uint8Array, readKeys: boolean, what: string): Pkcs12Contents {
   const fail = (problem: string) => new InvalidArgumentError(`The ${what} ${problem}`);
@@ -134,14 +138,19 @@ class Pkcs12Reader {
     if (type !== OID.data) throw new DerError('an authenticated safe that is neither data nor signed');
     const safe = octets(only(content));
 
-    if (macData !== undefined) this.#verifyMac(macData, safe);
+    // Before anything in the store is read: a store without its MAC could be anyone's.
+    if (macData === undefined) {
+      throw this.fail('has no integrity MAC, so nothing shows it is the store its password was set on: export it with one - '
+        + 'OpenSSL and keytool write one unless told not to (-nomac).');
+    }
+    this.#verifyMac(macData, safe);
 
     for (const info of children(readOne(safe, 0x30))) {
       const [infoType, infoContent] = children(info);
       if (infoType === undefined || infoContent?.tag !== 0xa0) throw new DerError('a content info without content');
       const kind = oid(infoType);
       if (kind === OID.data) {
-        this.#readSafeContents(octets(only(infoContent)), contents, 0);
+        this.#readSafeContents(octets(only(infoContent)), contents, 0, false);
       } else if (kind === OID.encryptedData) {
         const [, encryptedContentInfo] = children(only(infoContent));
         if (encryptedContentInfo?.tag !== 0x30) throw new DerError('encrypted data without content');
@@ -151,7 +160,7 @@ class Pkcs12Reader {
         if (algorithm?.tag !== 0x30 || (encrypted.tag !== 0x80 && encrypted.tag !== 0xa0)) throw new DerError('malformed encrypted data');
         const plain = this.#decrypt(algorithm, octets(encrypted));
         try {
-          this.#readSafeContents(plain, contents, 0);
+          this.#readSafeContents(plain, contents, 0, true);
         } finally {
           wipe(plain);
         }
@@ -188,7 +197,9 @@ class Pkcs12Reader {
     }
   }
 
-  #readSafeContents(der: Buffer, contents: Pkcs12Contents, depth: number): void {
+  // `encrypted`: these safe contents came out of encrypted data, so a key bag in them was encrypted
+  // with them; outside it, only a shrouded key bag is.
+  #readSafeContents(der: Buffer, contents: Pkcs12Contents, depth: number, encrypted: boolean): void {
     if (depth > 4) throw new DerError('safe contents nested too deep');
     for (const bag of children(readOne(der, 0x30))) {
       const [bagId, value, attributes] = children(bag);
@@ -201,14 +212,19 @@ class Pkcs12Reader {
         if (oid(certId) !== OID.x509Certificate) continue; // an SDSI certificate: nothing TLS can use
         contents.certificates.push({ friendlyName, localKeyId, der: Buffer.from(octets(only(certValue))) });
       } else if (kind === OID.keyBag) {
-        if (this.readKeys) contents.keys.push({ friendlyName, localKeyId, pkcs8: Buffer.from(only(value).raw) });
+        if (!this.readKeys) continue;
+        if (!encrypted) {
+          throw this.fail("holds a private key that isn't encrypted: export it with the key encrypted (not -keypbe NONE), as its password "
+            + 'is set to protect it.');
+        }
+        contents.keys.push({ friendlyName, localKeyId, pkcs8: Buffer.from(only(value).raw) });
       } else if (kind === OID.shroudedKeyBag) {
         if (!this.readKeys) continue;
         const [algorithm, encrypted] = children(only(value));
         if (algorithm?.tag !== 0x30 || encrypted === undefined) throw new DerError('a malformed shrouded key bag');
         contents.keys.push({ friendlyName, localKeyId, pkcs8: this.#decrypt(algorithm, octets(encrypted)) });
       } else if (kind === OID.safeContentsBag) {
-        this.#readSafeContents(only(value).raw, contents, depth + 1);
+        this.#readSafeContents(only(value).raw, contents, depth + 1, encrypted);
       }
       // A CRL or secret bag holds nothing TLS uses.
     }
@@ -264,7 +280,7 @@ class Pkcs12Reader {
       return Buffer.concat([first, last]);
     } catch (error) {
       if (error instanceof InvalidArgumentError) throw error;
-      // Bad padding: the MAC passed (or there was none), so the password decrypts the MAC but not this.
+      // Bad padding: the MAC passed, so the password opens the MAC but not this.
       throw this.fail("can't be opened: its password is wrong, or the store was altered.");
     } finally {
       wipe(first);

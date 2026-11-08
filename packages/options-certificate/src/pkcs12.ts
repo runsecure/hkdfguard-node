@@ -43,8 +43,17 @@ export class Pkcs12Contents {
 /**
  * Reads a PKCS#12 file with a UTF-8 password - undefined for a file without one, which is tried as
  * both the empty password and no password, as tools write either.
+ *
+ * With a password, the file must carry its integrity MAC, and every private key in it must be
+ * encrypted. RFC 7292 makes the MAC optional, but it is the only thing that ties the file to the
+ * password: without one, a file holding a plaintext key and certificate - anyone's - reads under any
+ * password at all. OpenSSL, keytool and Windows always write one unless told not to (-nomac). A
+ * plaintext key is refused for the same reason as in a PEM key file: the password was named to
+ * protect it, and it doesn't. Without a password - a file read under AllowUnprotectedPrivateKey -
+ * neither is required: nothing is claimed to protect it.
  * @throws WrongPasswordError the file's MAC doesn't verify, or its contents don't decrypt
- * @throws InvalidCertificateFileError it isn't a PKCS#12 file
+ * @throws InvalidCertificateFileError it isn't a PKCS#12 file; or, with a password, it has no MAC or
+ *   holds a key that isn't encrypted
  * @throws UnsupportedCertificateError legacy RC2/RC4, PBMAC1, or public-key (enveloped or signed) contents
  */
 export function decodePkcs12(data: Buffer, password: Uint8Array | undefined): Pkcs12Contents {
@@ -65,13 +74,18 @@ export function decodePkcs12(data: Buffer, password: Uint8Array | undefined): Pk
 
   try {
     const budget = new pbe.IterationBudget();
+    const hasPassword = password !== undefined && password.length > 0;
+    if (hasPassword && macData === undefined) {
+      throw new InvalidCertificateFileError('The PKCS#12 file has no integrity MAC, so nothing shows its contents are the ones its password '
+        + 'was set on: export it with one (OpenSSL, keytool and Windows write one unless told not to, as by -nomac).');
+    }
     // The passwords to try: the one given; for none, the empty BMPString (00 00) and no bytes at all.
-    let candidates: (Uint8Array | undefined)[] = password !== undefined && password.length > 0 ? [password] : [undefined, new Uint8Array(0)];
+    let candidates: (Uint8Array | undefined)[] = hasPassword ? [password] : [undefined, new Uint8Array(0)];
     if (macData !== undefined) candidates = [verifyMac(macData, authSafe, candidates, budget)];
     let failure: WrongPasswordError | undefined;
     for (const candidate of candidates) {
       try {
-        return readAuthenticatedSafe(authSafe, candidate, budget);
+        return readAuthenticatedSafe(authSafe, candidate, hasPassword, budget);
       } catch (error) {
         if (!(error instanceof WrongPasswordError)) throw error;
         failure = error;
@@ -129,7 +143,9 @@ function verifyMac(macData: Element, authSafe: Buffer, candidates: (Uint8Array |
   throw new WrongPasswordError("The PKCS#12 file's integrity check fails: the password is wrong, or the file is corrupt.");
 }
 
-function readAuthenticatedSafe(authSafe: Buffer, password: Uint8Array | undefined, budget: pbe.IterationBudget): Pkcs12Contents {
+// `requireEncryptedKeys`: refuse a key in a plaintext key bag outside encrypted contents - a file read
+// with a password, which was named to protect its key.
+function readAuthenticatedSafe(authSafe: Buffer, password: Uint8Array | undefined, requireEncryptedKeys: boolean, budget: pbe.IterationBudget): Pkcs12Contents {
   const contents = new Pkcs12Contents();
   try {
     let infos: Element[];
@@ -155,7 +171,7 @@ function readAuthenticatedSafe(authSafe: Buffer, password: Uint8Array | undefine
         let safe: Buffer | undefined;
         try {
           safe = der.octets(content, 'PKCS#12 data');
-          readSafeContents(contents, safe, password, budget, 0);
+          readSafeContents(contents, safe, password, budget, 0, requireEncryptedKeys);
         } catch (error) {
           if (error instanceof DerError) throw new InvalidCertificateFileError(`The PKCS#12 data is malformed: ${error.message}`);
           throw error;
@@ -167,7 +183,8 @@ function readAuthenticatedSafe(authSafe: Buffer, password: Uint8Array | undefine
         if (ciphertext === undefined) continue; // nothing was encrypted
         const plaintext = pbe.decrypt(algorithm, password, ciphertext, budget);
         try {
-          readSafeContents(contents, plaintext, password, budget, 0);
+          // Encrypted contents: a key bag inside them is encrypted with them.
+          readSafeContents(contents, plaintext, password, budget, 0, false);
         } catch (error) {
           // Contents that decrypted to nonsense were decrypted with the wrong password.
           if (error instanceof DerError || error instanceof InvalidCertificateFileError) {
@@ -202,7 +219,8 @@ function encryptedData(content: Element): { algorithm: Element; ciphertext: Buff
   }
 }
 
-function readSafeContents(contents: Pkcs12Contents, safe: Buffer, password: Uint8Array | undefined, budget: pbe.IterationBudget, depth: number): void {
+function readSafeContents(contents: Pkcs12Contents, safe: Buffer, password: Uint8Array | undefined, budget: pbe.IterationBudget, depth: number,
+  refusePlaintextKeys: boolean): void {
   if (depth > MAX_SAFE_DEPTH) throw new InvalidCertificateFileError('The PKCS#12 safe contents are nested too deep.');
   let bags: Element[];
   try {
@@ -226,13 +244,17 @@ function readSafeContents(contents: Pkcs12Contents, safe: Buffer, password: Uint
       const certificate = certificateOf(value);
       if (certificate !== undefined) contents.certificates.push(certificate);
     } else if (type === KEY_BAG) {
+      if (refusePlaintextKeys) {
+        throw new InvalidCertificateFileError("The PKCS#12 file holds a private key that isn't encrypted, but File.PasswordSecretName names a "
+          + 'password for it; export it with the key encrypted (not -keypbe NONE), or leave PasswordSecretName unset and set AllowUnprotectedPrivateKey.');
+      }
       const key = Buffer.alloc(value.encoding.length);
       value.encoding.copy(key);
       contents.keys.push(key);
     } else if (type === SHROUDED_KEY_BAG) {
       contents.keys.push(decryptPkcs8(value.encoding, password, budget));
     } else if (type === SAFE_CONTENTS_BAG) {
-      readSafeContents(contents, value.encoding, password, budget, depth + 1);
+      readSafeContents(contents, value.encoding, password, budget, depth + 1, refusePlaintextKeys);
     }
     // CRL and secret bags hold nothing a certificate needs.
   }

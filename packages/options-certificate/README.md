@@ -111,6 +111,14 @@ OpenSSL-encrypted PEM keys (`Proc-Type`); key derivations are capped at 1,000,00
 4,000,000 per file. Node's own `pfx` option isn't used: it takes the password only as a string, reads
 whichever key it finds first, and reads what OpenSSL's legacy provider would.
 
+A file read with a password must carry its integrity MAC, and every private key in it must be
+encrypted; either failing is an `InvalidCertificateFileError`. RFC 7292 makes the MAC optional, but
+it is the only thing that ties the file to its password: without one, a file of anyone's plaintext
+key and certificate would read under any password. OpenSSL, keytool and Windows always write one
+unless told not to (`-nomac`); a plaintext key (`-keypbe NONE`) is refused as a plaintext PEM key is
+when a password is named. A file read without a password, under `AllowUnprotectedPrivateKey`, needs
+neither, and its key is reported as an unprotected key file.
+
 Every file - a PKCS#12, a PEM certificate or key, a Linux provider's certificate and key file - is
 read through `readTrustedFile` (`@runsecure/hkdfguard-securefile`): it is refused, with a
 `KeyFileError` of code `EACCES` saying what isn't trusted, unless it and every folder above it are

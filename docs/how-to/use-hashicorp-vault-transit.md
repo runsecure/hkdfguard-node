@@ -231,7 +231,9 @@ Some things to know:
   reader instead, which takes the password as bytes. It reads what OpenSSL 3 and keytool (Java
   11.0.12 or later) write - PBKDF2 with AES-CBC, or PKCS#12's triple-DES encryption, under an HMAC -
   and refuses the legacy RC2 and RC4 that `openssl pkcs12 -legacy` and older Java write: re-export
-  such a store with a current `openssl pkcs12 -export` or keytool.
+  such a store with a current `openssl pkcs12 -export` or keytool. It also refuses a store without
+  its integrity MAC (`-nomac`), which nothing would tie to its password, and a client key that
+  isn't encrypted (`-keypbe NONE`).
 - The client key reaches OpenSSL as PEM from a buffer zeroed once the secure context holds it. What
   OpenSSL keeps of it, it keeps in its own memory.
 

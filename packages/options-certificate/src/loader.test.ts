@@ -211,6 +211,20 @@ describe('CertificateOptionsLoader from a file', { skip }, () => {
     }
   });
 
+  it('refuses a PKCS#12 file its password doesn\'t protect: no MAC, or a plaintext key', async () => {
+    const key = rsaKey(1);
+    const planted = write('planted.pfx', pkcs12({ keys: [key.privateKey], certificates: [certificate(key)], keyEncryption: 'none', certificateEncryption: 'none', mac: 'none' }));
+    await assert.rejects(loader({ passwords: new FakePasswords() }).load(pfxOptions(planted)),
+      (error: Error) => error instanceof InvalidCertificateFileError && /no integrity MAC/.test(error.message));
+    const plainKey = write('plainkey.pfx', pkcs12({ keys: [key.privateKey], certificates: [certificate(key)], password: utf8(), keyEncryption: 'none', mac: 'sha256' }));
+    await assert.rejects(loader({ passwords: new FakePasswords() }).load(pfxOptions(plainKey)),
+      (error: Error) => error instanceof InvalidCertificateFileError && /isn't encrypted/.test(error.message));
+    // Allowed unprotected, with no password named, the planted file is what it says it is.
+    const loaded = await loader().load(pfxOptions(planted, null, { allowUnprotected: true }));
+    assert.equal(loaded.keyLocation, 'an unprotected key file');
+    await loaded.close();
+  });
+
   it('needs a PKCS#12 password even for the certificate alone', async () => {
     const passwords = new FakePasswords();
     const loaded = await loader({ passwords }).load(pfxOptions(fixture('openssl-aes.pfx'), 'tls-password', { requirePrivateKey: false }));

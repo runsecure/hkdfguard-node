@@ -35,8 +35,9 @@ const MAX_PEM_LENGTH = 1024 * 1024;
  * it is decrypted into a buffer only while the store is read, and zeroed at once - never a string,
  * so not Node's own `pfx` and `passphrase`, which take the password only as one. Stores are read by
  * HkdfGuard's own PKCS#12 reader: PBES2 (PBKDF2 with AES-CBC, what OpenSSL 3 and Java 11.0.12+
- * write) or PKCS#12's triple-DES encryption, under an HMAC; legacy RC2 and RC4 are refused. The
- * client key goes to OpenSSL as PEM from a buffer zeroed once the secure context holds it.
+ * write) or PKCS#12's triple-DES encryption, under an HMAC, which is required; legacy RC2 and RC4,
+ * and a client key that isn't encrypted, are refused. The client key goes to OpenSSL as PEM from a
+ * buffer zeroed once the secure context holds it.
  */
 export interface VaultTlsOptions {
   /** A PEM file of the CA certificates Vault's certificate must chain to (VAULT_CACERT), in place of Node's trust store. */
