@@ -47,8 +47,12 @@ after changing `generator.json`, or after pulling a newer `openapi.json` from Va
   password-protected PKCS#12 key stores whose passwords are protected by a key ring
   (`VaultTlsOptions.protectPassword(keyRing.createProtector(VaultTlsOptions.PASSWORD_PURPOSE), password)`).
   Also `serverName` (`VAULT_TLS_SERVER_NAME`) and `insecureSkipVerify` (`VAULT_SKIP_VERIFY`, for
-  development only). Read once, into one TLS secure context every connection shares; refused
-  together with an `agent` of your own.
+  development only; each time it takes effect the process is warned, code
+  `HKDFGUARD_VAULT_TLS_UNVERIFIED`). Read once, into one TLS secure context every connection
+  shares; refused together with an `agent` of your own. Every file is read through
+  `readTrustedFile` (`securefile`) and refused unless only administrators and `fileTrust` (a
+  `KeyFileTrust`, administrators only by default) could have written it: whoever could replace the
+  CA file could point the client at a server of their own.
 - **Tokens**: `VaultTokenSource` and `StaticVaultTokenSource` copy the token into a buffer the
   integration zeroes, for one that runs before there is a key ring (the transit key wrapper);
   `VaultTokenProvider` and `StaticVaultToken` hand it over protected by the key ring.

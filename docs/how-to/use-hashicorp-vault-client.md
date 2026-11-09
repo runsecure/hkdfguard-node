@@ -39,7 +39,10 @@ const vault = new VaultClient(tokenProtector, { address: 'https://vault.example.
 
 Or read the options from the `VAULT_*` environment variables vault-client-go reads - `VAULT_ADDR`,
 `VAULT_TOKEN` (protected with the protector you pass), `VAULT_NAMESPACE`, `VAULT_CLIENT_TIMEOUT`,
-`VAULT_CACERT` and the other TLS variables, `VAULT_RATE_LIMIT`, the retry variables:
+`VAULT_CACERT` and the other TLS variables, `VAULT_RATE_LIMIT`, the retry variables. TLS files are
+read only from where administrators, or the `KeyFileTrust` you set as `tls.fileTrust`, could have
+written them; `VAULT_SKIP_VERIFY` warns the process (code `HKDFGUARD_VAULT_TLS_UNVERIFIED`) each
+time it turns certificate checks off:
 
 ```ts
 const vault = new VaultClient(tokenProtector, VaultClientOptions.fromEnvironment(tokenProtector));
@@ -104,7 +107,10 @@ To wrap HkdfGuard's data encryption keys with transit, use `HashiCorpVaultTransi
 Every method takes `VaultRequestOptions` last: `token`, `namespace`, `mfaCredentials`,
 `responseWrappingTtlMs`, `customHeaders`, `requestCallbacks` and `responseCallbacks`, `mountPath`
 for a generated method, `queryParameters`, `replicationForwardingMode`, and `signal` to abort the
-request. The client's own settings - `setNamespace`, `setMfaCredentials`, `setResponseWrapping`,
+request. A generic method's path is sent as it is, so it may hold no `?` or `#` - put query
+parameters in `queryParameters`, where they are escaped - and no `.` or `..` segment, even
+percent-encoded; a generated method's path parameters may hold no such segment either. Vault
+would answer one with a redirect to another path. The client's own settings - `setNamespace`, `setMfaCredentials`, `setResponseWrapping`,
 `setCustomHeaders`, the callbacks - apply to every request started afterwards; `copy()` gives a
 client whose settings change independently.
 
@@ -125,7 +131,8 @@ const unwrapped = await vault.unwrap(wrapped!.wrapInfo!.token!, KvV2ReadResponse
   `followRedirects` is set, since they'd carry the token wherever they point.
 - `VaultJsonError`: the answer isn't the JSON expected.
 - Node's network error when Vault can't be reached, a DOMException named `TimeoutError` past
-  `requestTimeoutMs` (60 seconds by default, its token, retries and redirect included), and the
+  `requestTimeoutMs` (60 seconds by default, its token, retries and redirect included; at most
+  2,147,483,647 ms, the longest a Node timer holds, as are the retry waits), and the
   signal's reason when the request is aborted. A body longer than `maxResponseBytes` (32 MiB by
   default) fails the request with a `VaultRequestError` before more of it is read.
 

@@ -6,14 +6,32 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TLSSocket } from 'node:tls';
+import { once } from 'node:events';
 import { afterEach, describe, it } from 'node:test';
 import { InvalidArgumentError, type DataProtector } from '@runsecure/hkdfguard-abstractions';
 import { KeyRing } from '@runsecure/hkdfguard-dek';
-import { RecordingKey } from '@runsecure/hkdfguard-test-support';
+import { KeyFileTrust } from '@runsecure/hkdfguard-securefile';
+import { linuxKeyFileRoot, RecordingKey, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
 import { apiBase, checkTlsOptions } from './connection.js';
-import { createVaultAgent, VaultConnector } from './http.js';
+import { createVaultAgent as createVaultAgentAsGiven, VaultConnector } from './http.js';
 import { pkcs12 } from '@runsecure/hkdfguard-abstractions/internal';
-import { VaultTlsOptions } from './tls.js';
+import { UNVERIFIED_WARNING_CODE, VaultTlsOptions } from './tls.js';
+
+/**
+ * The account running the tests, besides administrators: it owns the fixtures in this checkout and
+ * the files the tests write, which the trusted-file checks otherwise refuse.
+ */
+const FILE_TRUST = process.platform === 'win32'
+  ? new KeyFileTrust({ windowsPrincipals: [windowsCurrentUserSid()] })
+  : new KeyFileTrust({ unixUserIds: [process.geteuid!()], unixGroupIds: [process.getegid!()] });
+
+/** createVaultAgent, trusting the test account's files unless the options say otherwise. */
+const createVaultAgent = (tls: VaultTlsOptions, options?: Parameters<typeof createVaultAgentAsGiven>[1]) =>
+  createVaultAgentAsGiven({ fileTrust: FILE_TRUST, ...tls }, options);
+
+// Where the tests write files: never under Linux's /tmp, which every user can write, so the
+// trusted-file checks would refuse anything in it (test-support's private root instead).
+const scratchRoot = () => (process.platform === 'linux' ? linuxKeyFileRoot().root ?? tmpdir() : tmpdir());
 
 // Made by test-fixtures/generate.sh: throwaway keys, trusted nowhere else.
 const FIXTURES = join(__dirname, '..', 'test-fixtures');
@@ -36,7 +54,7 @@ const protectedPassword = VaultTlsOptions.protectPassword(protector, PASSWORD);
 
 // A trust store and client key store, each with the password protected.
 const trustStore = (file = 'truststore.p12'): VaultTlsOptions => ({
-  trustStoreFile: fixture(file), trustStorePassword: protectedPassword, passwordProtector: protector, serverName: 'vault.test',
+  trustStoreFile: fixture(file), trustStorePassword: protectedPassword, passwordProtector: protector, serverName: 'vault.test', fileTrust: FILE_TRUST,
 });
 const keyStore = (file: string, alias?: string): VaultTlsOptions => ({
   ...trustStore(), clientKeyStoreFile: fixture(file), clientKeyStorePassword: protectedPassword, clientKeyStoreAlias: alias,
@@ -129,7 +147,7 @@ function pfx(authSafe: Buffer, password: string | undefined): Buffer {
 
 // Writes `data` to a new file, removed when the test ends, and returns its path.
 function writeStore(name: string, data: Buffer): string {
-  const directory = mkdtempSync(join(tmpdir(), 'hkdfguard-p12-'));
+  const directory = mkdtempSync(join(scratchRoot(), 'hkdfguard-p12-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, name);
   writeFileSync(path, data);
@@ -164,6 +182,45 @@ describe('VaultTlsOptions: trusting Vault', () => {
     await assert.rejects(call(createVaultAgent({}), port), (e: NodeJS.ErrnoException) => /CERT|SIGNATURE|ISSUER/.test(e.code ?? ''));
   });
 
+  it('warns the process every time certificate verification is off, and only then', async () => {
+    const warned = once(process, 'warning');
+    createVaultAgent({ insecureSkipVerify: true }).destroy();
+    const [warning] = await warned as [Error & { code?: string }];
+    assert.equal(warning.code, UNVERIFIED_WARNING_CODE);
+    assert.match(warning.message, /not verified.*VAULT_SKIP_VERIFY.*every token and secret/);
+    const seen: unknown[] = [];
+    const listener = (w: Error & { code?: string }) => { if (w.code === UNVERIFIED_WARNING_CODE) seen.push(w); };
+    process.on('warning', listener);
+    try {
+      createVaultAgent({ insecureSkipVerify: false }).destroy();
+      createVaultAgent({ serverCertificateFile: fixture('ca.pem') }).destroy();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(seen.length, 0);
+    } finally {
+      process.off('warning', listener);
+    }
+  });
+
+  it("refuses, by default, files anyone but administrators could have replaced - the CA, a key, a store", (t) => {
+    if (process.getuid?.() === 0) {
+      t.skip('Running as root, whose files are trusted.');
+      return;
+    }
+    // The fixtures belong to the account that checked them out.
+    const notTrusted = refused(/can't be read: EACCES.*not trusted/);
+    assert.throws(() => createVaultAgentAsGiven({ serverCertificateFile: fixture('ca.pem') }), notTrusted);
+    assert.throws(() => createVaultAgentAsGiven({ ...trustStore(), fileTrust: undefined }), notTrusted);
+    assert.throws(() => createVaultAgentAsGiven({ ...keyStore('client.p12'), fileTrust: KeyFileTrust.administratorsOnly }), notTrusted);
+    assert.throws(() => createVaultAgentAsGiven({ clientCertificateFile: fixture('client.pem'), clientCertificateKeyFile: fixture('client.key') }), notTrusted);
+  });
+
+  it('takes only a KeyFileTrust as fileTrust', () => {
+    for (const fileTrust of [{ windowsPrincipals: [] }, 'S-1-5-18', 1001]) {
+      assert.throws(() => createVaultAgentAsGiven({ serverCertificateFile: fixture('ca.pem'), fileTrust: fileTrust as unknown as KeyFileTrust }),
+        refused(/fileTrust must be a KeyFileTrust/));
+    }
+  });
+
   it('trusts any certificate with insecureSkipVerify', async () => {
     const port = await startServer();
     const answer = await call(createVaultAgent({ insecureSkipVerify: true }), port);
@@ -188,7 +245,7 @@ describe('VaultTlsOptions: trusting Vault', () => {
 
   it('trusts the CA certificates in a PEM file, PEM in memory or a directory of PEM files', async () => {
     const port = await startServer();
-    const directory = mkdtempSync(join(tmpdir(), 'hkdfguard-ca-'));
+    const directory = mkdtempSync(join(scratchRoot(), 'hkdfguard-ca-'));
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
     copyFileSync(fixture('ca.pem'), join(directory, 'ca.pem'));
     for (const tls of [
@@ -220,7 +277,7 @@ describe('VaultTlsOptions: trusting Vault', () => {
   it('refuses a file that is missing, PEM where PKCS#12 belongs, or not a key store', () => {
     assert.throws(() => createVaultAgent({ ...trustStore(), trustStoreFile: fixture('missing.p12') }), refused(/missing\.p12' can't be read: ENOENT/));
     assert.throws(() => createVaultAgent({ ...trustStore(), trustStoreFile: fixture('ca.pem') }), refused(/is PEM, not PKCS#12/));
-    const directory = mkdtempSync(join(tmpdir(), 'hkdfguard-p12-'));
+    const directory = mkdtempSync(join(scratchRoot(), 'hkdfguard-p12-'));
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
     const garbage = join(directory, 'garbage.p12');
     writeFileSync(garbage, Buffer.from('3082ffff0201', 'hex'));
@@ -231,7 +288,7 @@ describe('VaultTlsOptions: trusting Vault', () => {
   });
 
   it('refuses a store whose contents were altered, as its MAC no longer matches', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'hkdfguard-p12-'));
+    const directory = mkdtempSync(join(scratchRoot(), 'hkdfguard-p12-'));
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
     const store = Buffer.from(readFileSync(fixture('truststore.p12')));
     store[store.length - 120]! ^= 1;
@@ -328,7 +385,7 @@ describe('VaultTlsOptions: presenting a client certificate', () => {
     const port = await startServer(true);
     const chain = readFileSync(fixture('client.pem'), 'latin1') + readFileSync(fixture('intermediate.pem'), 'latin1');
     const key = readFileSync(fixture('client.key'));
-    const directory = mkdtempSync(join(tmpdir(), 'hkdfguard-pem-'));
+    const directory = mkdtempSync(join(scratchRoot(), 'hkdfguard-pem-'));
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
     writeFileSync(join(directory, 'chain.pem'), chain);
     for (const identity of [

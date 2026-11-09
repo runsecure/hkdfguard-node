@@ -31,7 +31,9 @@ export {
   checkProtectedToken, chunksOf, copyTokenWithin, createVaultAgent, decryptToken, getTokenWithin, httpsAgentFor, invalidTokenError, isTransient,
   markTransient, putProtectedToken, putToken, runWithin, sendAttempt, vaultHeaders, VaultConnector, withRetries,
 } from './http.js';
-export { VaultTlsOptions, type VaultTlsAgentOptions } from './tls.js';
+export { UNVERIFIED_WARNING_CODE, VaultTlsOptions, type VaultTlsAgentOptions } from './tls.js';
+/** Who besides administrators may have written the TLS files ({@link VaultTlsOptions.fileTrust}), and the error a refused file is read with. */
+export { KeyFileError, KeyFileTrust, type KeyFileTrustOptions } from '@runsecure/hkdfguard-securefile';
 export {
   isValidToken, MAX_TOKEN_LENGTH, StaticVaultToken, StaticVaultTokenSource, TOKEN_PURPOSE, type VaultTokenProvider, type VaultTokenSource,
 } from './token.js';

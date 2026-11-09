@@ -19,6 +19,6 @@
  * This package is standalone: it does not depend on, or load, the native KMS library or its loader.
  */
 export { readTrustedKeyFile, PLAINTEXT_KEY_LENGTH } from './trustedkeyfile.js';
-export { readTrustedFile, readTrustedFileWith } from './trustedfile.js';
+export { readTrustedFile, readTrustedFileSync, readTrustedFileWith } from './trustedfile.js';
 export { KeyFileTrust, type KeyFileTrustOptions } from './trust.js';
 export { FILE_TOO_LARGE, INVALID_KEY_FILE, KeyFileError, UnsupportedPlatformError } from './errors.js';

@@ -4,7 +4,8 @@ import { Agent as HttpsAgent, createServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { capturingLogger } from '@runsecure/hkdfguard-test-support';
+import { KeyFileTrust } from '@runsecure/hkdfguard-securefile';
+import { capturingLogger, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
 import { VaultRedirectError, VaultResponseError } from './client-errors.js';
 import { VaultClient } from './client.js';
 import { DROP, harness, makeProtector, TOKEN, type Harness } from './fake-vault.test-support.js';
@@ -123,11 +124,20 @@ describe('VaultClient redirects', () => {
 describe('VaultClient timeouts and rate limits', () => {
   it('rejects a request that outlives the timeout with a TimeoutError', async () => {
     h.vault.delayMs = 2_000;
-    await assert.rejects(h.client({ requestTimeoutMs: 100 }).read('a?q'), (error: DOMException) => {
+    await assert.rejects(h.client({ requestTimeoutMs: 100 }).read('a', { queryParameters: [['q', '']] }), (error: DOMException) => {
       assert.equal(error.name, 'TimeoutError');
       assert.match(error.message, /GET \/v1\/a within 100 ms/);
       return true;
     });
+  });
+
+  it("refuses a timeout or retry wait Node's timers can't hold, which would fire at once", () => {
+    const max = 2_147_483_647;
+    assert.doesNotThrow(() => h.client({ requestTimeoutMs: max, retry: { retryWaitMinMs: max, retryWaitMaxMs: max } }));
+    for (const options of [{ requestTimeoutMs: max + 1 }, { requestTimeoutMs: Number.POSITIVE_INFINITY }, { requestTimeoutMs: -1 },
+      { retry: { retryWaitMinMs: max + 1 } }, { retry: { retryWaitMaxMs: 30 * 24 * 60 * 60 * 1000 } }]) {
+      assert.throws(() => h.client(options), /0 \(none\) to 2147483647 ms|0 to 2147483647 ms/, JSON.stringify(options));
+    }
   });
 
   it('counts a slow token provider against the timeout', async () => {
@@ -219,7 +229,11 @@ describe('VaultClient TLS', () => {
   it("trusts Vault's CA given in the TLS options", async () => {
     const server = await tlsServer();
     const client = new VaultClient(makeProtector(), {
-      address: `https://127.0.0.1:${server.port}`, tls: { serverCertificateFile: fixture('ca.pem'), serverName: 'vault.test' },
+      address: `https://127.0.0.1:${server.port}`,
+      // The fixture belongs to the account running the tests: trusted here, besides administrators.
+      tls: { serverCertificateFile: fixture('ca.pem'), serverName: 'vault.test', fileTrust: process.platform === 'win32'
+        ? new KeyFileTrust({ windowsPrincipals: [windowsCurrentUserSid()] })
+        : new KeyFileTrust({ unixUserIds: [process.geteuid!()], unixGroupIds: [process.getegid!()] }) },
     });
     try {
       assert.equal((await client.read('a'))?.data?.tls?.asBoolean(), true);

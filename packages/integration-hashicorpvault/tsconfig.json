@@ -12,13 +12,16 @@
       "path": "../abstractions"
     },
     {
-      "path": "../diagnostics"
-    },
-    {
       "path": "../cryptoprovider-aesgcm256"
     },
     {
       "path": "../dek"
+    },
+    {
+      "path": "../diagnostics"
+    },
+    {
+      "path": "../securefile"
     },
     {
       "path": "../test-support"

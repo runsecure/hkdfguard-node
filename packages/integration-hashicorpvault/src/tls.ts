@@ -1,8 +1,9 @@
 import { createPrivateKey, createPublicKey, X509Certificate } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createSecureContext, type SecureContext } from 'node:tls';
 import { InvalidArgumentError, wipe, type DataProtector } from '@runsecure/hkdfguard-abstractions';
+import { FILE_TOO_LARGE, KeyFileError, KeyFileTrust, readTrustedFileSync } from '@runsecure/hkdfguard-securefile';
 import { MAX_KEY_STORE_LENGTH, readPkcs12, type Pkcs12Certificate, type Pkcs12Key } from './pkcs12.js';
 
 /**
@@ -14,6 +15,9 @@ const PASSWORD_PURPOSE = 'HkdfGuard.Integration.HashiCorpVault.KeyStorePassword'
 // The first four bytes of a JKS and a JCEKS key store, neither of which Node can read.
 const JAVA_KEY_STORE_MAGIC = [Buffer.from('feedfeed', 'hex'), Buffer.from('cececece', 'hex')];
 const MAX_CHAIN_LENGTH = 10;
+
+/** The code of the warning emitted whenever Vault's certificate goes unverified. */
+export const UNVERIFIED_WARNING_CODE = 'HKDFGUARD_VAULT_TLS_UNVERIFIED';
 const MAX_PEM_LENGTH = 1024 * 1024;
 
 /**
@@ -22,6 +26,9 @@ const MAX_PEM_LENGTH = 1024 * 1024;
  * requiring mutual TLS: the Node counterpart of the .NET, Java and Python VaultTlsOptions. All unset,
  * Node's trust store (plus NODE_EXTRA_CA_CERTS) decides. Files are read, and passwords decrypted,
  * once, when the integration is created; every connection shares the secure context built then.
+ * Every file is read through readTrustedFile (@runsecure/hkdfguard-securefile), from a location only
+ * administrators and {@link fileTrust} could have written: whoever could replace the CA file could
+ * have the client trust a server of their own, and read every token and secret sent to it.
  *
  * Certificates are PEM ("CERTIFICATE" blocks). A client key is a PEM "PRIVATE KEY" (PKCS#8), "RSA
  * PRIVATE KEY" (PKCS#1) or "EC PRIVATE KEY" (SEC1) - unencrypted, as vault-client-go reads it.
@@ -72,9 +79,21 @@ export interface VaultTlsOptions {
 
   /**
    * Trusts any certificate Vault presents (VAULT_SKIP_VERIFY). For development only: anyone on the
-   * network path can then read every token and secret.
+   * network path can then read every token and secret. Each time it takes effect the process is
+   * warned (process.emitWarning, code HKDFGUARD_VAULT_TLS_UNVERIFIED), so it is never on unseen.
    */
   readonly insecureSkipVerify?: boolean;
+
+  /**
+   * Who, besides the operating system's administrators, may have written the files these options
+   * name - the CA certificate file or directory, the client certificate and key, the key stores.
+   * Each is read through readTrustedFile (@runsecure/hkdfguard-securefile) and refused unless it,
+   * and every folder above it, is owned by a trusted principal and writable by no one else, with no
+   * untrusted symbolic link on the way. {@link KeyFileTrust.administratorsOnly} by default. Name the
+   * account your deployment writes them as - never the one the application runs as, outside a
+   * developer machine.
+   */
+  readonly fileTrust?: KeyFileTrust;
 
   /** A PKCS#12 store of the CA certificates Vault's certificate must chain to, in place of the PEM ones. Needs {@link trustStorePassword}. */
   readonly trustStoreFile?: string;
@@ -143,7 +162,12 @@ export function createSecureContextOptions(tls: VaultTlsOptions): VaultTlsAgentO
   check(tls);
   const result: VaultTlsAgentOptions = {};
   if (tls.serverName !== undefined) result.servername = tls.serverName;
-  if (tls.insecureSkipVerify === true) result.rejectUnauthorized = false;
+  if (tls.insecureSkipVerify === true) {
+    result.rejectUnauthorized = false;
+    // Through Node's own channel, so it is seen whether or not the application gave a logger.
+    process.emitWarning("Vault's TLS certificate is not verified (VaultTlsOptions.insecureSkipVerify, or VAULT_SKIP_VERIFY): anyone on the "
+      + 'network path to Vault can read every token and secret. Use it only in development.', { code: UNVERIFIED_WARNING_CODE });
+  }
 
   const ca = serverCertificates(tls);
   const identity = clientIdentity(tls);
@@ -181,6 +205,7 @@ function check(tls: VaultTlsOptions): void {
     }
   }
   if (set('insecureSkipVerify') && typeof tls.insecureSkipVerify !== 'boolean') throw new InvalidArgumentError('tls.insecureSkipVerify must be a boolean.');
+  if (set('fileTrust') && !(tls.fileTrust instanceof KeyFileTrust)) throw new InvalidArgumentError('tls.fileTrust must be a KeyFileTrust.');
   if (set('passwordProtector') && typeof tls.passwordProtector?.decrypt !== 'function') {
     throw new InvalidArgumentError('tls.passwordProtector must be a DataProtector.');
   }
@@ -211,7 +236,10 @@ function check(tls: VaultTlsOptions): void {
 
 // The CA certificates to trust, as PEM, or undefined for Node's trust store.
 function serverCertificates(tls: VaultTlsOptions): string[] | undefined {
-  if (tls.serverCertificateFile !== undefined) return pemCertificates(readFile(tls.serverCertificateFile, 'server CA certificate file', MAX_PEM_LENGTH), `server CA certificate file '${tls.serverCertificateFile}'`);
+  const trust = fileTrustOf(tls);
+  if (tls.serverCertificateFile !== undefined) {
+    return pemCertificates(readFile(tls.serverCertificateFile, 'server CA certificate file', MAX_PEM_LENGTH, trust), `server CA certificate file '${tls.serverCertificateFile}'`);
+  }
   if (tls.serverCertificatePem !== undefined) return pemCertificates(Buffer.from(tls.serverCertificatePem), 'tls.serverCertificatePem');
   if (tls.serverCertificateDirectory !== undefined) {
     const directory = tls.serverCertificateDirectory;
@@ -224,15 +252,17 @@ function serverCertificates(tls: VaultTlsOptions): string[] | undefined {
     const certificates: string[] = [];
     for (const name of names) {
       const path = join(directory, name);
+      // Every regular file, a link to one included (as /etc/ssl/certs holds them); each is read only
+      // through the trusted-file checks, which follow a link only an administrator or `trust` owns.
       if (!statSync(path, { throwIfNoEntry: false })?.isFile()) continue;
-      certificates.push(...pemCertificates(readFile(path, 'server CA certificate file', MAX_PEM_LENGTH), `server CA certificate file '${path}'`));
+      certificates.push(...pemCertificates(readFile(path, 'server CA certificate file', MAX_PEM_LENGTH, trust), `server CA certificate file '${path}'`));
     }
     if (certificates.length === 0) throw new InvalidArgumentError(`The server CA certificate directory '${directory}' holds no certificates.`);
     return certificates;
   }
   if (tls.trustStoreFile !== undefined) {
     const what = `trust store '${tls.trustStoreFile}'`;
-    const { certificates } = openStore(tls.trustStoreFile, tls.trustStorePassword!, tls.passwordProtector!, false, what);
+    const { certificates } = openStore(tls.trustStoreFile, tls.trustStorePassword!, tls.passwordProtector!, false, what, trust);
     if (certificates.length === 0) throw new InvalidArgumentError(`The ${what} holds no certificates.`);
     return certificates.map((certificate) => toCertificate(certificate.der, what).toString());
   }
@@ -244,18 +274,19 @@ function clientIdentity(tls: VaultTlsOptions): { chain: string; key: Buffer } | 
   if (tls.clientKeyStoreFile !== undefined) return keyStoreIdentity(tls);
   if (tls.clientCertificateFile === undefined && tls.clientCertificatePem === undefined) return undefined;
 
+  const trust = fileTrustOf(tls);
   const certificateWhat = tls.clientCertificateFile !== undefined ? `client certificate file '${tls.clientCertificateFile}'` : 'tls.clientCertificatePem';
   const chain = pemCertificates(tls.clientCertificateFile !== undefined
-    ? readFile(tls.clientCertificateFile, 'client certificate file', MAX_PEM_LENGTH) : Buffer.from(tls.clientCertificatePem!), certificateWhat);
+    ? readFile(tls.clientCertificateFile, 'client certificate file', MAX_PEM_LENGTH, trust) : Buffer.from(tls.clientCertificatePem!), certificateWhat);
   // Copied, so zeroing it never touches the caller's buffer, which is theirs to zero.
   const key = tls.clientCertificateKeyFile !== undefined
-    ? readFile(tls.clientCertificateKeyFile, 'client certificate key file', MAX_PEM_LENGTH) : Buffer.from(tls.clientCertificateKeyPem!);
+    ? readFile(tls.clientCertificateKeyFile, 'client certificate key file', MAX_PEM_LENGTH, trust) : Buffer.from(tls.clientCertificateKeyPem!);
   return { chain: chain.join(''), key };
 }
 
 function keyStoreIdentity(tls: VaultTlsOptions): { chain: string; key: Buffer } {
   const what = `client key store '${tls.clientKeyStoreFile}'`;
-  const { keys, certificates } = openStore(tls.clientKeyStoreFile!, tls.clientKeyStorePassword!, tls.passwordProtector!, true, what);
+  const { keys, certificates } = openStore(tls.clientKeyStoreFile!, tls.clientKeyStorePassword!, tls.passwordProtector!, true, what, fileTrustOf(tls));
   try {
     const key = chooseKey(keys, tls.clientKeyStoreAlias, what);
     const leaf = chooseCertificate(key, certificates, what);
@@ -305,8 +336,8 @@ function chooseCertificate(key: Pkcs12Key, certificates: Pkcs12Certificate[], wh
 
 // The store at `path`, read with the password `protectedPassword` holds - decrypted into a buffer
 // zeroed before this returns.
-function openStore(path: string, protectedPassword: string, protector: DataProtector, readKeys: boolean, what: string) {
-  const store = readFile(path, what.split(' \'')[0]!, MAX_KEY_STORE_LENGTH + 1);
+function openStore(path: string, protectedPassword: string, protector: DataProtector, readKeys: boolean, what: string, trust: KeyFileTrust) {
+  const store = readFile(path, what.split(' \'')[0]!, MAX_KEY_STORE_LENGTH + 1, trust);
   if (store.length >= 4 && JAVA_KEY_STORE_MAGIC.some((magic) => store.subarray(0, 4).equals(magic))) {
     throw new InvalidArgumentError(`The ${what} is a JKS or JCEKS store, which Node can't read; convert it to PKCS#12: `
       + 'keytool -importkeystore -srckeystore <store> -destkeystore <store>.p12 -deststoretype PKCS12.');
@@ -346,18 +377,24 @@ function decryptPassword(protector: DataProtector, protectedPassword: string, wh
   return password;
 }
 
-function readFile(path: string, what: string, maxLength: number): Buffer {
-  let data: Buffer;
+// The trust files are read under: the options' own, or administrators only.
+function fileTrustOf(tls: VaultTlsOptions): KeyFileTrust {
+  return tls.fileTrust ?? KeyFileTrust.administratorsOnly;
+}
+
+// The whole file, read through the trusted-file checks, in a buffer the caller zeroes when it holds a key.
+function readFile(path: string, what: string, maxLength: number, trust: KeyFileTrust): Buffer {
+  let data: Uint8Array;
   try {
-    data = readFileSync(path);
+    data = readTrustedFileSync(path, trust, maxLength);
   } catch (error) {
-    throw new InvalidArgumentError(`The ${what} '${path}' can't be read: ${(error as NodeJS.ErrnoException).code ?? error}.`);
+    if (error instanceof KeyFileError && error.code === FILE_TOO_LARGE) throw new InvalidArgumentError(`The ${what} '${path}' is over ${maxLength} bytes.`);
+    // securefile's messages name paths and what isn't trusted, never contents.
+    if (error instanceof KeyFileError) throw new InvalidArgumentError(`The ${what} '${path}' can't be read: ${error.code} - ${error.message}`);
+    if (error instanceof InvalidArgumentError) throw new InvalidArgumentError(`The ${what} '${path}' can't be read: ${error.message}`);
+    throw error;
   }
-  if (data.length > maxLength) {
-    wipe(data);
-    throw new InvalidArgumentError(`The ${what} '${path}' is over ${maxLength} bytes.`);
-  }
-  return data;
+  return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 }
 
 // The certificates in PEM text, each checked, as PEM.

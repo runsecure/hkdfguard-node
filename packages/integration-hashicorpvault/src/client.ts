@@ -15,7 +15,7 @@ import {
   checkMfaCredentials, copyHeaders, isValidNamespace, mergeHeaders, VaultClientOptions, VaultRequest, type HeaderMap, type VaultRequestCallback,
   type VaultRequestOptions, type VaultResponseCallback,
 } from './client-options.js';
-import { apiBase, isLoopback, NAMESPACE_HEADER, REQUEST_HEADER } from './connection.js';
+import { apiBase, isLoopback, MAX_TIMEOUT_MS, NAMESPACE_HEADER, REQUEST_HEADER } from './connection.js';
 import { formatGoDuration } from './duration.js';
 import { VaultRequestError } from './errors.js';
 import { VaultApis } from './generated/apis.js';
@@ -247,8 +247,9 @@ export class VaultClient extends VaultApis {
     if (typeof address !== 'string') throw new TypeError('address must be a string.');
     const base = apiBase(address, 'a token', { allowUnencryptedHttp: options.allowUnencryptedHttp === true });
     const requestTimeoutMs = options.requestTimeoutMs ?? VaultClientOptions.DEFAULT_REQUEST_TIMEOUT_MS;
-    if (typeof requestTimeoutMs !== 'number' || !(requestTimeoutMs >= 0)) {
-      throw new InvalidArgumentError(`The request timeout must not be negative; it is ${requestTimeoutMs}.`);
+    // Node's timers hold at most MAX_TIMEOUT_MS; a longer one fires at once, timing out every request.
+    if (typeof requestTimeoutMs !== 'number' || !(requestTimeoutMs >= 0 && requestTimeoutMs <= MAX_TIMEOUT_MS)) {
+      throw new InvalidArgumentError(`The request timeout must be 0 (none) to ${MAX_TIMEOUT_MS} ms; it is ${requestTimeoutMs}.`);
     }
     const maxResponseBytes = options.maxResponseBytes ?? VaultClientOptions.DEFAULT_MAX_RESPONSE_BYTES;
     if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes >= bufferConstants.MAX_LENGTH) {
@@ -257,7 +258,9 @@ export class VaultClient extends VaultApis {
     const retry = options.retry ?? {};
     const retryWaitMinMs = retry.retryWaitMinMs ?? VaultRetryOptions.DEFAULT_RETRY_WAIT_MIN_MS;
     const retryWaitMaxMs = retry.retryWaitMaxMs ?? VaultRetryOptions.DEFAULT_RETRY_WAIT_MAX_MS;
-    if (!(retryWaitMinMs >= 0) || !(retryWaitMaxMs >= 0)) throw new InvalidArgumentError('The retry waits must not be negative.');
+    if (!(retryWaitMinMs >= 0 && retryWaitMinMs <= MAX_TIMEOUT_MS) || !(retryWaitMaxMs >= 0 && retryWaitMaxMs <= MAX_TIMEOUT_MS)) {
+      throw new InvalidArgumentError(`The retry waits must be 0 to ${MAX_TIMEOUT_MS} ms.`);
+    }
     const namespace = options.namespace;
     if (namespace !== undefined && namespace !== '' && !isValidNamespace(namespace)) {
       throw new InvalidArgumentError(`The namespace '${String(namespace)}' contains non-printable characters.`);

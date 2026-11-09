@@ -276,7 +276,7 @@ describe('VaultClient requests', () => {
     h.vault.answer(400, '{"error":"bad thing"}');
     h.vault.answer(404, 'not json');
     const client = h.client();
-    await assert.rejects(client.read('a?b'), (error: VaultResponseError) => {
+    await assert.rejects(client.read('a', { queryParameters: [['b', '']] }), (error: VaultResponseError) => {
       assert.ok(error instanceof VaultRequestError);
       assert.equal(error.statusCode, 403);
       assert.deepEqual(error.errors, ['permission denied']);
@@ -298,6 +298,28 @@ describe('VaultClient requests', () => {
     assert.equal(VaultClient.isErrorStatus(refusal, 403), false);
     assert.equal(VaultClient.isErrorStatus(new Error('plain'), 404), false);
     assert.equal(VaultClient.isErrorStatus(undefined, 404), false);
+  });
+
+  it("refuses a generic path holding a query, a fragment or a dot segment, sending nothing", async () => {
+    const client = h.client();
+    for (const path of ['a?version=1', 'a#b', 'secret/data/../../sys/raw', '../sys', 'a/./b', 'a/..', '/v1/a/%2e%2e/b', 'a/%2E', 'a%2f..%2fb']) {
+      for (const call of [() => client.read(path), () => client.readRaw(path), () => client.write(path, {}), () => client.list(path), () => client.delete(path)]) {
+        await assert.rejects(call(), (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_ARGUMENT', path);
+      }
+    }
+    assert.equal(h.vault.requests.length, 0);
+    // A dot inside a name is a name.
+    await client.read('secret/data/app.v2/..config');
+    assert.equal(h.vault.single().target, '/v1/secret/data/app.v2/..config');
+  });
+
+  it("refuses a path parameter that would climb out of its mount, though '/' in it is escaped", async () => {
+    const client = h.client();
+    for (const path of ['../other', 'a/../../sys', '..', '.']) {
+      await assert.rejects(client.secrets.kvV2Read(path), (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_ARGUMENT', path);
+    }
+    await assert.rejects(client.secrets.kvV2Read('app', { mountPath: '../sys' }), (e: unknown) => e instanceof HkdfGuardError);
+    assert.equal(h.vault.requests.length, 0);
   });
 
   it("doesn't treat a 304 as an error", async () => {

@@ -185,12 +185,18 @@ const wrapper = new HashiCorpVaultTransitKeyWrapper('https://vault.example.com:8
   mountPath: 'transit/team-a',
   namespace: 'team-a/prod',
   tls: {
-    serverCertificateFile: 'vault-ca.pem',
-    clientCertificateFile: 'myapp.pem',
-    clientCertificateKeyFile: 'myapp-key.pem',
+    serverCertificateFile: '/etc/myapp/vault-ca.pem',
+    clientCertificateFile: '/etc/myapp/myapp.pem',
+    clientCertificateKeyFile: '/etc/myapp/myapp-key.pem',
+    // fileTrust: new KeyFileTrust({ ... }) - the account that deploys these files, besides administrators
   },
 });
 ```
+
+Each file is read through `readTrustedFile` (`@runsecure/hkdfguard-securefile`) and refused unless
+it, and every folder above it, is owned by an administrator or a principal in `fileTrust`
+(administrators only by default) and writable by no one else: whoever could replace the CA file
+could point the wrapper at a server of their own, and be handed every DEK it wraps.
 
 ### Certificates in a password-protected key store
 

@@ -69,6 +69,23 @@ export async function readTrustedFileWith<T>(path: string, trust: KeyFileTrust, 
   return withTrustedFile(process.platform, process.arch, path, trust, (file) => parseFileContents(file.read, file.path, maxBytes, parse));
 }
 
+/**
+ * {@link readTrustedFile}, synchronously - for code that must read a file where it can't wait, such
+ * as a constructor that reads its TLS certificates. The checks and the read are the same, made on
+ * the calling thread as readTrustedFile's are; only the result isn't a promise. For contents that
+ * are themselves secret, zero the buffer once it is used.
+ *
+ * @param path The file's path, absolute or relative to the working directory.
+ * @param trust Who besides administrators is trusted; {@link KeyFileTrust.administratorsOnly} for no one.
+ * @param maxBytes The longest file accepted: a positive integer.
+ * @returns The file's contents, which may be empty, in a buffer the caller owns.
+ * @throws KeyFileError, InvalidArgumentError, UnsupportedPlatformError as {@link readTrustedFile}.
+ */
+export function readTrustedFileSync(path: string, trust: KeyFileTrust, maxBytes: number): Uint8Array {
+  validateArguments(path, trust, maxBytes);
+  return withTrustedFile(process.platform, process.arch, path, trust, (file) => readFileContents(file.read, file.path, maxBytes));
+}
+
 function validateArguments(path: string, trust: KeyFileTrust, maxBytes: number): void {
   if (typeof path !== 'string' || path === '') throw new InvalidArgumentError('A file path is required.');
   if (path.includes('\0')) throw new InvalidArgumentError("A file path can't contain a NUL character.");
