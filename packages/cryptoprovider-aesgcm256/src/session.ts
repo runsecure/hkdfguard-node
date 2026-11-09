@@ -85,6 +85,12 @@ export function budgetFor(key: Uint8Array): EncryptionBudget {
 // Set by AesGcmSession's static block.
 let keyOf: (session: AesGcmSession) => Uint8Array;
 
+/** Whether two views share any byte of memory. */
+function overlaps(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.buffer !== b.buffer || a.byteLength === 0 || b.byteLength === 0) return false;
+  return a.byteOffset < b.byteOffset + b.byteLength && b.byteOffset < a.byteOffset + a.byteLength;
+}
+
 /** Tests only: a session's key buffer, to check it is zeroed. Never exported from the package index. */
 export function sessionKeyForTests(session: AesGcmSession): Uint8Array {
   return keyOf(session);
@@ -141,6 +147,11 @@ export class AesGcmSession {
         const needed = plaintext.length + OVERHEAD;
         if (result.length < needed) {
           throw new InvalidArgumentError(`The result buffer holds ${result.length} bytes; encrypting ${plaintext.length} bytes needs ${needed}.`);
+        }
+        // plaintext is zeroed once encrypted: sharing memory with the bytes written, it would zero
+        // the ciphertext it became, and the value would be lost while the call reported success.
+        if (overlaps(plaintext, result.subarray(0, needed))) {
+          throw new InvalidArgumentError('The plaintext and the result buffer overlap: encrypt from a buffer of its own, as the plaintext is zeroed once encrypted.');
         }
 
         if (this.budget.consume()) {

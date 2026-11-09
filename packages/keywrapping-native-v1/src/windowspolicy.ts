@@ -46,6 +46,8 @@ export const Rights = {
   appendData: 0x00000004,
   writeExtendedAttributes: 0x00000010,
   deleteChild: 0x00000040,
+  /** FILE_WRITE_ATTRIBUTES: also enough for NTFS to make an empty folder a junction. */
+  writeAttributes: 0x00000100,
   delete: 0x00010000,
   writeDac: 0x00040000,
   writeOwner: 0x00080000,
@@ -54,7 +56,7 @@ export const Rights = {
 } as const;
 
 /** Any right that lets a principal change what this path loads; generic bits too, since an ACE can carry them unmapped. */
-export const WIN_GUARDED_RIGHTS = Rights.writeData | Rights.appendData | Rights.writeExtendedAttributes | Rights.deleteChild
+export const WIN_GUARDED_RIGHTS = Rights.writeData | Rights.appendData | Rights.writeExtendedAttributes | Rights.writeAttributes | Rights.deleteChild
   | Rights.delete | Rights.writeDac | Rights.writeOwner | Rights.genericAll | Rights.genericWrite;
 
 /** On the drive root, only what lets a principal rename or delete an entry directly beneath it. */

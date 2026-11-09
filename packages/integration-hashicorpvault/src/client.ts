@@ -1,3 +1,4 @@
+import { constants as bufferConstants } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import {
   Agent as HttpAgent, request as httpRequest, type IncomingMessage, type OutgoingHttpHeaders,
@@ -115,6 +116,7 @@ interface Shared {
   readonly tokenProtector: DataProtector;
   readonly logger: Logger | undefined;
   readonly requestTimeoutMs: number;
+  readonly maxResponseBytes: number;
   readonly retryWaitMinMs: number;
   readonly retryWaitMaxMs: number;
   readonly retryMax: number;
@@ -248,6 +250,10 @@ export class VaultClient extends VaultApis {
     if (typeof requestTimeoutMs !== 'number' || !(requestTimeoutMs >= 0)) {
       throw new InvalidArgumentError(`The request timeout must not be negative; it is ${requestTimeoutMs}.`);
     }
+    const maxResponseBytes = options.maxResponseBytes ?? VaultClientOptions.DEFAULT_MAX_RESPONSE_BYTES;
+    if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes >= bufferConstants.MAX_LENGTH) {
+      throw new InvalidArgumentError(`The largest response must be a positive whole number of bytes below ${bufferConstants.MAX_LENGTH}; it is ${String(maxResponseBytes)}.`);
+    }
     const retry = options.retry ?? {};
     const retryWaitMinMs = retry.retryWaitMinMs ?? VaultRetryOptions.DEFAULT_RETRY_WAIT_MIN_MS;
     const retryWaitMaxMs = retry.retryWaitMaxMs ?? VaultRetryOptions.DEFAULT_RETRY_WAIT_MAX_MS;
@@ -261,7 +267,7 @@ export class VaultClient extends VaultApis {
 
     this.#shared = {
       https: base.https, hostname: base.hostname, port: base.port, prefix: base.prefix,
-      options, tokenProtector, logger, requestTimeoutMs, retryWaitMinMs, retryWaitMaxMs,
+      options, tokenProtector, logger, requestTimeoutMs, maxResponseBytes, retryWaitMinMs, retryWaitMaxMs,
       retryMax: retry.retryMax ?? VaultRetryOptions.DEFAULT_RETRY_MAX,
       checkRetry: retry.checkRetry ?? defaultRetryPolicy,
       backoff: retry.backoff ?? linearJitterBackoff,
@@ -575,16 +581,23 @@ export class VaultClient extends VaultApis {
       const sent = await this.#sendCore(method, path, body, query, modifiers, deadline);
       let content: SecureBuffer | undefined;
       try {
+        const limit = this.#shared.maxResponseBytes;
+        const status = sent.response.statusCode ?? 0;
         try {
-          // Never undefined: no limit is set.
-          content = (await readBody(sent.response, undefined, Number(sent.response.headers['content-length'] ?? 0) || 0))!;
+          // The first buffer is sized from Content-Length, which is only Vault's word: never past the limit.
+          const declared = Number(sent.response.headers['content-length'] ?? 0) || 0;
+          content = await readBody(sent.response, limit, Math.min(declared, limit));
         } catch (error) {
           deadline.check();
           // Its partial bytes may hold a secret: neither kept nor chained.
           throw Object.assign(new Error(`The connection was lost during Vault's response to ${method} ${withoutQuery(sent.request.url)}.`),
             { code: (error as { code?: unknown }).code ?? 'ECONNRESET' });
         }
-        const status = sent.response.statusCode ?? 0;
+        if (content === undefined) {
+          // What was read is already zeroed; the rest is never read, and the connection is dropped below.
+          throw new VaultRequestError(`Vault's response to ${method} ${withoutQuery(sent.request.url)} is longer than ${limit} bytes `
+            + '(VaultClientOptions.maxResponseBytes); it was not read.', { statusCode: status });
+        }
         // sys/health answers 429, 472, 473, 501 and 503 with the health status itself.
         if (!(status >= 200 && status <= 399) && path !== HEALTH_PATH) throw responseError(status, content.view(), sent.request.method, sent.request.url);
         return readResponse(content.view(), this.#shared.tokenProtector, reader);

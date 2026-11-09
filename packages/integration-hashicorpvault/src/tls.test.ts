@@ -12,7 +12,7 @@ import { KeyRing } from '@runsecure/hkdfguard-dek';
 import { RecordingKey } from '@runsecure/hkdfguard-test-support';
 import { apiBase, checkTlsOptions } from './connection.js';
 import { createVaultAgent, VaultConnector } from './http.js';
-import { pkcs12Kdf } from './pkcs12.js';
+import { pkcs12 } from '@runsecure/hkdfguard-abstractions/internal';
 import { VaultTlsOptions } from './tls.js';
 
 // Made by test-fixtures/generate.sh: throwaway keys, trusted nowhere else.
@@ -121,7 +121,7 @@ function pfx(authSafe: Buffer, password: string | undefined): Buffer {
   if (password !== undefined) {
     const salt = randomBytes(8);
     const bmp = Buffer.concat([Buffer.from(password, 'utf16le').swap16(), Buffer.alloc(2)]);
-    const digest = createHmac('sha256', pkcs12Kdf('sha256', bmp, salt, 2048, 3, 32)).update(authSafe).digest();
+    const digest = createHmac('sha256', pkcs12.pkcs12Kdf('sha256', bmp, salt, 2048, 3, 32)).update(authSafe).digest();
     parts.push(tlv(0x30, tlv(0x30, tlv(0x30, oidTlv('608648016503040201'), tlv(0x05)), tlv(0x04, digest)), tlv(0x04, salt), tlv(0x02, Buffer.from([0x08, 0x00]))));
   }
   return tlv(0x30, ...parts);

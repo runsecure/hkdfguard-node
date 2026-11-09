@@ -196,6 +196,15 @@ describe('SecretPipelineWriter', () => {
     });
   }
 
+  it("refuses names whose file name is a Windows device's, or ends in '.'", (t) => {
+    const { protector, store } = fixture(t);
+    for (const name of ['con', 'NUL', 'COM1', 'LPT9']) {
+      assert.throws(() => new FakeWriter(protector, [name], store), (e: unknown) => e instanceof InvalidArgumentError && /device name/.test((e as Error).message), name);
+    }
+    // Only a whole file name is a device's: prod/nul is written as prod__nul.
+    assert.doesNotThrow(() => new FakeWriter(protector, ['prod/nul', 'app#COM1'], store));
+  });
+
   it('refuses names that map to one file name', (t) => {
     const { protector, store } = fixture(t);
     assert.throws(() => new FakeWriter(protector, ['a/b', 'a#b'], store), InvalidArgumentError);

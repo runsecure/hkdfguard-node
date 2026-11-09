@@ -627,7 +627,7 @@ store, a macOS keychain, an OpenSSL 3 provider on Linux (tpm2-openssl, pkcs11-pr
 password-protected PKCS#12 or PEM file whose password comes from a protected cache. A store's key
 stays in CNG or the keychain: `sign` and `decrypt` call the store through the package's own add-on,
 and TLS from it is refused, as Node's OpenSSL can't reach it. A file's key is decrypted by the
-package's own PKCS#12/PBES2 reader and held sealed; a provider's key is the provider's object in
+PKCS#12/PBES2 reader HkdfGuard's packages share (in `abstractions`) and held sealed; a provider's key is the provider's object in
 Node's OpenSSL, which loads the provider from `--openssl-config`. Every certificate and key file is
 read through `readTrustedFile` (`securefile`): one that anyone but administrators and the loader's
 `KeyFileTrust` (`fileTrust`, administrators only by default) could have written or replaced - or a

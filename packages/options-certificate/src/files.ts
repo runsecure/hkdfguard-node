@@ -6,7 +6,6 @@ import { createPrivateKey, createPublicKey, type KeyObject } from 'node:crypto';
 import { wipe } from '@runsecure/hkdfguard-abstractions';
 import { FILE_TOO_LARGE, KeyFileError, readTrustedFile, type KeyFileTrust } from '@runsecure/hkdfguard-securefile';
 import { InvalidCertificateFileError, UnsupportedCertificateError } from './errors.js';
-import * as pbe from './pbe.js';
 import { decodeBase64, pemBlocks } from './pem.js';
 import { decryptPkcs8, MAX_FILE_LENGTH } from './pkcs12.js';
 import { parseCertificate, type ParsedCertificate } from './x509.js';
@@ -74,7 +73,7 @@ export function decryptPemKey(data: Buffer, password: Uint8Array, path: string):
     if (block.label === 'ENCRYPTED PRIVATE KEY') {
       const encrypted = decodeBase64(block.body, failIn(path)); // ciphertext and its parameters only
       try {
-        return decryptPkcs8(encrypted, password, new pbe.IterationBudget());
+        return decryptPkcs8(encrypted, password);
       } finally {
         wipe(encrypted);
       }

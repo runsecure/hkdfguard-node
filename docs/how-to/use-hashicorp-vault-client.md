@@ -86,7 +86,8 @@ const keys = await vault.list('secret/metadata/myapp');
 ```
 
 `readRaw` returns the response as it is - its status, headers and body stream - unparsed and not
-bound by the request timeout.
+bound by the request timeout or `maxResponseBytes`. Its body is a stream of its own, never Node's
+response, which would lead back to the request and its token.
 
 ## 5. Transit
 
@@ -117,13 +118,16 @@ const unwrapped = await vault.unwrap(wrapped!.wrapInfo!.token!, KvV2ReadResponse
 ## 8. Errors, retries and timeouts
 
 - `VaultResponseError`: Vault refused the request - its `statusCode`, the `errors` it listed.
+  A JSON answer listing no errors is reported by its status alone, and any other body is quoted
+  only to its first 512 bytes; the whole body is in `rawResponseBytes`.
   `VaultClient.isErrorStatus(error, 404)` finds it among an error's causes.
 - `VaultRedirectError`: a redirect the client wouldn't follow. Redirects are off unless
   `followRedirects` is set, since they'd carry the token wherever they point.
 - `VaultJsonError`: the answer isn't the JSON expected.
 - Node's network error when Vault can't be reached, a DOMException named `TimeoutError` past
   `requestTimeoutMs` (60 seconds by default, its token, retries and redirect included), and the
-  signal's reason when the request is aborted.
+  signal's reason when the request is aborted. A body longer than `maxResponseBytes` (32 MiB by
+  default) fails the request with a `VaultRequestError` before more of it is read.
 
 Failures are retried as vault-client-go retries them: no answer (unless Vault's certificate was
 refused), 412, 429 and 5xx other than 501, twice by default, waiting 1-1.5 seconds times the attempt.

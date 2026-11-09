@@ -103,7 +103,8 @@ Every operation that reaches a store or a file is asynchronous.
 
 ### Files
 
-The PKCS#12 and PBES2 decryption is this package's own, as in the Go and Python ports: PBES2 (PBKDF2
+The PKCS#12 and PBES2 decryption is HkdfGuard's own, as in the Go and Python ports, and shared with
+the Vault client's key stores (it lives in `abstractions`): PBES2 (PBKDF2
 with HMAC-SHA-1/224/256/384/512, AES-128/192/256-CBC or 3DES-CBC), PKCS#12's own 3DES, HMAC-SHA-1/2
 integrity MACs, BER as well as DER. Legacy RC2 and RC4 files (`openssl pkcs12 -legacy`) are refused
 with a hint to re-export with AES, as are PBMAC1 and public-key-protected files, and legacy

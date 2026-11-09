@@ -16,7 +16,8 @@ import { linuxKeyFileRoot, windowsCurrentUserSid } from '@runsecure/hkdfguard-te
 import * as der from './der.js';
 import { CertificateOptionsLoader } from './loader.js';
 import type { CertificateOptions } from './options.js';
-import { bmpPassword, pkcs12Kdf } from './pbe.js';
+import { pkcs12 as sharedPkcs12 } from '@runsecure/hkdfguard-abstractions/internal';
+const { bmpPassword, pkcs12Kdf } = sharedPkcs12;
 import { encodePem } from './pem.js';
 import type { StoreCertificate, StoreKey, StoreReader } from './store.js';
 import { CertificateOptionsValidator, type CertificatePlatform } from './validator.js';

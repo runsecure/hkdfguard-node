@@ -8,7 +8,9 @@ export interface KeyFileTrustOptions {
   /**
    * Windows security identifiers (SIDs, such as a deployers group's "S-1-5-21-...-1005") that may
    * also own, and hold write rights on, a key file and the folders above it. Checked when a key file
-   * is read: Everyone, Authenticated Users, Users, Interactive and Anonymous are refused then.
+   * is read: a principal standing for a whole class of accounts - Everyone, Authenticated Users,
+   * Users, Guests, Interactive, Network, Service, Local account, All Application Packages, Creator
+   * Owner, a domain's Domain Users, and the like - is refused then.
    */
   readonly windowsPrincipals?: Iterable<string>;
   /** Linux and macOS user ids that may also own a key file, the directories above it, and the symbolic links on its path. */

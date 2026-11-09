@@ -85,8 +85,11 @@ const tls: VaultTlsOptions = {
 ### Key stores
 
 Node's own `pfx` option takes a store's password only as a string, which JavaScript can't erase,
-and presents only the first key a store holds, so stores are read by this package's own PKCS#12
-reader, over `node:crypto`, with the password decrypted into a buffer only while the store is read.
+and presents only the first key a store holds, so stores are read by the PKCS#12 reader HkdfGuard's
+packages share (in `abstractions`, the same one the certificate package reads files with), over
+`node:crypto`, with the password decrypted into a buffer only while the store is read. Key
+derivations are capped at 1,000,000 iterations each and 4,000,000 per store, so a store can't stall
+the process while it is read.
 It reads what OpenSSL 3 and keytool (Java 11.0.12 or later) write - PBES2 (PBKDF2 with AES-CBC) or
 PKCS#12's triple-DES encryption, under an HMAC - including a Java trust store of certificates only.
 It refuses legacy RC2 and RC4 (`openssl pkcs12 -legacy`, older Java), JKS and JCEKS, and PBMAC1,

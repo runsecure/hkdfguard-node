@@ -49,7 +49,10 @@ export interface KeyWrapper {
  * decrypt never modifies its ciphertext. An omitted `aad` means none.
  */
 export interface CryptoProvider {
-  /** Encrypts `plaintext` bound to `aad` into `result`, returning the number of bytes written. */
+  /**
+   * Encrypts `plaintext` bound to `aad` into `result`, returning the number of bytes written.
+   * `plaintext` must not share memory with the bytes written to `result`: it is zeroed afterwards.
+   */
   encrypt(plaintext: Uint8Array, result: Uint8Array, aad?: Uint8Array): number;
 
   /** Decrypts `ciphertext` encrypted with the same `aad` into `result`, returning the number of bytes written. */

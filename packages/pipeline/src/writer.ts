@@ -439,7 +439,8 @@ export abstract class SecretPipelineWriter implements SecretPipelineWriterContra
       }
       if (!FilePerSecretCache.isValidName(fileName)) {
         throw new InvalidArgumentError(`'${secretName}' can't be written as a file: its file name '${fileName}' must be `
-          + `1-${FilePerSecretCache.MAX_NAME_LENGTH} ASCII letters, digits, '-', '_' and '.', not starting with '.'.`);
+          + `1-${FilePerSecretCache.MAX_NAME_LENGTH} ASCII letters, digits, '-', '_' and '.', not starting or ending with '.', and not a `
+          + 'Windows device name (CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9).');
       }
       // ASCII only, as FilePerSecretCache.isValidName just said, so lower-casing it is ignoring case.
       const folded = fileName.toLowerCase();

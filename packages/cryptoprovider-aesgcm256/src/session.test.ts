@@ -57,6 +57,24 @@ describe('AesGcmSession', () => {
     assert.throws(() => session.decrypt(ciphertext, new Uint8Array(4)), InvalidArgumentError);
   });
 
+  it('refuses a plaintext sharing memory with the bytes it would write, before encrypting', () => {
+    const session = newSession();
+    const plain = utf8('in place');
+    // In place: the plaintext at the start of its own result buffer, as one buffer would invite.
+    const buffer = new Uint8Array(plain.length + OVERHEAD);
+    buffer.set(plain);
+    assert.throws(() => session.encrypt(buffer.subarray(0, plain.length), buffer), InvalidArgumentError);
+    // At the end of it, still under the tag.
+    const tail = new Uint8Array(plain.length + OVERHEAD + 4);
+    assert.throws(() => session.encrypt(tail.subarray(OVERHEAD), tail.subarray(0, plain.length + OVERHEAD)), InvalidArgumentError);
+    assert.equal(session.budget.count, 0, 'nothing was encrypted');
+    // The same buffer, but past every byte written: no overlap, and it works.
+    const apart = new Uint8Array(2 * (plain.length + OVERHEAD));
+    apart.set(plain, plain.length + OVERHEAD);
+    const written = session.encrypt(apart.subarray(plain.length + OVERHEAD, 2 * plain.length + OVERHEAD), apart);
+    assert.equal(decrypt(session, apart.subarray(0, written)), 'in place');
+  });
+
   it('refuses a bad key', () => {
     for (const key of [new Uint8Array(16), new Uint8Array(33), new Uint8Array(32)]) {
       assert.throws(() => newSession(key), InvalidArgumentError);

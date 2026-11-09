@@ -225,6 +225,16 @@ describe('FilePerSecretCache: names', () => {
     }
   });
 
+  it('refuses Windows device names and a trailing dot, which would name another file or a device', () => {
+    for (const name of ['con', 'CON', 'Nul', 'nul.txt', 'aux', 'prn.key', 'com1', 'COM9.json', 'lpt1', 'LPT3.bin', 'key.', 'a..']) {
+      assert.ok(!FilePerSecretCache.isValidName(name), name);
+    }
+    // Names that only start like one are names.
+    for (const name of ['console', 'nullable', 'com10', 'com0', 'lpt', 'auxiliary.txt', 'prod__con', 'a.b']) {
+      assert.ok(FilePerSecretCache.isValidName(name), name);
+    }
+  });
+
   it('accepts up to MAX_NAME_LENGTH letters, digits and punctuation', () => {
     assert.ok(FilePerSecretCache.isValidName('Db-Password_v2.txt'));
     assert.ok(FilePerSecretCache.isValidName('a'.repeat(FilePerSecretCache.MAX_NAME_LENGTH)));

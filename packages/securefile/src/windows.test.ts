@@ -73,6 +73,20 @@ describe('Windows trusted principals', () => {
     for (const sid of ['S-1-1-0', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-4', 'S-1-5-7']) invalidArgument(() => trusted(sid), 'every account');
   });
 
+  it('refuse every other principal that stands for a class of accounts, or whoever owns a file', () => {
+    for (const sid of ['S-1-5-32-546', 'S-1-5-2', 'S-1-5-3', 'S-1-5-6', 'S-1-5-14', 'S-1-2-0', 'S-1-2-1', 'S-1-5-113', 'S-1-5-15', 'S-1-15-2-1',
+      'S-1-15-2-2', 'S-1-3-0', 'S-1-3-4']) {
+      invalidArgument(() => trusted(sid), 'a whole class of accounts');
+    }
+    // A domain's Domain Users, Domain Guests and Domain Computers; its other groups and accounts are names to trust.
+    for (const rid of [513, 514, 515]) invalidArgument(() => trusted(`S-1-5-21-1111111111-2222222222-3333333333-${rid}`), 'a whole class of accounts');
+    for (const rid of [512, 1005, 5130]) assert.ok(trusted(`S-1-5-21-1111111111-2222222222-3333333333-${rid}`).length === 4, String(rid));
+  });
+
+  it('refuse write-attributes for an untrusted principal, as it can make an empty folder a junction', () => {
+    untrusted(() => verify(locked(ADMINISTRATORS, allow(USERS, 0x100))), USERS);
+  });
+
   it('refuse what is not a SID', () => {
     for (const value of ['HkdfGuardDeployers', '']) invalidArgument(() => trusted(value), 'not a security identifier');
   });

@@ -311,8 +311,9 @@ const trusted = new AwsKmsKeyWrapper(kms, keyArn, {
 
 > **Security:** never trust the account the application itself runs as, except on a developer
 > machine. An application that can rewrite its own key files can be made to switch to an older,
-> still-valid one. Everyone, Authenticated Users, Users, Interactive and Anonymous are refused if
-> listed.
+> still-valid one. A principal that stands for a whole class of accounts - Everyone, Authenticated
+> Users, Users, Guests, Interactive, Network, Service, Local account, All Application Packages,
+> Creator Owner, a domain's Domain Users, and the like - is refused if listed.
 
 ## 7. Use the key file
 

@@ -51,10 +51,42 @@ export const TRUSTED_INSTALLER = 'S-1-5-80-956008885-3418522649-1831038044-18532
 export const ALWAYS_TRUSTED: readonly string[] = [SYSTEM, ADMINISTRATORS, TRUSTED_INSTALLER];
 
 /**
- * Groups every account, or every signed-in one, is in - Everyone, Authenticated Users, Users,
- * Interactive, Anonymous: trusting one trusts everybody.
+ * Principals that stand for whole classes of accounts, so trusting one trusts strangers: Everyone,
+ * Authenticated Users, Users, Guests and Anonymous; every account signed in a given way (Interactive,
+ * Network, Batch, Service, Remote Interactive, Console Logon, Local) or of a given kind (Local
+ * account, This Organization); every app container (All Application Packages, All Restricted
+ * Application Packages); and the placeholders for whoever owns or creates an item (Creator Owner,
+ * Owner Rights). A domain's Domain Users, Domain Guests and Domain Computers groups are refused too
+ * (see {@link isNeverTrusted}).
  */
-export const NEVER_TRUSTED: ReadonlySet<string> = new Set(['S-1-1-0', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-4', 'S-1-5-7']);
+export const NEVER_TRUSTED: ReadonlySet<string> = new Set([
+  'S-1-1-0', // Everyone
+  'S-1-5-11', // Authenticated Users
+  'S-1-5-32-545', // Users
+  'S-1-5-32-546', // Guests
+  'S-1-5-7', // Anonymous Logon
+  'S-1-5-4', // Interactive
+  'S-1-5-2', // Network
+  'S-1-5-3', // Batch
+  'S-1-5-6', // Service
+  'S-1-5-14', // Remote Interactive Logon
+  'S-1-2-0', // Local
+  'S-1-2-1', // Console Logon
+  'S-1-5-113', // Local account
+  'S-1-5-15', // This Organization
+  'S-1-15-2-1', // All Application Packages
+  'S-1-15-2-2', // All Restricted Application Packages
+  'S-1-3-0', // Creator Owner
+  'S-1-3-4', // Owner Rights
+]);
+
+// A domain's Domain Users (513), Domain Guests (514) and Domain Computers (515).
+const DOMAIN_WIDE_GROUP = /^S-1-5-21-\d+-\d+-\d+-51[345]$/;
+
+/** Whether `sid` (canonical) is a principal no KeyFileTrust may name: one of {@link NEVER_TRUSTED}, or a domain-wide group. */
+export function isNeverTrusted(sid: string): boolean {
+  return NEVER_TRUSTED.has(sid) || DOMAIN_WIDE_GROUP.test(sid);
+}
 
 /** File access rights (winnt.h). */
 export const Rights = {
@@ -64,6 +96,8 @@ export const Rights = {
   appendData: 0x0004,
   /** FILE_WRITE_EA. */
   writeExtendedAttributes: 0x0010,
+  /** FILE_WRITE_ATTRIBUTES: also enough for NTFS to make an empty folder a junction, or to change a file's times. */
+  writeAttributes: 0x0100,
   /** FILE_DELETE_CHILD. */
   deleteSubdirectoriesAndFiles: 0x0040,
   delete: 0x0001_0000,
@@ -78,10 +112,12 @@ export const Rights = {
 /**
  * Any right that lets a principal change what this path reads: write or append data (on a folder,
  * create files or folders), delete or rename (Delete on the item, DeleteSubdirectoriesAndFiles on its
- * parent), write extended attributes, or take over the ACL. Generic bits are listed too, since an ACE
- * can carry them unmapped.
+ * parent), write extended or ordinary attributes (NTFS lets either write right set a reparse point,
+ * turning an empty folder into a junction; and a key file's times decide its age), or take over the
+ * ACL. Generic bits are listed too, since an ACE can carry them unmapped.
  */
-export const GUARDED_RIGHTS = Rights.writeData | Rights.appendData | Rights.writeExtendedAttributes | Rights.deleteSubdirectoriesAndFiles
+export const GUARDED_RIGHTS = Rights.writeData | Rights.appendData | Rights.writeExtendedAttributes | Rights.writeAttributes
+  | Rights.deleteSubdirectoriesAndFiles
   | Rights.delete | Rights.changePermissions | Rights.takeOwnership | Rights.genericAll | Rights.genericWrite;
 
 /** On the drive root, only what lets a principal rename or delete an entry directly beneath it. */
@@ -137,9 +173,9 @@ export function trustedPrincipals(trust: KeyFileTrust, canonicalSid: (sid: strin
     if (sid === null) {
       throw new InvalidArgumentError(`KeyFileTrust.windowsPrincipals holds '${value}', which is not a security identifier (S-1-...).`);
     }
-    if (NEVER_TRUSTED.has(sid)) {
-      throw new InvalidArgumentError(`KeyFileTrust.windowsPrincipals holds ${describe(sid, accountName)}, which every account (or every signed-in one) is in; `
-        + 'trusting it would trust anyone to replace a trusted file.');
+    if (isNeverTrusted(sid)) {
+      throw new InvalidArgumentError(`KeyFileTrust.windowsPrincipals holds ${describe(sid, accountName)}, which stands for a whole class of accounts - `
+        + 'every account, every signed-in one, every one of a kind, or whoever owns the file; trusting it would trust anyone to replace a trusted file.');
     }
     trusted.push(sid);
   }

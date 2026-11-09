@@ -117,8 +117,10 @@ export class AzureKeyVaultSecretCache extends RemoteSecretCache {
     try {
       await captureWithin(capture, () => this.#client.getSecret(name, { abortSignal: signal }));
     } catch (error) {
-      // Missing: nothing handed over.
-      if (isRestError(error) && error.statusCode === 404) return;
+      // Missing - Key Vault's own SecretNotFound, nothing handed over. Any other 404 (a proxy, a wrong
+      // vault URL path) is a fault to report, not "no such secret", which would let a collection fall
+      // through to a lower-priority source or the application treat the secret as absent.
+      if (isRestError(error) && error.statusCode === 404 && error.code === 'SecretNotFound') return;
       throw error;
     }
     if (!capture.captured) {
@@ -140,6 +142,6 @@ function clientOptionsWithCapture(clientOptions: SecretClientOptions): SecretCli
 
 // The SDK's RestError (@azure/core-rest-pipeline), recognized by name as the SDK's own isRestError
 // does, so any copy of the SDK the application installed is recognized.
-function isRestError(error: unknown): error is { name: 'RestError'; statusCode?: number } {
+function isRestError(error: unknown): error is { name: 'RestError'; statusCode?: number; code?: string } {
   return typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'RestError';
 }

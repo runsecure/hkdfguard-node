@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { ClosedError, HkdfGuardError } from '@runsecure/hkdfguard-abstractions';
+import { readBody } from './body.js';
 import { VaultJsonError, VaultRedirectError, VaultResponseError } from './client-errors.js';
 import type { VaultRequest } from './client-options.js';
 import { VaultClient } from './client.js';
@@ -313,6 +314,67 @@ describe('VaultClient requests', () => {
     for await (const chunk of raw) chunks.push(chunk);
     assert.equal(Buffer.concat(chunks).toString(), 'teapot body');
     raw.close();
+  });
+
+  it("gives a raw response's body as a stream of its own, with no way back to the request's token", async () => {
+    h.vault.answer(200, 'raw body');
+    const raw = await h.client().readRaw('a');
+    const body = raw.body as Readable & { req?: unknown; socket?: unknown };
+    assert.equal(body.req, undefined);
+    assert.equal(body.socket, undefined);
+    assert.equal(raw.body, body, 'the same stream each time');
+    const chunks: Buffer[] = [];
+    for await (const chunk of body) chunks.push(chunk as Buffer);
+    assert.equal(Buffer.concat(chunks).toString(), 'raw body');
+    raw.close();
+  });
+
+  it('refuses a response longer than maxResponseBytes', async () => {
+    const big = 'x'.repeat(4096);
+    h.vault.answer(200, `{"data":{"v":"${big}"}}`);
+    h.vault.answer(200, '{"data":{}}');
+    h.vault.answer(502, big);
+    const client = h.client({ maxResponseBytes: 1024, retry: { retryMax: 0 } });
+    await assert.rejects(client.read('a'), (error: VaultRequestError) =>
+      error instanceof VaultRequestError && /longer than 1024 bytes/.test(error.message) && error.statusCode === 200 && !error.message.includes(big));
+    // Under the limit, as before.
+    assert.ok(await client.read('a'));
+    // A refusal is held to the limit too.
+    await assert.rejects(client.read('a'), /longer than 1024 bytes/);
+  });
+
+  it("sizes its first buffer by the limit, not by what Content-Length claims", async () => {
+    // What a lying Content-Length of 2 GiB once allocated up front; now the limit bounds it.
+    async function* chunks() { yield Buffer.from('{}'); }
+    const body = await readBody(chunks(), 1024, 2 ** 31);
+    assert.equal(Buffer.from(body!.view()).toString(), '{}');
+    body!.close();
+  });
+
+  it('checks maxResponseBytes', () => {
+    for (const bad of [0, -1, 1.5, Number.NaN, 2 ** 53, '1024']) {
+      assert.throws(() => h.client({ maxResponseBytes: bad as number }), HkdfGuardError, String(bad));
+    }
+  });
+
+  it("quotes no more than the start of a body that isn't Vault's, and none of a JSON one listing no errors", async () => {
+    const page = `<html>${'proxy error '.repeat(200)}</html>`;
+    h.vault.answer(502, page);
+    // A KV v2 read of a deleted version: 404, the secret's metadata, no errors.
+    h.vault.answer(404, '{"data":{"data":null,"metadata":{"custom_metadata":{"owner":"payroll"},"deletion_time":"2026-01-01T00:00:00Z"}}}');
+    const client = h.client({ retry: { retryMax: 0 } });
+    await assert.rejects(client.read('a'), (error: VaultResponseError) => {
+      assert.ok(error.message.startsWith('502 Bad Gateway: <html>proxy error'));
+      assert.ok(error.message.endsWith(`... (${Buffer.byteLength(page)} bytes)`), error.message);
+      assert.ok(error.message.length < 600);
+      assert.equal(Buffer.from(error.rawResponseBytes!).toString(), page);
+      return true;
+    });
+    await assert.rejects(client.read('a'), (error: VaultResponseError) => {
+      assert.equal(error.message, '404 Not Found');
+      assert.ok(Buffer.from(error.rawResponseBytes!).toString().includes('payroll'));
+      return true;
+    });
   });
 
   it("runs the client's callbacks before the request's", async () => {
