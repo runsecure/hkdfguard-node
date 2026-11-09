@@ -640,7 +640,7 @@ static napi_value extended_acl(napi_env env, napi_callback_info info) {
     UNIX_CHECK(napi_create_object(env, &item));
     UNIX_CHECK(napi_get_boolean(env, tag == ACL_EXTENDED_ALLOW, &value));
     UNIX_CHECK(napi_set_named_property(env, item, "allow", value));
-    UNIX_CHECK(napi_get_boolean(env, acl_get_flag_np(flagset, ACL_ENTRY_INHERIT_ONLY) == 1, &value));
+    UNIX_CHECK(napi_get_boolean(env, acl_get_flag_np(flagset, ACL_ENTRY_ONLY_INHERIT) == 1, &value));
     UNIX_CHECK(napi_set_named_property(env, item, "inheritOnly", value));
     UNIX_CHECK(napi_create_string_utf8(env, kind, NAPI_AUTO_LENGTH, &value));
     UNIX_CHECK(napi_set_named_property(env, item, "kind", value));
