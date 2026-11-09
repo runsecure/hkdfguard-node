@@ -3,11 +3,39 @@ import { describe, it } from 'node:test';
 import { certificate, nameDer, rsaKey } from './certificates.test-support.js';
 import * as der from './der.js';
 import { DistinguishedName } from './dn.js';
+import { InvalidCertificateFileError } from './errors.js';
 import { parseCertificate } from './x509.js';
+
+/** `der` with the first UTCTime (its notBefore) replaced by `time`, 13 characters like it. */
+function withNotBefore(certificateDer: Buffer, time: string): Buffer {
+  const at = certificateDer.indexOf(Buffer.from([0x17, 0x0d]));
+  const patched = Buffer.from(certificateDer);
+  patched.write(time, at + 2, 'latin1');
+  return patched;
+}
 
 function subjectOf(name: Buffer): DistinguishedName {
   return parseCertificate(certificate(rsaKey(), { subject: name }), 'test').subject;
 }
+
+describe('validity times', () => {
+  // Only the parser's own reading is checked: the signature no longer covers the patched bytes, and
+  // nothing here verifies it.
+  const issued = certificate(rsaKey(), { now: new Date(Date.UTC(2024, 0, 15)) });
+
+  it('reads a time that exists, a leap day included', () => {
+    assert.equal(parseCertificate(withNotBefore(issued, '240229120000Z'), 'test').notBefore.toISOString(), '2024-02-29T12:00:00.000Z');
+    assert.equal(parseCertificate(withNotBefore(issued, '491231235959Z'), 'test').notBefore.toISOString(), '2049-12-31T23:59:59.000Z');
+  });
+
+  it('refuses a field out of range rather than rolling it into the next', () => {
+    for (const time of ['991399999999Z', '241301000000Z', '240230000000Z', '230229000000Z', '240100000000Z', '240101240000Z', '240101236000Z',
+      '240101235960Z', '240431000000Z']) {
+      assert.throws(() => parseCertificate(withNotBefore(issued, time), 'test'),
+        (e: unknown) => e instanceof InvalidCertificateFileError && /doesn't exist/.test((e as Error).message), time);
+    }
+  });
+});
 
 describe('DistinguishedName', () => {
   it("matches a certificate's whole subject, ignoring case, never a part of it", () => {

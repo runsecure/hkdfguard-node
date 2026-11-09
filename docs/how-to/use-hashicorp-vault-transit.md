@@ -318,6 +318,7 @@ fails before Vault is called, as described for [AWS KMS](use-aws-kms.md#if-somet
 | `400 BadRequest` ... `encryption key not found` | No key by that name in this mount (or namespace) | Check the key name, `mountPath` and `namespace` |
 | `400 BadRequest` ... `cipher: message authentication failed` | The key file was altered, wrapped under another key, or with a different context | Restore the file; use the key and context it was created with |
 | `400 BadRequest` ... `missing 'context' for key derivation` | The key is derived | Create a key with `derived=false` and rewrap |
+| `... isn't an AEAD key` | The transit key is another type - RSA, say - whose ciphertext isn't nonce, data and tag; or a key file was made with one | Use an `aes256-gcm96`, `aes128-gcm96` or `chacha20-poly1305` key, and rewrap |
 | `400 BadRequest` ... `disallowed by policy (too old)` | The file's key version is below `min_decryption_version` | Lower it, or rewrap the file under the current version |
 | `ignored a parameter` | This Vault doesn't support `associated_data` | Upgrade Vault (the integration tests run against 1.19) |
 | `503 ServiceUnavailable` | Vault is sealed, or electing a leader, beyond the retries | Unseal Vault; check its HA status |

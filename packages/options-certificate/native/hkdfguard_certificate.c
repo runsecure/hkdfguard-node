@@ -47,6 +47,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 #include <errno.h>
+#include <pthread.h>
 #include <pwd.h>
 #include <unistd.h>
 #endif
@@ -362,6 +363,30 @@ static SecKeyAlgorithm mac_algorithm(int32_t algorithm) {
   }
 }
 
+/* Keychain operations are made with the keychain's user interaction off, so a key whose access list
+ * doesn't let this process use it fails with errSecInteractionNotAllowed - as CNG's silent flags make
+ * a Windows key fail - rather than showing a dialog that holds a thread pool worker until someone
+ * answers it, or forever in a session nobody watches. The setting is the whole process's, so it is
+ * turned off only for the call and put back as it was afterwards, one call at a time; the deprecated
+ * SecKeychain calls are the only way to set it, as for the keychain search below. */
+static pthread_mutex_t interaction_lock = PTHREAD_MUTEX_INITIALIZER;
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static Boolean interaction_off(void) {
+  Boolean previous = true;
+  pthread_mutex_lock(&interaction_lock);
+  if (SecKeychainGetUserInteractionAllowed(&previous) != errSecSuccess) previous = true;
+  SecKeychainSetUserInteractionAllowed(false);
+  return previous;
+}
+
+static void interaction_restore(Boolean previous) {
+  SecKeychainSetUserInteractionAllowed(previous);
+  pthread_mutex_unlock(&interaction_lock);
+}
+#pragma clang diagnostic pop
+
 static void cf_string_into(CFStringRef text, char* out, size_t capacity) {
   out[0] = 0;
   if (text != NULL) CFStringGetCString(text, out, (CFIndex)capacity, kCFStringEncodingUTF8);
@@ -376,8 +401,10 @@ static void execute_mac(key_call* call) {
     return;
   }
   CFErrorRef error = NULL;
+  Boolean interaction = interaction_off();
   CFDataRef result = call->decrypt ? SecKeyCreateDecryptedData(call->key->key, algorithm, input, &error)
                                    : SecKeyCreateSignature(call->key->key, algorithm, input, &error);
+  interaction_restore(interaction);
   CFRelease(input);
   if (result == NULL) {
     long code = errSecInternalComponent;
@@ -951,7 +978,9 @@ static napi_value mac_open_key(napi_env env, napi_callback_info info) {
     return NULL;
   }
   SecKeyRef reference = NULL;
+  Boolean interaction = interaction_off();
   OSStatus status = SecIdentityCopyPrivateKey(identity->identity, &reference);
+  interaction_restore(interaction);
   if (status != errSecSuccess || reference == NULL) {
     char message[200];
     napi_value result;

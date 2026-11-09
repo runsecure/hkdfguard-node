@@ -468,6 +468,44 @@ describe('wrap and unwrap', () => {
     assert.deepEqual(revealed, key);
   });
 
+  it('accepts only the signing version a pinned signing key names, refusing older key files before any call', async () => {
+    const v = vault();
+    const old = await wrapWith(wrapperFor(v), dek());
+    const oldVersion = parse(old).signingKeyVersion;
+    const newVersion = v.rotate('sign');
+    const pinned = wrapperFor(v, { sign: v.url('sign', newVersion) });
+    const current = await wrapWith(pinned, dek());
+    v.requests.length = 0;
+
+    await assert.rejects(pinned.unwrap(old, new Uint8Array(32)), (e: unknown) => e instanceof AzureKeyVaultError
+      && e.message.includes(`version ${oldVersion}`) && e.message.includes('acceptedSigningKeyVersions'));
+    assert.deepEqual(v.requests.filter((r) => r.method === 'POST'), [], 'Key Vault was never asked');
+    assert.equal(await pinned.unwrap(current, new Uint8Array(32)), 32);
+
+    // During a rotation, both are listed - in any case.
+    const both = wrapperFor(v, { sign: v.url('sign', newVersion), acceptedSigningKeyVersions: [oldVersion.toUpperCase(), newVersion] });
+    assert.equal(await both.unwrap(old, new Uint8Array(32)), 32);
+    assert.equal(await both.unwrap(current, new Uint8Array(32)), 32);
+  });
+
+  it('accepts any signing version of an unpinned key, unless acceptedSigningKeyVersions limits it', async () => {
+    const v = vault();
+    const old = await wrapWith(wrapperFor(v), dek());
+    const newVersion = v.rotate('sign');
+    assert.equal(await wrapperFor(v).unwrap(old, new Uint8Array(32)), 32);
+    const limited = wrapperFor(v, { acceptedSigningKeyVersions: [newVersion] });
+    const result = new Uint8Array(32);
+    await assert.rejects(limited.unwrap(old, result), AzureKeyVaultError);
+    assert.ok(isZero(result));
+  });
+
+  it('takes only a non-empty list of key versions as acceptedSigningKeyVersions', () => {
+    const v = vault();
+    for (const bad of [[], 'abc', ['not-a-version'], ['0'.repeat(31)], [42], null]) {
+      assert.throws(() => wrapperFor(v, { acceptedSigningKeyVersions: bad as unknown as string[] }), InvalidArgumentError, JSON.stringify(bad));
+    }
+  });
+
   it('generateAndWrap produces a 32-byte DEK that reveals', async () => {
     const v = vault();
     const wrapper = wrapperFor(v);

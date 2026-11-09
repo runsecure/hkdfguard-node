@@ -80,6 +80,19 @@ describe('CertificateOptionsLoader from a store', () => {
     await loaded.close();
   });
 
+  it('refuses RSA PKCS #1 v1.5 decryption with a store key, before the store sees the ciphertext', async () => {
+    const certificateEntry = entry(-1, 30);
+    const loaded = await loader({ platform, store: new FakeStore([certificateEntry]) }).load(storeOptions());
+    const pkcs1 = publicEncrypt({ key: loaded.publicKey, padding: constants.RSA_PKCS1_PADDING }, Buffer.from('secret'));
+    await assert.rejects(loaded.decrypt(pkcs1, { padding: constants.RSA_PKCS1_PADDING }),
+      (e: unknown) => e instanceof UnsupportedCertificateError && /Bleichenbacher/.test((e as Error).message) && /OAEP/.test((e as Error).message));
+    assert.deepEqual(certificateEntry.opened!.decryptions, []);
+    // OAEP, the default, still goes to the store.
+    await loaded.decrypt(publicEncrypt(loaded.publicKey, Buffer.from('secret')));
+    assert.deepEqual(certificateEntry.opened!.decryptions, ['oaep']);
+    await loaded.close();
+  });
+
   it('gives the newest valid certificate without its key, and trusts it alone', async () => {
     const newest = entry(-1, 400, { withKey: false });
     const store = new FakeStore([entry(-1, 100), newest]);

@@ -90,7 +90,9 @@ certificates a PKCS#12 or PEM file held, in file order), `subject`, `notBefore`,
   (`'der'`, the default, or `'ieee-p1363'`).
 - `decrypt(ciphertext, options?)` - RSA only; `crypto.privateDecrypt`'s options: `padding`
   (`RSA_PKCS1_OAEP_PADDING`, the default, or `RSA_PKCS1_PADDING`), `oaepHash` (default `'sha1'`) and
-  `oaepLabel`. A new buffer to zero once used.
+  `oaepLabel`. A new buffer to zero once used. `RSA_PKCS1_PADDING` is refused for a store or provider
+  key: neither can answer bad padding with implicit rejection, so whoever submits ciphertexts could
+  recover a plaintext (Bleichenbacher's attack). A file key does it as Node does, with implicit rejection.
 - `configureServer(server, options?)` - makes a `tls.Server` (an `https` or `http2` secure server too)
   present the certificate and chain, through `server.setSecureContext`. Node's servers ignore a
   `secureContext` option, so this is how a server gets it.

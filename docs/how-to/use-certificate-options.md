@@ -66,6 +66,8 @@ Grant the service's account read access to the key (certlm.msc, *Manage Private 
 ```
 
 `certificate.sign(...)` and `certificate.decrypt(...)` call CNG (`NCryptSignHash`, `NCryptDecrypt`).
+`decrypt` uses OAEP: RSA PKCS #1 v1.5 decryption with a store key is refused, as CNG would answer bad
+padding with an error of its own - the oracle Bleichenbacher's attack needs.
 `configureServer` and `createSecureContext` throw `NativeProviderRequiredError`: Node's TLS is
 OpenSSL, which can't reach a CNG key, and the key is never exported to give it one. Use a File or
 Linux source where Node itself must serve TLS.
@@ -82,8 +84,11 @@ use `"MacOS"` in place of `"Windows"`; only the My store is read:
 "Certificate": { "MacOS": { "StoreLocation": "LocalMachine", "Subject": "CN=api.example.com" } }
 ```
 
-As on Windows, `sign` and `decrypt` call the keychain and TLS from its key is refused. **TODO
-(maintainer):** these steps and the keychain code have not yet been run on a Mac.
+As on Windows, `sign` and `decrypt` call the keychain and TLS from its key is refused. The keychain
+is never allowed to show a dialog: a key whose access list doesn't include the application fails
+with `NoPrivateKeyError` rather than waiting for someone to click. Add the application to the key's
+access list (Keychain Access, Access Control). **TODO (maintainer):** these steps and the keychain
+code have not yet been run on a Mac.
 
 ### Linux: a key in a PKCS#11 token (pkcs11-provider)
 

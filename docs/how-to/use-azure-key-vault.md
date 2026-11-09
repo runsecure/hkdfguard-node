@@ -145,6 +145,11 @@ const wrapper = new AzureKeyVaultKeyWrapper('https://myvault.vault.azure.net/key
   long as key files made with it are in use. The wrapper reads each key's current version the first
   time it wraps, and keeps using that version for as long as it lives: restart the process (or create
   a new wrapper) to wrap new key files under a rotated key.
+- **Which signatures are accepted.** A signing key identifier without a version accepts key files
+  signed by any of its versions; one that names a version accepts only that version's. To stop
+  accepting what an old signing version signed - files a principal that could sign made when it
+  shouldn't have, say - name the new version, or list the versions to accept in
+  `acceptedSigningKeyVersions` (both, during a rotation), or disable the old version in Key Vault.
 - **The context** is bound into every key file's signature and must be given again, exactly, to
   reveal it. Use one value per application, so a key file made for one can't be used by another
   that shares the keys. It isn't secret.

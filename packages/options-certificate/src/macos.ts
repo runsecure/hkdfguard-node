@@ -19,6 +19,8 @@ const RSA_PSS_SIGNATURE = 20;
 const ECDSA_SIGNATURE = 30;
 const RSA_PKCS1_ENCRYPTION = 41;
 const RSA_OAEP_ENCRYPTION = 50;
+/** errSecInteractionNotAllowed: the keychain would have shown a dialog, and the add-on never lets it. */
+export const ERR_SEC_INTERACTION_NOT_ALLOWED = -25308;
 
 /** The identities and certificates of the keychain `location` names. Only My is a store on macOS; a keychain that doesn't exist reads as empty. */
 export function readMacKeychain(location: StoreLocation, name: StoreName): StoreCertificate[] {
@@ -97,13 +99,18 @@ class KeychainKey implements StoreKey {
   }
 }
 
-async function call(operation: () => Promise<Buffer>, what: string): Promise<Buffer> {
+/** Runs a keychain operation, its failure as this package's error. Exported for the tests, never from the package index. */
+export async function call(operation: () => Promise<Buffer>, what: string): Promise<Buffer> {
   try {
     return await operation();
   } catch (error) {
     const status = (error as NativeStatusError).status;
     if (status === undefined) throw error;
     if (status === -1) throw new UnsupportedCertificateError(`The keychain key can't ${what} this way: ${(error as Error).message}`, { cause: error });
+    if (status === ERR_SEC_INTERACTION_NOT_ALLOWED) {
+      throw new NoPrivateKeyError(`The keychain would have to ask before letting this process ${what} with the key, and it is never asked: `
+        + "add this application to the key's access list (Keychain Access, Access Control), or import the identity for it.", { cause: error });
+    }
     throw new CertificateStoreError(`The keychain couldn't ${what}: ${(error as Error).message}`, status, { cause: error });
   }
 }

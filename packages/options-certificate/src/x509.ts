@@ -62,7 +62,16 @@ function time(element: Element): Date {
   } else {
     throw new DerError("A validity time isn't a UTCTime or GeneralizedTime.");
   }
-  return new Date(Date.UTC(year, Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6])));
+  const [month, day, hour, minute, second] = [2, 3, 4, 5, 6].map((i) => Number(match![i]));
+  const date = new Date(Date.UTC(year, month! - 1, day!, hour!, minute!, second!));
+  // Date.UTC rolls a field out of range into the next (month 13 is January); a certificate's time is
+  // what it says, so one that doesn't come back field for field isn't a time. A leap second (:60) is
+  // refused too, as X.509 profiles forbid it.
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month! - 1 || date.getUTCDate() !== day! || date.getUTCHours() !== hour!
+    || date.getUTCMinutes() !== minute! || date.getUTCSeconds() !== second!) {
+    throw new DerError(`A validity time, ${text}, names a date or time that doesn't exist.`);
+  }
+  return date;
 }
 
 /** The DER of a public key's SubjectPublicKeyInfo, to compare two keys by. */

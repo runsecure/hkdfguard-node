@@ -297,7 +297,11 @@ export class FakeStoreKey implements StoreKey {
     throw new Error(`the fake signs PSS only through the file path, not ${scheme} (salt ${saltLength})`);
   }
 
+  /** Every decryption the store was asked for, by scheme. */
+  readonly decryptions: ('pkcs1' | 'oaep')[] = [];
+
   async decrypt(ciphertext: Buffer, scheme: 'pkcs1' | 'oaep', hash: string, label: Buffer): Promise<Buffer> {
+    this.decryptions.push(scheme);
     const { constants, privateDecrypt } = await import('node:crypto');
     return privateDecrypt(scheme === 'oaep' ? { key: this.key.privateKey, oaepHash: hash, oaepLabel: label } : { key: this.key.privateKey, padding: constants.RSA_PKCS1_PADDING },
       ciphertext);
