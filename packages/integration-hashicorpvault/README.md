@@ -47,8 +47,12 @@ after changing `generator.json`, or after pulling a newer `openapi.json` from Va
   password-protected PKCS#12 key stores whose passwords are protected by a key ring
   (`VaultTlsOptions.protectPassword(keyRing.createProtector(VaultTlsOptions.PASSWORD_PURPOSE), password)`).
   Also `serverName` (`VAULT_TLS_SERVER_NAME`) and `insecureSkipVerify` (`VAULT_SKIP_VERIFY`, for
-  development only). Read once, into one TLS secure context every connection shares; refused
-  together with an `agent` of your own.
+  development only; each time it takes effect the process is warned, code
+  `HKDFGUARD_VAULT_TLS_UNVERIFIED`). Read once, into one TLS secure context every connection
+  shares; refused together with an `agent` of your own. Every file is read through
+  `readTrustedFile` (`securefile`) and refused unless only administrators and `fileTrust` (a
+  `KeyFileTrust`, administrators only by default) could have written it: whoever could replace the
+  CA file could point the client at a server of their own.
 - **Tokens**: `VaultTokenSource` and `StaticVaultTokenSource` copy the token into a buffer the
   integration zeroes, for one that runs before there is a key ring (the transit key wrapper);
   `VaultTokenProvider` and `StaticVaultToken` hand it over protected by the key ring.
@@ -85,13 +89,18 @@ const tls: VaultTlsOptions = {
 ### Key stores
 
 Node's own `pfx` option takes a store's password only as a string, which JavaScript can't erase,
-and presents only the first key a store holds, so stores are read by this package's own PKCS#12
-reader, over `node:crypto`, with the password decrypted into a buffer only while the store is read.
+and presents only the first key a store holds, so stores are read by the PKCS#12 reader HkdfGuard's
+packages share (in `abstractions`, the same one the certificate package reads files with), over
+`node:crypto`, with the password decrypted into a buffer only while the store is read. Key
+derivations are capped at 1,000,000 iterations each and 4,000,000 per store, so a store can't stall
+the process while it is read.
 It reads what OpenSSL 3 and keytool (Java 11.0.12 or later) write - PBES2 (PBKDF2 with AES-CBC) or
 PKCS#12's triple-DES encryption, under an HMAC - including a Java trust store of certificates only.
 It refuses legacy RC2 and RC4 (`openssl pkcs12 -legacy`, older Java), JKS and JCEKS, and PBMAC1,
-each with how to re-export the store. The client key reaches OpenSSL as PEM from a buffer zeroed once
-the secure context holds it.
+each with how to re-export the store. A store must carry its integrity MAC, though RFC 7292 makes it
+optional: without one, nothing ties the store to its password, and a trust store of anyone's CA in
+plain contents would read under any password. A client key must be encrypted (not `-keypbe NONE`).
+The client key reaches OpenSSL as PEM from a buffer zeroed once the secure context holds it.
 
 The test fixtures - throwaway keys and stores trusted nowhere else - are made by
 `test-fixtures/generate.sh`.

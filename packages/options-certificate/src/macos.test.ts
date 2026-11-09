@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
 import { certificate, ecKey, pkcs12, rsaKey, type KeyPair } from './certificates.test-support.js';
 import { CertificateNotFoundError, CertificateOptionsLoader, NativeProviderRequiredError, UnsupportedCertificateError } from './index.js';
-import { readMacKeychain } from './macos.js';
+import { call, ERR_SEC_INTERACTION_NOT_ALLOWED, readMacKeychain } from './macos.js';
+import { CertificateStoreError, NoPrivateKeyError } from './errors.js';
 
 const onMac = process.platform === 'darwin';
 const optedIn = process.env.HKDFGUARD_TEST_MACOS_KEYCHAIN === '1';
@@ -41,6 +42,20 @@ function identity(t: TestContext, key: KeyPair): string {
   return subject;
 }
 
+describe('keychain failures', () => {
+  const failing = (status: number) => () => Promise.reject(Object.assign(new Error(`SecKeyCreateSignature failed (${status})`), { status }));
+
+  it('report a key the keychain would have asked about as having no usable private key, saying how to grant it', async () => {
+    await assert.rejects(call(failing(ERR_SEC_INTERACTION_NOT_ALLOWED), 'sign'),
+      (e: unknown) => e instanceof NoPrivateKeyError && /never asked/.test((e as Error).message) && /access list/.test((e as Error).message));
+  });
+
+  it('report any other keychain failure as the store failing, with its status', async () => {
+    await assert.rejects(call(failing(-25300), 'decrypt'), (e: unknown) => e instanceof CertificateStoreError);
+    await assert.rejects(call(failing(-1), 'decrypt'), (e: unknown) => e instanceof UnsupportedCertificateError);
+  });
+});
+
 describe('the macOS keychains', { skip: onMac ? false : 'the macOS keychains' }, () => {
   it('are opened read-only, and a subject they lack is not found', async () => {
     for (const storeLocation of ['CurrentUser', 'LocalMachine']) {
@@ -66,7 +81,8 @@ describe('the macOS keychains', { skip: onMac ? false : 'the macOS keychains' },
           assert.ok(verify('sha256', data, { key: loaded.publicKey, ...pss }, await loaded.sign('sha256', data, pss)));
           await assert.rejects(loaded.sign('sha256', data, { padding: constants.RSA_PKCS1_PSS_PADDING, saltLength: 5 }), UnsupportedCertificateError);
           const pkcs1 = publicEncrypt({ key: loaded.publicKey, padding: constants.RSA_PKCS1_PADDING }, Buffer.from('secret'));
-          assert.equal((await loaded.decrypt(pkcs1, { padding: constants.RSA_PKCS1_PADDING })).toString(), 'secret');
+          // The store answers bad padding with an error of its own: PKCS #1 v1.5 decryption is refused before it is asked.
+          await assert.rejects(loaded.decrypt(pkcs1, { padding: constants.RSA_PKCS1_PADDING }), UnsupportedCertificateError);
           const oaep = publicEncrypt({ key: loaded.publicKey, oaepHash: 'sha256' }, Buffer.from('secret'));
           assert.equal((await loaded.decrypt(oaep, { oaepHash: 'sha256' })).toString(), 'secret');
         } else {

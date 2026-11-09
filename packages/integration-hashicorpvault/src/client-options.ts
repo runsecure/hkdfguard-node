@@ -96,6 +96,15 @@ export interface VaultClientOptions {
    * {@link VaultClient.readRaw} body.
    */
   readonly requestTimeoutMs?: number;
+  /**
+   * The longest response body read, in bytes; default
+   * {@link VaultClientOptions.DEFAULT_MAX_RESPONSE_BYTES} (32 MiB). A longer one fails the request
+   * with a VaultRequestError as soon as it passes the limit, and what was read is zeroed: a
+   * misdirected address, a proxy or a compromised server can't make the client buffer without end.
+   * Vault's own answers are far smaller. Not applied to a {@link VaultClient.readRaw} body, which the
+   * caller reads.
+   */
+  readonly maxResponseBytes?: number;
   /** When and how often a failed request is retried. */
   readonly retry?: VaultRetryOptions;
   /** Limits how often requests are sent - VAULT_RATE_LIMIT. Undefined for no limit. One limiter can be shared by several clients. */
@@ -124,6 +133,9 @@ export const VaultClientOptions = {
 
   /** The request timeout used when none is set: 60 seconds. */
   DEFAULT_REQUEST_TIMEOUT_MS: 60_000,
+
+  /** The longest response body read when no {@link VaultClientOptions.maxResponseBytes} is set: 32 MiB. */
+  DEFAULT_MAX_RESPONSE_BYTES: 32 * 1024 * 1024,
 
   /**
    * Options from the environment variables vault-client-go reads:

@@ -18,8 +18,14 @@
  *
  * Only kernel32 and advapi32 are called, both linked at build time, never loaded by name at run time;
  * the linker's /DEPENDENTLOADFLAG (binding.gyp) makes the loader resolve them from System32 only,
- * never from the application's directory or PATH. Windows only: on other platforms the add-on isn't
- * built (scripts/build-addon.js), and this file compiles to a module with no exports.
+ * never from the application's directory or PATH.
+ *
+ * On Linux and macOS it reads only what Node's fs can't: a path's access control list, which can
+ * grant write to accounts the permission bits don't show.
+ *   - posixAcl (Linux): the raw system.posix_acl_access extended attribute (lgetxattr, in libc).
+ *   - extendedAcl (macOS): the extended ACL's entries (acl_get_link_np), each principal resolved
+ *     to a user or group id (mbr_uuid_to_id), both in libSystem.
+ * Neither follows a symbolic link: the walk in src/unix.ts reads each component itself.
  */
 #define NAPI_VERSION 8
 #include <node_api.h>
@@ -468,6 +474,187 @@ static napi_value close_file(napi_env env, napi_callback_info info) {
 }
 #endif
 
+/* --- Linux and macOS: access control lists ------------------------------------------------------ */
+
+#if defined(__linux__) || defined(__APPLE__)
+#include <errno.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define UNIX_CHECK(call)                                                  \
+  do {                                                                    \
+    if ((call) != napi_ok) {                                              \
+      napi_throw_error(env, NULL, "hkdfguard_securefile: " #call " failed"); \
+      return NULL;                                                        \
+    }                                                                     \
+  } while (0)
+
+static napi_value unix_number(napi_env env, double number) {
+  napi_value value;
+  if (napi_create_double(env, number, &value) != napi_ok) return NULL;
+  return value;
+}
+
+/* The one argument, a path, as a NUL-terminated UTF-8 string the caller frees; NULL (an exception
+ * pending) when it isn't a string or holds a NUL, which would cut it short. */
+static char* unix_path_arg(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  size_t length = 0;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc < 1
+      || napi_get_value_string_utf8(env, argv[0], NULL, 0, &length) != napi_ok) {
+    napi_throw_type_error(env, NULL, "hkdfguard_securefile: a path string is required");
+    return NULL;
+  }
+  char* path = malloc(length + 1);
+  if (path == NULL) {
+    napi_throw_error(env, NULL, "hkdfguard_securefile: out of memory");
+    return NULL;
+  }
+  size_t copied = 0;
+  if (napi_get_value_string_utf8(env, argv[0], path, length + 1, &copied) != napi_ok || copied != length || strlen(path) != length) {
+    free(path);
+    napi_throw_type_error(env, NULL, "hkdfguard_securefile: a path can't contain a NUL character");
+    return NULL;
+  }
+  return path;
+}
+#endif
+
+#if defined(__linux__)
+#include <sys/xattr.h>
+
+static napi_value unix_null(napi_env env) {
+  napi_value value;
+  if (napi_get_null(env, &value) != napi_ok) return NULL;
+  return value;
+}
+
+/* posixAcl(path): the system.posix_acl_access extended attribute of path itself (a symbolic link
+ * not followed), as a Buffer of its raw bytes; null when it has none (ENODATA) or its filesystem
+ * keeps none (ENOTSUP); otherwise the errno, as a number. Decoded in TypeScript (src/unix.ts). */
+static napi_value posix_acl(napi_env env, napi_callback_info info) {
+  char* path = unix_path_arg(env, info);
+  if (path == NULL) return NULL;
+  /* The attribute can grow between asking its size and reading it: ask again, a few times. */
+  for (int attempt = 0; attempt < 4; attempt++) {
+    ssize_t size = lgetxattr(path, "system.posix_acl_access", NULL, 0);
+    if (size < 0) {
+      int error = errno;
+      free(path);
+      return error == ENODATA || error == ENOTSUP ? unix_null(env) : unix_number(env, (double)error);
+    }
+    char* data = malloc(size == 0 ? 1 : (size_t)size);
+    if (data == NULL) {
+      free(path);
+      napi_throw_error(env, NULL, "hkdfguard_securefile: out of memory");
+      return NULL;
+    }
+    ssize_t got = lgetxattr(path, "system.posix_acl_access", data, (size_t)size);
+    if (got < 0) {
+      int error = errno;
+      free(data);
+      if (error == ERANGE) continue;
+      free(path);
+      return error == ENODATA || error == ENOTSUP ? unix_null(env) : unix_number(env, (double)error);
+    }
+    napi_value result;
+    void* unused;
+    napi_status status = napi_create_buffer_copy(env, (size_t)got, data, &unused, &result);
+    free(data);
+    free(path);
+    if (status != napi_ok) {
+      napi_throw_error(env, NULL, "hkdfguard_securefile: napi_create_buffer_copy failed");
+      return NULL;
+    }
+    return result;
+  }
+  free(path);
+  return unix_number(env, (double)ERANGE);
+}
+#endif
+
+#if defined(__APPLE__)
+#include <membership.h>
+#include <sys/acl.h>
+#include <uuid/uuid.h>
+
+/* The rights an extended ACL entry can grant that let a principal change what a path holds, in the
+ * order of the bits extendedAcl reports them as. */
+static const acl_perm_t WRITE_RIGHTS[] = {
+  ACL_WRITE_DATA, ACL_APPEND_DATA, ACL_DELETE, ACL_DELETE_CHILD, ACL_WRITE_ATTRIBUTES, ACL_WRITE_EXTATTRIBUTES, ACL_WRITE_SECURITY,
+  ACL_CHANGE_OWNER,
+};
+
+/* extendedAcl(path): every entry of path's extended ACL (a symbolic link not followed), as
+ * { allow, inheritOnly, kind: 'user' | 'group' | 'unknown', id, rights } - rights the WRITE_RIGHTS it
+ * grants or denies, one bit each; [] when it has none; otherwise the errno, as a number. Decided in
+ * TypeScript (src/unix.ts). */
+static napi_value extended_acl(napi_env env, napi_callback_info info) {
+  char* path = unix_path_arg(env, info);
+  if (path == NULL) return NULL;
+  acl_t acl = acl_get_link_np(path, ACL_TYPE_EXTENDED);
+  int error = errno;
+  free(path);
+  napi_value entries;
+  UNIX_CHECK(napi_create_array(env, &entries));
+  if (acl == NULL) {
+    /* ENOENT is "no ACL" here; the path itself was found by lstat first. */
+    return error == ENOENT ? entries : unix_number(env, (double)error);
+  }
+
+  uint32_t count = 0;
+  acl_entry_t entry;
+  for (int which = ACL_FIRST_ENTRY; acl_get_entry(acl, which, &entry) == 0; which = ACL_NEXT_ENTRY) {
+    acl_tag_t tag;
+    acl_permset_t permset;
+    acl_flagset_t flagset;
+    if (acl_get_tag_type(entry, &tag) != 0 || acl_get_permset(entry, &permset) != 0 || acl_get_flagset_np(entry, &flagset) != 0) {
+      error = errno;
+      acl_free(acl);
+      return unix_number(env, (double)(error == 0 ? EIO : error));
+    }
+    uint32_t rights = 0;
+    for (size_t i = 0; i < sizeof WRITE_RIGHTS / sizeof WRITE_RIGHTS[0]; i++) {
+      if (acl_get_perm_np(permset, WRITE_RIGHTS[i]) == 1) rights |= 1u << i;
+    }
+    const char* kind = "unknown";
+    double id = -1;
+    void* qualifier = acl_get_qualifier(entry);
+    if (qualifier != NULL) {
+      uuid_t uuid;
+      id_t resolved = 0;
+      int type = 0;
+      memcpy(uuid, qualifier, sizeof uuid);
+      acl_free(qualifier);
+      if (mbr_uuid_to_id(uuid, &resolved, &type) == 0) {
+        if (type == ID_TYPE_UID) kind = "user";
+        else if (type == ID_TYPE_GID) kind = "group";
+        if (type == ID_TYPE_UID || type == ID_TYPE_GID) id = (double)resolved;
+      }
+    }
+
+    napi_value item;
+    napi_value value;
+    UNIX_CHECK(napi_create_object(env, &item));
+    UNIX_CHECK(napi_get_boolean(env, tag == ACL_EXTENDED_ALLOW, &value));
+    UNIX_CHECK(napi_set_named_property(env, item, "allow", value));
+    UNIX_CHECK(napi_get_boolean(env, acl_get_flag_np(flagset, ACL_ENTRY_ONLY_INHERIT) == 1, &value));
+    UNIX_CHECK(napi_set_named_property(env, item, "inheritOnly", value));
+    UNIX_CHECK(napi_create_string_utf8(env, kind, NAPI_AUTO_LENGTH, &value));
+    UNIX_CHECK(napi_set_named_property(env, item, "kind", value));
+    UNIX_CHECK(napi_create_double(env, id, &value));
+    UNIX_CHECK(napi_set_named_property(env, item, "id", value));
+    UNIX_CHECK(napi_create_uint32(env, rights, &value));
+    UNIX_CHECK(napi_set_named_property(env, item, "rights", value));
+    UNIX_CHECK(napi_set_element(env, entries, count++, item));
+  }
+  acl_free(acl);
+  return entries;
+}
+#endif
+
 /* --- Module ------------------------------------------------------------------------------------- */
 
 NAPI_MODULE_INIT() {
@@ -490,6 +677,16 @@ NAPI_MODULE_INIT() {
   if (napi_define_properties(env, exports, sizeof properties / sizeof properties[0], properties) != napi_ok) {
     return NULL;
   }
+#elif defined(__linux__)
+  napi_property_descriptor properties[] = {
+    { "posixAcl", NULL, posix_acl, NULL, NULL, NULL, napi_enumerable, NULL },
+  };
+  if (napi_define_properties(env, exports, 1, properties) != napi_ok) return NULL;
+#elif defined(__APPLE__)
+  napi_property_descriptor properties[] = {
+    { "extendedAcl", NULL, extended_acl, NULL, NULL, NULL, napi_enumerable, NULL },
+  };
+  if (napi_define_properties(env, exports, 1, properties) != napi_ok) return NULL;
 #else
   (void)env;
 #endif

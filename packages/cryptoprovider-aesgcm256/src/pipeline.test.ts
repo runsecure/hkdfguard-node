@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { Writable } from 'node:stream';
+import { PassThrough, Transform, Writable } from 'node:stream';
 import { describe, it } from 'node:test';
 import {
   AuthenticationFailedError, ClosedError, EncryptionLimitReachedError, InvalidArgumentError, InvalidConfigurationKeyError, isZero,
@@ -216,5 +216,37 @@ describe('AesGcmPipelineDataProtector.writeDek', () => {
     const ended = new RecordingStream();
     ended.end();
     await assert.rejects(p.writeDek(ended), { code: 'ERR_HKDFGUARD_INVALID_STATE' });
+  });
+
+  it('refuses a Transform, which would hand its reader the very buffer it then zeroes', async () => {
+    const p = newPipeline();
+    for (const stream of [new PassThrough(), new Transform({ transform: (chunk, _e, callback) => callback(null, chunk) })]) {
+      await assert.rejects(p.writeDek(stream), (e: unknown) => e instanceof TypeError && /Transform/.test((e as Error).message));
+      assert.equal(stream.readableLength, 0, 'nothing reached its reader');
+    }
+  });
+
+  it('on abort, destroys the stream and zeroes the key only once the stream lets go of it', async () => {
+    const p = newPipeline();
+    const controller = new AbortController();
+    let handed: Uint8Array | undefined;
+    // A write in flight the stream never finishes - a pipe whose reader has stopped reading - and a
+    // destroy that, like closing a pipe's handle, lets go of it only later.
+    const stuck = new Writable({
+      write(chunk: Buffer) {
+        handed = chunk;
+        setImmediate(() => controller.abort(new Error('cancelled')));
+      },
+      destroy(error, callback) {
+        setTimeout(() => callback(error), 20);
+      },
+    });
+
+    await assert.rejects(p.writeDek(stuck, controller.signal), /cancelled/);
+
+    assert.ok(stuck.destroyed, 'no more of the key can be written');
+    assert.ok(handed !== undefined && !isZero(handed), 'not zeroed while the stream may still be reading it');
+    if (!stuck.closed) await once(stuck, 'close');
+    assert.ok(isZero(handed!), 'zeroed once the stream has closed');
   });
 });

@@ -36,6 +36,14 @@ export class StoreKeySource implements KeySource {
   }
 
   async decrypt(ciphertext: Uint8Array, decryption: Decryption): Promise<Buffer> {
+    // CNG and the keychain answer bad PKCS #1 v1.5 padding with an error of its own - the oracle
+    // Bleichenbacher's attack needs - where Node's own keys answer with implicit rejection; refused, as
+    // Node refuses it for a key that can't (decryptionRefused), before the store sees the ciphertext.
+    if (decryption.scheme === 'pkcs1') {
+      throw new UnsupportedCertificateError(`RSA PKCS #1 v1.5 decryption with a key held by ${this.description} is refused: the store answers `
+        + "bad padding with an error of its own, which lets whoever submits ciphertexts recover a plaintext (Bleichenbacher's attack), "
+        + 'and it has no implicit rejection to prevent that. Decrypt with OAEP.');
+    }
     return this.key.decrypt(Buffer.from(ciphertext), decryption.scheme, decryption.hash, decryption.label);
   }
 

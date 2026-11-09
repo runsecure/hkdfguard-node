@@ -58,7 +58,8 @@ describe('writeChunks', () => {
     await assert.rejects(writeChunks(stream, [utf8('a'), utf8('b')], undefined, (chunk) => settled.push(chunk)), /broken pipe/);
 
     assert.equal(stream.chunks.length, 1);
-    assert.equal(settled.length, 1);
+    // 'a' once its write called back; 'b', never handed to the stream, as the call ended.
+    assert.deepEqual(settled.map((c) => Buffer.from(c).toString()), ['a', 'b']);
     // The 'error' event the stream emits after the callback found a listener.
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
@@ -76,14 +77,24 @@ describe('writeChunks', () => {
     await assert.rejects(writeChunks(stream, chunks), /gone/);
   });
 
-  it('stops once the signal is aborted, settling the chunk in flight', async () => {
+  it('stops once the signal is aborted: destroys the stream, and settles the chunk in flight only once the stream lets go of it', async () => {
     const controller = new AbortController();
-    const stream = new Writable({ write: () => controller.abort(new Error('stop')) }); // never calls back
-    const settled: Uint8Array[] = [];
+    // Never calls a write back, and lets go of it only once its destroy finishes, later - as a pipe or
+    // socket does, closing its handle.
+    const stream = new Writable({
+      write: () => controller.abort(new Error('stop')),
+      destroy: (error, callback) => { setTimeout(() => callback(error), 20); },
+    });
+    const settled: string[] = [];
 
-    await assert.rejects(writeChunks(stream, [utf8('a'), utf8('b')], controller.signal, (chunk) => settled.push(chunk)), /stop/);
+    await assert.rejects(writeChunks(stream, [utf8('a'), utf8('b')], controller.signal, (chunk) => settled.push(Buffer.from(chunk).toString())), /stop/);
 
-    assert.equal(settled.length, 1);
+    assert.ok(stream.destroyed, 'nothing more of the chunk can be written');
+    // 'a' is still the stream's - a write that hasn't called back may still be reading it - so it isn't
+    // settled (zeroed) yet; 'b' was never handed over.
+    assert.deepEqual(settled, ['b']);
+    if (!stream.closed) await new Promise((resolve) => stream.once('close', resolve));
+    assert.deepEqual(settled, ['b', 'a']);
     await assert.rejects(writeChunks(new SlowStream(), [utf8('a')], AbortSignal.abort(new Error('before'))), /before/);
   });
 

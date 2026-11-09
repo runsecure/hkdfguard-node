@@ -3,7 +3,10 @@ import { describe, it } from 'node:test';
 import { InvalidArgumentError } from '@runsecure/hkdfguard-abstractions';
 import { KeyFileError } from './errors.js';
 import { KeyFileTrust } from './trust.js';
-import { MAX_SYMBOLIC_LINKS, parentOf, resolveTrusted, type UnixFileStatus } from './unix.js';
+import type { MacAclEntry, UnixAddon } from './native.js';
+import {
+  aclWriters, MAC_WRITE_RIGHTS, macAclWriters, MAX_SYMBOLIC_LINKS, parentOf, posixAclWriters, resolveTrusted, type AclWriter, type UnixFileStatus,
+} from './unix.js';
 
 /*
  * The Linux and macOS key-file location rules, checked against simulated filesystems so they run on
@@ -175,5 +178,87 @@ describe('Unix key-file location rules', () => {
     assert.equal(parentOf('/etc/hkdfguard'), '/etc');
     assert.equal(parentOf('/etc'), '/');
     assert.equal(parentOf('/'), '/');
+  });
+});
+
+describe('access control lists', () => {
+  /** A Linux system.posix_acl_access value: version 2, then each entry's tag, permissions and id. */
+  const posixAcl = (...entries: [tag: number, perm: number, id?: number][]) => {
+    const bytes = new Uint8Array(4 + entries.length * 8);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, 2, true);
+    entries.forEach(([tag, perm, id = 0xffffffff], i) => {
+      view.setUint16(4 + i * 8, tag, true);
+      view.setUint16(6 + i * 8, perm, true);
+      view.setUint32(8 + i * 8, id, true);
+    });
+    return bytes;
+  };
+  const [USER_OBJ, USER, GROUP_OBJ, GROUP, MASK, OTHER] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20];
+  const RWX = 7;
+  const RX = 5;
+
+  it('reads the named users and groups a POSIX ACL lets write, as its mask leaves them', () => {
+    // root:deploy 2770 key folder, with www-data (33) given rwx by setfacl: the mask shows as the group's bits.
+    const acl = posixAcl([USER_OBJ, RWX], [USER, RWX, 33], [GROUP_OBJ, RWX], [GROUP, RX, 4000], [GROUP, RWX, DEPLOYERS_GROUP], [MASK, RWX], [OTHER, 0]);
+    assert.deepEqual(posixAclWriters(acl), [{ kind: 'user', id: 33, rights: 'write' }, { kind: 'group', id: DEPLOYERS_GROUP, rights: 'write' }]);
+    // A mask without write leaves no named entry able to write, whatever it says.
+    assert.deepEqual(posixAclWriters(posixAcl([USER_OBJ, RWX], [USER, RWX, 33], [GROUP_OBJ, RX], [MASK, RX], [OTHER, 0])), []);
+    // A minimal ACL - the permission bits alone - names no one.
+    assert.deepEqual(posixAclWriters(posixAcl([USER_OBJ, RWX], [GROUP_OBJ, RX], [OTHER, RX])), []);
+  });
+
+  it("refuses a POSIX ACL it can't read", () => {
+    for (const bytes of [new Uint8Array(0), new Uint8Array([1, 0, 0, 0]), posixAcl([USER, RWX, 33]).subarray(0, 9)]) {
+      assert.throws(() => posixAclWriters(bytes), /form this does not read/);
+    }
+  });
+
+  it('reads the principals a macOS ACL lets change a path: allow entries for the path itself', () => {
+    const entries: MacAclEntry[] = [
+      { allow: true, inheritOnly: false, kind: 'group', id: 12, rights: 0b1 }, // everyone: write data
+      { allow: false, inheritOnly: false, kind: 'user', id: 501, rights: 0b100 }, // deny: takes nothing
+      { allow: true, inheritOnly: true, kind: 'user', id: 501, rights: 0b1 }, // only for what is created inside
+      { allow: true, inheritOnly: false, kind: 'user', id: 502, rights: 0 }, // read rights only
+      { allow: true, inheritOnly: false, kind: 'unknown', id: -1, rights: 0b10000000 },
+    ];
+    assert.deepEqual(macAclWriters(entries), [
+      { kind: 'group', id: 12, rights: MAC_WRITE_RIGHTS[0] },
+      { kind: 'unknown', id: -1, rights: 'change owner' },
+    ]);
+  });
+
+  it('refuses a folder or file whose ACL lets an untrusted principal write, and passes trusted ones', () => {
+    const writers = new Map<string, AclWriter[]>();
+    const resolve = (trust: KeyFileTrust) => resolveTrusted(KEY_FILE, trust, (p) => fs.entries.get(p), (p) => fs.links.get(p), (p) => writers.get(p) ?? []);
+    const fs = standard().file(KEY_FILE);
+    assert.equal(resolve(KeyFileTrust.administratorsOnly), KEY_FILE);
+
+    writers.set('/etc/hkdfguard', [{ kind: 'user', id: APP, rights: 'write' }]);
+    refused(() => resolve(DEPLOYER_TRUST), 'EACCES', "'/etc/hkdfguard' has an access control list letting uid 1002", 'not trusted');
+    writers.set('/etc/hkdfguard', [{ kind: 'user', id: DEPLOYER, rights: 'write' }, { kind: 'group', id: DEPLOYERS_GROUP, rights: 'write' }]);
+    assert.equal(resolve(DEPLOYER_TRUST), KEY_FILE);
+    refused(() => resolve(KeyFileTrust.administratorsOnly), 'EACCES', 'uid 1001');
+
+    writers.set(KEY_FILE, [{ kind: 'group', id: 12, rights: 'write data (add file)' }]);
+    refused(() => resolve(DEPLOYER_TRUST), 'EACCES', `'${KEY_FILE}' has an access control list letting gid 12`, 'write data');
+    writers.set(KEY_FILE, [{ kind: 'unknown', id: -1, rights: 'delete' }]);
+    refused(() => resolve(DEPLOYER_TRUST), 'EACCES', 'resolves to no user or group');
+    writers.set(KEY_FILE, [{ kind: 'user', id: ROOT, rights: 'write' }]);
+    assert.equal(resolve(DEPLOYER_TRUST), KEY_FILE);
+  });
+
+  it("reads a path's ACL through the add-on, refusing one it can't read, on Linux and macOS alike", () => {
+    const linux: UnixAddon = {
+      posixAcl: (path) => (path === '/none' ? null : path === '/broken' ? 5 : posixAcl([USER_OBJ, RWX], [USER, RWX, 33], [GROUP_OBJ, RX], [MASK, RWX], [OTHER, 0])),
+    };
+    assert.deepEqual(aclWriters('/none', linux, 'linux'), []);
+    assert.deepEqual(aclWriters('/x', linux, 'linux'), [{ kind: 'user', id: 33, rights: 'write' }]);
+    refused(() => aclWriters('/broken', linux, 'linux'), 'EACCES', 'could not be read (errno 5)');
+    refused(() => aclWriters('/x', { posixAcl: () => new Uint8Array([9, 9, 9]) }, 'linux'), 'EACCES', 'form this does not read');
+
+    const mac: UnixAddon = { extendedAcl: (path) => (path === '/broken' ? 13 : [{ allow: true, inheritOnly: false, kind: 'group', id: 12, rights: 1 }]) };
+    assert.deepEqual(aclWriters('/x', mac, 'darwin'), [{ kind: 'group', id: 12, rights: MAC_WRITE_RIGHTS[0] }]);
+    refused(() => aclWriters('/broken', mac, 'darwin'), 'EACCES', 'errno 13');
   });
 });

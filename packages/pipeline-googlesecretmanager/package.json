@@ -17,10 +17,10 @@
     "!dist/**/*.test*"
   ],
   "scripts": {
-    "test": "node --test \"dist/**/*.test.js\""
+    "test": "node --test --test-timeout=120000 \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@google-cloud/secret-manager": "7.2.0",
+    "@google-cloud/secret-manager": "^7.2.0",
     "@runsecure/hkdfguard-abstractions": "0.9.1",
     "@runsecure/hkdfguard-pipeline": "0.9.1"
   },

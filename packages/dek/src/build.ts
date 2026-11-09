@@ -9,6 +9,8 @@ import { KeyRing, MAX_TIMER_DELAY_MS, Rotation } from './keyring.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+/** How far past now a key file's modification time may be before it counts as the future (and as now). */
+const FUTURE_TOLERANCE_MS = 60_000;
 
 /** How often a ring with ephemeral keys rotates them, unless configured otherwise. */
 export const DEFAULT_EPHEMERAL_KEY_ROTATION_HOURS = 24;
@@ -173,6 +175,9 @@ function entries(keyFiles: KeyRingConfig['keyFiles']): [number, string][] {
 /**
  * A key file's wrapped DEK, read through the key wrapper - whose own checks decide whether anyone but
  * a trusted account could have written or replaced it - and its modification time, the key file's age.
+ * A modification time in the future - a deploying host's clock running ahead, a copy keeping a bad
+ * timestamp - counts as now: taken as it is, it would put keyFileMaxAgeDays off until long after it
+ * should have stopped the key encrypting, and say nothing.
  */
 async function readKeyFileFor(wrapper: KeyWrapper, path: string, signal: AbortSignal | undefined): Promise<{ wrapped: Uint8Array; modifiedMs: number }> {
   const wrapped = await wrapper.readKeyFile(path, signal);
@@ -181,7 +186,11 @@ async function readKeyFileFor(wrapper: KeyWrapper, path: string, signal: AbortSi
   if (wrapped.length > MAX_WRAPPED_KEY_BYTES) {
     throw new InvalidKeyFileError(`Key file '${path}' is larger than ${MAX_WRAPPED_KEY_BYTES} bytes (MAX_WRAPPED_KEY_BYTES); a wrapped key never is.`);
   }
-  return { wrapped, modifiedMs: (await stat(path)).mtimeMs };
+  const modifiedMs = (await stat(path)).mtimeMs;
+  const now = Date.now();
+  // A file written this instant can carry a time a fraction of a millisecond (or a little clock drift)
+  // past Date.now(); only a time beyond that is the future.
+  return { wrapped, modifiedMs: modifiedMs > now + FUTURE_TOLERANCE_MS ? now : modifiedMs };
 }
 
 async function addOwned(ring: KeyRing, version: number, provider: CryptoProvider, deadline?: EncryptionDeadline): Promise<void> {

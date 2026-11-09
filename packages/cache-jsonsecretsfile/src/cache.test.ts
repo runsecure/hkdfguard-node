@@ -1,8 +1,8 @@
 import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { describe, it, type TestContext } from 'node:test';
+import { describe, it, mock, type TestContext } from 'node:test';
 import { SpanStatusCode } from '@opentelemetry/api';
 import {
   AuthenticationFailedError, configurationPurpose, InvalidArgumentError, KeyNotFoundError, type PipelineDataProtector, type ProtectedReadOnlyCache,
@@ -60,6 +60,12 @@ interface Fixture {
   writeRaw(json: string | Uint8Array): void;
 }
 
+// Each write's modification time, in seconds: a second later every time. The cache tells a rewritten
+// file from the one it refused by identity, size and times, and a rewrite of the same size in place
+// can land in the same tick of the file system's clock as the write before it - often, on a fast
+// Windows runner - leaving all of them unchanged, so the cache rightly keeps refusing it.
+let lastWriteTime = Math.floor(Date.now() / 1000);
+
 /** A fixture for `t`, or undefined - the test skipped, saying why - when this host has no trusted folder. */
 function fixture(t: TestContext, ring = ringWith(1)): Fixture | undefined {
   const folder = keyFileDirectory(t, 'hkdfguard-jsonsecrets-');
@@ -67,7 +73,11 @@ function fixture(t: TestContext, ring = ringWith(1)): Fixture | undefined {
   const trust = trustCurrentUser();
   const path = join(folder, 'secrets.json');
   const encrypt = (name: string, value: string) => ring.createProtector(configurationPurpose(name)).encrypt(value);
-  const writeRaw = (json: string | Uint8Array) => writeFileSync(path, json);
+  const writeRaw = (json: string | Uint8Array) => {
+    writeFileSync(path, json);
+    lastWriteTime++;
+    utimesSync(path, lastWriteTime, lastWriteTime);
+  };
   return {
     folder,
     path,
@@ -229,7 +239,7 @@ describe('JsonSecretsFileReadOnlyCache: refusals', () => {
     ['an object', '{"item":{"a":"b"}}', "no value for 'item'"],
     ['null', '{"item":null}', "no value for 'item'"],
     ['a blank value', '{"item":"  "}', "no value for 'item'"],
-    ['a name that isn\'t a secret\'s', '{"../item":"x"}', "names a secret '../item', which isn't a secret's name"],
+    ['a name that isn\'t a secret\'s', '{"../item":"x"}', "names, in its member 1, a secret by a name of 7 characters that isn't a secret's name"],
     ['a name twice, in another case', `{"item":"${VALUE}","ITEM":"${VALUE}"}`, "names 'ITEM' more than once"],
     ['a name twice', `{"item":"${VALUE}","item":"${VALUE}"}`, "names 'item' more than once"],
     ['a second value', `{"item":"${VALUE}"} {}`, "isn't valid JSON"],
@@ -254,6 +264,57 @@ describe('JsonSecretsFileReadOnlyCache: refusals', () => {
       assert.equal(await get(cache, 'item'), 'fixed');
     });
   }
+
+  it("never quotes a member name that isn't a secret's, however long: the file isn't the secrets file, so it is anything", async (t) => {
+    const f = fixture(t);
+    if (f === undefined) return;
+    const pasted = `Server=db;Password=${'p'.repeat(5000)}`;
+    f.writeRaw(JSON.stringify({ item: f.encrypt('item', 'fine'), [pasted]: 'x' }));
+    await assert.rejects(f.cache().decrypt('item', new Uint8Array(16)), (e: unknown) => e instanceof InvalidSecretDataError
+      && (e as Error).message.includes('member 2') && (e as Error).message.includes(`${pasted.length} characters`) && !(e as Error).message.includes('Password'));
+  });
+
+  it('remembers a refusal, reading the file again only once it changes', async (t) => {
+    const f = fixture(t);
+    if (f === undefined) return;
+    f.writeRaw(JSON.stringify({ reader: f.encrypt('reader', 'fine'), writer: f.encrypt('reader', 'moved') }));
+    const cache = f.cache();
+    const spans = useSpanRecorder();
+    try {
+      const loads = () => spans.spans().filter((s) => s.name === SpanNames.cache.populate).length;
+      for (let i = 0; i < 5; i++) await assert.rejects(cache.decrypt(i % 2 === 0 ? 'reader' : 'other', new Uint8Array(16)), AuthenticationFailedError);
+      await assert.rejects(cache.maxDecryptedLength('reader'), AuthenticationFailedError);
+      assert.equal(loads(), 1, 'read once, then answered from the refusal');
+
+      f.write(['reader', 'fixed']);
+      assert.equal(await get(cache, 'reader'), 'fixed');
+      assert.equal(loads(), 2);
+    } finally {
+      await spans.dispose();
+    }
+  });
+
+  it('reads a refused file again once the refusal has stood for FAILURE_RETRY_MS, changed or not', async (t) => {
+    const f = fixture(t);
+    if (f === undefined) return;
+    f.writeRaw(JSON.stringify({ reader: f.encrypt('reader', 'fine'), writer: f.encrypt('reader', 'moved') }));
+    const cache = f.cache();
+    const spans = useSpanRecorder();
+    mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    try {
+      const loads = () => spans.spans().filter((s) => s.name === SpanNames.cache.populate).length;
+      await assert.rejects(cache.decrypt('reader', new Uint8Array(16)), AuthenticationFailedError);
+      mock.timers.tick(29_000);
+      await assert.rejects(cache.decrypt('reader', new Uint8Array(16)), AuthenticationFailedError);
+      assert.equal(loads(), 1);
+      mock.timers.tick(2_000);
+      await assert.rejects(cache.decrypt('reader', new Uint8Array(16)), AuthenticationFailedError);
+      assert.equal(loads(), 2);
+    } finally {
+      mock.timers.reset();
+      await spans.dispose();
+    }
+  });
 
   it('fails the whole file for a value moved under another name', async (t) => {
     const f = fixture(t);

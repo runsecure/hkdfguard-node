@@ -41,6 +41,13 @@ const CIPHERTEXT_PREFIX = ascii('{"ciphertext":"');
 const VAULT_PREFIX = ascii('vault:v');
 
 /**
+ * What an AEAD transit key adds to what it encrypts: aes128-gcm96, aes256-gcm96 and
+ * chacha20-poly1305 each write a 12-byte nonce, the ciphertext, and a 16-byte tag. An RSA key's
+ * ciphertext is its modulus long whatever it encrypts, so it never fits.
+ */
+export const AEAD_OVERHEAD = 12 + 16;
+
+/**
  * A {@link KeyWrapper} that protects (encrypt) and reveals (decrypt) a DEK under one key in a
  * HashiCorp Vault transit secrets engine, and generates fresh DEKs with datakey/wrapped - so on that
  * path the plaintext DEK never leaves Vault. The KEK never enters this process; every call is a
@@ -56,7 +63,12 @@ const VAULT_PREFIX = ascii('vault:v');
  * rather than being revealed. Vault's key rotation (transit/keys/{name}/rotate) keeps the name and is
  * transparent here: new DEKs are wrapped under the latest version, and older ones still reveal while
  * their version is at or above the key's min_decryption_version. The key must be an AEAD key that
- * isn't derived - aes256-gcm96 (Vault's default), aes128-gcm96 or chacha20-poly1305.
+ * isn't derived - aes256-gcm96 (Vault's default), aes128-gcm96 or chacha20-poly1305. That is
+ * checked on every call, needing no permission beyond the calls themselves: each of those writes
+ * exactly {@link AEAD_OVERHEAD} bytes more than it encrypts, so a ciphertext of any other length -
+ * an RSA key's, which anyone who can read the key's public half could make without encrypt - is
+ * refused, whether Vault returns it or a key file holds it. A derived key fails without a context
+ * (Vault requires one), and with one too (the context is sent as associated_data, not context).
  *
  * The context, if any, is bound into every wrapped DEK as Vault's associated_data (AAD): decrypt
  * fails unless it is presented again exactly. datakey/wrapped ignores associated_data, so with a
@@ -216,8 +228,16 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
 
       // Not secret, but copied now, so what the caller does with `wrapped` meanwhile changes nothing.
       const body = this.#body(CIPHERTEXT_PREFIX, wrapped, false);
+      const payload = sealedLength(body.subarray(CIPHERTEXT_PREFIX.length, CIPHERTEXT_PREFIX.length + wrapped.length));
       const answer = await this.#post('unwrap', this.#decryptPath, body, signal);
-      return this.#readAnswer(answer, 'unwrap', result, true);
+      const length = this.#readAnswer(answer, 'unwrap', result, true);
+      // An AEAD key's ciphertext is its plaintext and AEAD_OVERHEAD bytes; anything else came from
+      // another kind of key - an RSA one, whose public half anyone who can read the key holds.
+      if (payload !== length + AEAD_OVERHEAD) {
+        throw this.#error('unwrap', `Vault transit key '${this.keyName}' revealed ${length} bytes from a ciphertext that isn't an AEAD key's `
+          + '(aes128-gcm96, aes256-gcm96 or chacha20-poly1305): the key, or the key file, is of another type.');
+      }
+      return length;
     } catch (error) {
       // Whatever a failed call left in the DEK buffer is erased.
       wipe(result);
@@ -247,7 +267,7 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
     }
 
     const answer = await this.#post('generate-and-wrap', this.#dataKeyPath, Buffer.from(DATA_KEY_BODY), signal);
-    return this.#readAnswer(answer, 'generate-and-wrap', result, false);
+    return this.#readAnswer(answer, 'generate-and-wrap', result, false, GENERATED_KEY_LENGTH);
   }
 
   /**
@@ -286,7 +306,7 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
     const body = this.#body(PLAINTEXT_PREFIX, key, true);
     try {
       const answer = await this.#post('wrap', this.#encryptPath, body, signal);
-      return this.#readAnswer(answer, 'wrap', result, false);
+      return this.#readAnswer(answer, 'wrap', result, false, key.length);
     } finally {
       // Every attempt is over - answered, failed or abandoned - so nothing will send it again.
       wipe(body);
@@ -373,12 +393,14 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
 
   // Takes data.plaintext (decoded) or data.ciphertext out of a successful answer into result, then
   // zeroes the answer and the copy of the value read out of it.
-  #readAnswer(answer: Buffer, operation: string, result: Uint8Array, plaintext: boolean): number {
+  // `keyLength`: for a ciphertext, the length of the key it wraps.
+  #readAnswer(answer: Buffer, operation: string, result: Uint8Array, plaintext: boolean, keyLength = 0): number {
     // Never longer than the answer it is read out of.
     const value = Buffer.alloc(answer.length);
     try {
       const length = this.#readData(answer, plaintext ? 'plaintext' : 'ciphertext', operation, value);
-      return plaintext ? this.#decodePlaintext(value.subarray(0, length), result) : this.#copyCiphertext(value.subarray(0, length), result, operation);
+      return plaintext ? this.#decodePlaintext(value.subarray(0, length), result)
+        : this.#copyCiphertext(value.subarray(0, length), result, operation, keyLength);
     } finally {
       wipe(value);
       wipe(answer);
@@ -449,9 +471,14 @@ export class HashiCorpVaultTransitKeyWrapper implements KeyWrapper {
     return length;
   }
 
-  #copyCiphertext(ciphertext: Uint8Array, result: Uint8Array, operation: string): number {
+  #copyCiphertext(ciphertext: Uint8Array, result: Uint8Array, operation: string, keyLength: number): number {
     if (!isVaultCiphertext(ciphertext)) {
       throw this.#error(operation, `Vault transit ${operation} for key '${this.keyName}' returned something that isn't a ciphertext.`);
+    }
+    // Never write a key file the key's type would make unsafe, or that unwrap would refuse.
+    if (sealedLength(ciphertext) !== keyLength + AEAD_OVERHEAD) {
+      throw this.#error(operation, `Vault transit key '${this.keyName}' isn't an AEAD key (aes128-gcm96, aes256-gcm96 or chacha20-poly1305): `
+        + `it encrypted ${keyLength} bytes into a ciphertext that isn't ${AEAD_OVERHEAD} bytes longer.`);
     }
     // A key file over the limit would be refused when read back, so refuse to produce one.
     if (ciphertext.length > MAX_WRAPPED_KEY_BYTES) {
@@ -523,6 +550,21 @@ export function isVaultCiphertext(value: Uint8Array): boolean {
     if (!isBase64) return false;
   }
   return true;
+}
+
+/**
+ * The length of the bytes a transit ciphertext (vault:v{version}:{base64}, already checked by
+ * isVaultCiphertext) encodes, from its base64 alone; -1 when the base64 isn't whole, padded groups.
+ * Exported for the package's tests, never from the package index.
+ */
+export function sealedLength(ciphertext: Uint8Array): number {
+  const start = ciphertext.indexOf(0x3a, VAULT_PREFIX.length) + 1; // after vault:v{n}:
+  const encoded = ciphertext.length - start;
+  if (start <= 0 || encoded % 4 !== 0) return -1;
+  let padding = 0;
+  if (ciphertext[ciphertext.length - 1] === 0x3d) padding++;
+  if (ciphertext[ciphertext.length - 2] === 0x3d) padding++;
+  return (encoded / 4) * 3 - padding;
 }
 
 // Who may have written a key file, given or by default; refused unless a KeyFileTrust. Only an

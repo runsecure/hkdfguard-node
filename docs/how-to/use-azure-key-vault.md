@@ -129,8 +129,9 @@ npm install @runsecure/hkdfguard-keywrapping-azurekeyvault @runsecure/hkdfguard-
 
 `@runsecure/hkdfguard-keywrapping-azurekeyvault` brings `@runsecure/hkdfguard-securefile`, which on
 Windows compiles a small C add-on when it is installed - so installing on Windows needs Python 3 and
-Visual Studio Build Tools, as `@runsecure/hkdfguard-keywrapping-native-v1` does. Nothing is compiled
-on Linux or macOS.
+Visual Studio Build Tools, as `@runsecure/hkdfguard-keywrapping-native-v1` does. On Linux and macOS
+it compiles one too, to read access control lists, which Node can't: installing there needs Python 3
+and a C compiler (`build-essential` on Debian and Ubuntu, the Xcode command line tools on macOS).
 
 ```ts
 import { DefaultAzureCredential } from '@azure/identity';
@@ -145,6 +146,11 @@ const wrapper = new AzureKeyVaultKeyWrapper('https://myvault.vault.azure.net/key
   long as key files made with it are in use. The wrapper reads each key's current version the first
   time it wraps, and keeps using that version for as long as it lives: restart the process (or create
   a new wrapper) to wrap new key files under a rotated key.
+- **Which signatures are accepted.** A signing key identifier without a version accepts key files
+  signed by any of its versions; one that names a version accepts only that version's. To stop
+  accepting what an old signing version signed - files a principal that could sign made when it
+  shouldn't have, say - name the new version, or list the versions to accept in
+  `acceptedSigningKeyVersions` (both, during a rotation), or disable the old version in Key Vault.
 - **The context** is bound into every key file's signature and must be given again, exactly, to
   reveal it. Use one value per application, so a key file made for one can't be used by another
   that shares the keys. It isn't secret.

@@ -1,6 +1,9 @@
 import { strict as assert } from 'node:assert';
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { describe, it } from 'node:test';
+import { describe, it, type TestContext } from 'node:test';
 import { ClosedError, HkdfGuardError, InvalidArgumentError, isZero, type PipelineDataProtector } from '@runsecure/hkdfguard-abstractions';
 import { AesGcmPipelineDataProtector } from '@runsecure/hkdfguard-cryptoprovider-aesgcm256';
 import { DefaultFormatProvider } from '@runsecure/hkdfguard-dek';
@@ -57,6 +60,14 @@ class NullRuleWriter extends SecretPipelineWriter {
 
 const newProtector = () => new AesGcmPipelineDataProtector(new DefaultFormatProvider(PIPELINE_FORMAT_LIMIT), 3);
 
+const fixture = (t: { after(fn: () => unknown): void }) => {
+  const protector = newProtector();
+  t.after(() => protector.close());
+  const store = new FakeStore();
+  const decrypt = (encrypted: string | undefined, fileName: string) => decryptPipelineValue(protector, encrypted!, fileName);
+  return { protector, store, decrypt };
+};
+
 secretPipelineWriterContract('SecretPipelineWriter over an in-memory store', {
   newProtector,
   setUp: () => {
@@ -75,14 +86,6 @@ secretPipelineWriterContract('SecretPipelineWriter over an in-memory store', {
 });
 
 describe('SecretPipelineWriter', () => {
-  const fixture = (t: { after(fn: () => unknown): void }) => {
-    const protector = newProtector();
-    t.after(() => protector.close());
-    const store = new FakeStore();
-    const decrypt = (encrypted: string | undefined, fileName: string) => decryptPipelineValue(protector, encrypted!, fileName);
-    return { protector, store, decrypt };
-  };
-
   it('reads the whole value for a name without a key, or the default key when there is one', async (t) => {
     const { protector, store, decrypt } = fixture(t);
     store.set('app', '{"value":"s3cret"}');
@@ -193,6 +196,15 @@ describe('SecretPipelineWriter', () => {
     });
   }
 
+  it("refuses names whose file name is a Windows device's, or ends in '.'", (t) => {
+    const { protector, store } = fixture(t);
+    for (const name of ['con', 'NUL', 'COM1', 'LPT9']) {
+      assert.throws(() => new FakeWriter(protector, [name], store), (e: unknown) => e instanceof InvalidArgumentError && /device name/.test((e as Error).message), name);
+    }
+    // Only a whole file name is a device's: prod/nul is written as prod__nul.
+    assert.doesNotThrow(() => new FakeWriter(protector, ['prod/nul', 'app#COM1'], store));
+  });
+
   it('refuses names that map to one file name', (t) => {
     const { protector, store } = fixture(t);
     assert.throws(() => new FakeWriter(protector, ['a/b', 'a#b'], store), InvalidArgumentError);
@@ -218,6 +230,103 @@ describe('SecretPipelineWriter', () => {
     await writer.pullSecrets();
 
     assert.deepEqual([...writer.protectedSecrets.keys()], ['item']);
+  });
+});
+
+describe('SecretPipelineWriter writing files', () => {
+  /** A pulled writer over one secret, 'item', and a fresh temp folder to write under. */
+  const setUp = async (t: TestContext) => {
+    const { protector, store, decrypt } = fixture(t);
+    const parent = await mkdtemp(join(tmpdir(), 'hkdfguard-pipeline-files-'));
+    t.after(() => rm(parent, { recursive: true, force: true }));
+    store.set('item', 'new');
+    const writer = new FakeWriter(protector, ['item'], store);
+    await writer.pullSecrets();
+    return { parent, writer, decrypt: (encrypted: string) => decrypt(encrypted, 'item') };
+  };
+
+  /** Makes a symbolic link, or skips the test on a Windows host whose account may not. */
+  const symlinkOrSkip = async (t: TestContext, target: string, path: string, type: 'file' | 'dir'): Promise<boolean> => {
+    try {
+      await symlink(target, path, type);
+      return true;
+    } catch (error) {
+      if (process.platform !== 'win32' || (error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+      t.skip('This account may not create symbolic links.');
+      return false;
+    }
+  };
+
+  // Never writable by the group or others, whatever the umask; readable and writable by the owner.
+  const assertMode = (mode: number, executable: boolean) => {
+    assert.equal(mode & 0o022, 0, `mode ${(mode & 0o7777).toString(8)} is writable by group or others`);
+    assert.equal(mode & 0o600, 0o600, `mode ${(mode & 0o7777).toString(8)} isn't owner read/write`);
+    assert.equal((mode & 0o100) !== 0, executable, `mode ${(mode & 0o7777).toString(8)} executable`);
+  };
+
+  it('creates the folder and its files with modes no wider than the tar\'s, leaving no temporary file', async (t) => {
+    const { parent, writer, decrypt } = await setUp(t);
+    const folder = join(parent, 'deep', 'secrets');
+
+    await writer.writeProtectedSecretFiles(folder);
+
+    assert.deepEqual(await readdir(folder), ['item']);
+    assert.equal(decrypt(await readFile(join(folder, 'item'), 'utf8')), 'new');
+    if (process.platform !== 'win32') {
+      assertMode((await stat(folder)).mode, true);
+      assertMode((await stat(join(folder, 'item'))).mode, false);
+    }
+  });
+
+  it('replaces a symbolic link at a secret\'s path instead of writing through it', async (t) => {
+    const { parent, writer, decrypt } = await setUp(t);
+    const folder = join(parent, 'secrets');
+    await mkdir(folder);
+    const elsewhere = join(parent, 'elsewhere');
+    await writeFile(elsewhere, 'untouched');
+    if (!await symlinkOrSkip(t, elsewhere, join(folder, 'item'), 'file')) return;
+
+    await writer.writeProtectedSecretFiles(folder);
+
+    assert.equal((await lstat(join(folder, 'item'))).isSymbolicLink(), false);
+    assert.equal(decrypt(await readFile(join(folder, 'item'), 'utf8')), 'new');
+    assert.equal(await readFile(elsewhere, 'utf8'), 'untouched');
+    assert.deepEqual(await readdir(folder), ['item']);
+  });
+
+  it('refuses a folder that is a symbolic link, or that isn\'t a folder', async (t) => {
+    const { parent, writer } = await setUp(t);
+    const real = join(parent, 'real');
+    await mkdir(real);
+    const file = join(parent, 'file');
+    await writeFile(file, 'a file');
+    await assert.rejects(writer.writeProtectedSecretFiles(file));
+    await assert.rejects(writer.writeJsonSecrets(join(file, 'secrets.json')));
+    const link = join(parent, 'secrets');
+    if (!await symlinkOrSkip(t, real, link, 'dir')) return;
+
+    await assert.rejects(writer.writeProtectedSecretFiles(link), InvalidArgumentError);
+    await assert.rejects(writer.writeJsonSecrets(join(link, 'secrets.json')), InvalidArgumentError);
+
+    assert.deepEqual(await readdir(real), []);
+  });
+
+  it('writes the JSON file into place by rename, replacing a link, leaving no temporary file', async (t) => {
+    const { parent, writer, decrypt } = await setUp(t);
+    const folder = join(parent, 'config');
+    await mkdir(folder);
+    const elsewhere = join(parent, 'elsewhere.json');
+    await writeFile(elsewhere, '{}');
+    const path = join(folder, 'secrets.json');
+    if (!await symlinkOrSkip(t, elsewhere, path, 'file')) return;
+
+    await writer.writeJsonSecrets(path);
+
+    assert.equal((await lstat(path)).isSymbolicLink(), false);
+    assert.equal(decrypt(JSON.parse(await readFile(path, 'utf8')).item), 'new');
+    assert.equal(await readFile(elsewhere, 'utf8'), '{}');
+    assert.deepEqual(await readdir(folder), ['secrets.json']);
+    if (process.platform !== 'win32') assertMode((await stat(path)).mode, false);
   });
 });
 

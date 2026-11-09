@@ -4,7 +4,7 @@
   "private": true,
   "description": "End-to-end tests across the HkdfGuard packages over the real native KEK. Never published.",
   "scripts": {
-    "test": "node --test \"dist/**/*.test.js\""
+    "test": "node --test --test-timeout=120000 \"dist/**/*.test.js\""
   },
   "devDependencies": {
     "@runsecure/hkdfguard-abstractions": "0.9.1",

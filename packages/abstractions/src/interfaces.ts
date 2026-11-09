@@ -49,7 +49,10 @@ export interface KeyWrapper {
  * decrypt never modifies its ciphertext. An omitted `aad` means none.
  */
 export interface CryptoProvider {
-  /** Encrypts `plaintext` bound to `aad` into `result`, returning the number of bytes written. */
+  /**
+   * Encrypts `plaintext` bound to `aad` into `result`, returning the number of bytes written.
+   * `plaintext` must not share memory with the bytes written to `result`: it is zeroed afterwards.
+   */
   encrypt(plaintext: Uint8Array, result: Uint8Array, aad?: Uint8Array): number;
 
   /** Decrypts `ciphertext` encrypted with the same `aad` into `result`, returning the number of bytes written. */
@@ -178,13 +181,14 @@ export interface PipelineDataProtector {
    * Writes the key to `destination` exactly as the wrap tool's `--dek-stdin` reads it - its base64
    * form as ASCII, with no line ending - resolving once the stream has accepted it: the stdin of
    * `hkdfguard wrap ... --dek-stdin`, or of `ssh -T host sudo -n hkdfguard wrap ... --dek-stdin`.
-   * The bytes are written from a buffer of their own, zeroed once the write completes; no string is
-   * ever made of them. `destination` is left open: end it afterwards, so the tool sees the end of
-   * its input. The stream must be done with the bytes when its write calls back, as a process's
-   * stdin, a socket or a file stream is - not one that hands the same buffer on, such as a PassThrough.
+   * The bytes are written from a buffer of their own, zeroed once the stream is done with it (its
+   * write called back, or it closed); no string is ever made of them. `destination` is left open:
+   * end it afterwards, so the tool sees the end of its input. The stream must be done with the bytes
+   * when its write calls back, as a process's stdin, a socket or a file stream is: a Transform (a
+   * PassThrough among them) hands the same buffer on, and is refused.
    * @param destination where to write the key: a process's standard input
-   * @param signal cancels the write; the destination is then unusable - destroy it
-   * @throws TypeError (rejecting) destination isn't a Writable
+   * @param signal cancels the write: the destination is destroyed, so no more of the key is written
+   * @throws TypeError (rejecting) destination isn't a Writable, or is a Transform
    * @throws ClosedError (rejecting) the protector has been closed
    * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) destination has already ended or been destroyed
    */
@@ -249,7 +253,7 @@ export interface SecretPipelineWriter {
    * `ssh -T host sudo -n tar -x --no-same-owner -f - -C folder` - resolving once the stream has
    * accepted all of it. `destination` is left open: end it afterwards, so tar sees the end of its input.
    * @param destination where to write the archive: a process's standard input
-   * @param signal cancels the write; the destination then holds part of an archive - destroy it
+   * @param signal cancels the write: the destination, which may hold part of an archive, is destroyed
    * @throws TypeError (rejecting) destination isn't a Writable
    * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed, or
    *   destination has already ended or been destroyed

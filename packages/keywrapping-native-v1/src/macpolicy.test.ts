@@ -70,28 +70,38 @@ describe('macOS locations', () => {
     assert.equal(macUserPath('/Users/dev/'), '/Users/dev/.hkdfguard/v1/libhkdfguard.dylib');
   });
 
-  it('prefer the system install, even when a user install exists', () => {
-    assert.deepEqual(macChoosePath(() => 0, HOME), { path: MAC_SYSTEM_PATH, isSystem: true });
+  it('prefer the system install, even when a user install exists, allowed or not', () => {
+    for (const allowUserInstall of [true, false]) {
+      assert.deepEqual(macChoosePath(() => 0, HOME, allowUserInstall), { path: MAC_SYSTEM_PATH, isSystem: true });
+    }
   });
 
-  it('use the user install only when there is no system install', () => {
+  it('use the user install only when there is no system install, and the application allowed it', () => {
     for (const errno of [ENOENT, ENOTDIR]) {
-      assert.deepEqual(macChoosePath((p) => (p === macUserPath(HOME) ? 0 : errno), HOME), { path: macUserPath(HOME), isSystem: false });
+      assert.deepEqual(macChoosePath((p) => (p === macUserPath(HOME) ? 0 : errno), HOME, true), { path: macUserPath(HOME), isSystem: false });
+    }
+  });
+
+  it('refuse a user install the application did not allow, saying how to opt in and where to install instead', () => {
+    for (const errno of [ENOENT, ENOTDIR]) {
+      assert.throws(() => macChoosePath((p) => (p === macUserPath(HOME) ? 0 : errno), HOME, false),
+        (e: unknown) => e instanceof UntrustedError && e.message.includes(macUserPath(HOME)) && e.message.includes('allowMacUserInstall()')
+          && e.message.includes(MAC_SYSTEM_PATH));
     }
   });
 
   it('refuse rather than fall back when the system install cannot be examined', () => {
     for (const errno of [13, 62, 5]) {
       const probed: string[] = [];
-      untrusted(() => macChoosePath((p) => { probed.push(p); return errno; }, HOME), MAC_SYSTEM_PATH, `errno ${errno}`);
+      untrusted(() => macChoosePath((p) => { probed.push(p); return errno; }, HOME, true), MAC_SYSTEM_PATH, `errno ${errno}`);
       assert.deepEqual(probed, [MAC_SYSTEM_PATH]);
     }
-    untrusted(() => macChoosePath((p) => (p === MAC_SYSTEM_PATH ? ENOENT : 13), HOME), macUserPath(HOME));
+    untrusted(() => macChoosePath((p) => (p === MAC_SYSTEM_PATH ? ENOENT : 13), HOME, true), macUserPath(HOME));
   });
 
   it('report neither install usable as not installed, naming both', () => {
-    for (const home of [HOME, '', 'relative/home']) {
-      assert.throws(() => macChoosePath((p) => (!p.startsWith('/') && p.endsWith('.dylib') ? 0 : ENOENT), home),
+    for (const [home, allowUserInstall] of [[HOME, true], [HOME, false], ['', true], ['relative/home', true]] as const) {
+      assert.throws(() => macChoosePath((p) => (!p.startsWith('/') && p.endsWith('.dylib') ? 0 : ENOENT), home, allowUserInstall),
         (e: unknown) => e instanceof NotInstalledError && e.message.includes(MAC_SYSTEM_PATH) && e.message.includes('.hkdfguard/v1/libhkdfguard.dylib'));
     }
   });
@@ -198,23 +208,27 @@ describe('macOS code signature and dyld', () => {
     for (const status of [-67050, -67062]) untrusted(() => macVerifySignature('/x.dylib', () => status), 'MFW3T8R8J3', String(status));
   });
 
-  it('refuses a library of the same name on DYLD_LIBRARY_PATH, and reads only the dyld variables it checks', () => {
-    const only = (searchPath: string | undefined) => (name: string) => (name === 'DYLD_LIBRARY_PATH' ? searchPath : undefined);
-    for (const searchPath of [undefined, '', '/opt/lib:/usr/local/lib']) macRefuseShadowing(only(searchPath), () => false);
-    const decoy = '/tmp/decoy/libhkdfguard.dylib';
-    for (const searchPath of ['/tmp/decoy', '/opt/lib:/tmp/decoy/:/usr/local/lib']) {
-      untrusted(() => macRefuseShadowing(only(searchPath), (p) => p === decoy), decoy, 'DYLD_LIBRARY_PATH');
+  it('refuses any dyld search path, fallback ones included, whatever it holds; and reads only the variables it checks', () => {
+    for (const variable of ['DYLD_LIBRARY_PATH', 'DYLD_FALLBACK_LIBRARY_PATH', 'DYLD_FALLBACK_FRAMEWORK_PATH']) {
+      const only = (value: string | undefined) => (name: string) => (name === variable ? value : undefined);
+      for (const value of [undefined, '']) macRefuseShadowing(only(value));
+      untrusted(() => macRefuseShadowing(only('/opt/lib:/usr/local/lib')), variable);
     }
     const asked: string[] = [];
-    macRefuseShadowing((name) => { asked.push(name); return undefined; }, () => true);
-    assert.deepEqual(asked, [...MAC_REFUSED_DYLD_VARIABLES, 'DYLD_LIBRARY_PATH']);
+    macRefuseShadowing((name) => { asked.push(name); return undefined; });
+    assert.deepEqual(asked, [...MAC_REFUSED_DYLD_VARIABLES]);
+  });
+
+  it("refuses a DYLD_LIBRARY_PATH with no library of its own name in it, as one with a dependency's name would be used too", () => {
+    // A directory holding, say, a libtss-like dependency's leaf name and nothing called libhkdfguard.dylib.
+    untrusted(() => macRefuseShadowing((name) => (name === 'DYLD_LIBRARY_PATH' ? '/tmp/only-a-dependency' : undefined)), 'DYLD_LIBRARY_PATH');
   });
 
   it('refuses to load while a dyld variable that injects or substitutes code is set', () => {
     for (const variable of ['DYLD_INSERT_LIBRARIES', 'DYLD_FRAMEWORK_PATH', 'DYLD_VERSIONED_LIBRARY_PATH', 'DYLD_VERSIONED_FRAMEWORK_PATH', 'DYLD_IMAGE_SUFFIX']) {
-      untrusted(() => macRefuseShadowing((name) => (name === variable ? '/tmp/inject.dylib' : undefined), () => false), variable);
+      untrusted(() => macRefuseShadowing((name) => (name === variable ? '/tmp/inject.dylib' : undefined)), variable);
       // Set but empty is the same as unset.
-      macRefuseShadowing((name) => (name === variable ? '' : undefined), () => false);
+      macRefuseShadowing((name) => (name === variable ? '' : undefined));
     }
   });
 

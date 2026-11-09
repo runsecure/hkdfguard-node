@@ -18,7 +18,7 @@ To run the AWS KMS integration tests against a key of your own, see
 | Who may wrap and unwrap | Local accounts and groups the native library allows | IAM principals the key policy and IAM policies allow |
 | Each call | Local, on libuv's thread pool | A KMS request over the network, logged in CloudTrail |
 | Key file reads | Through the native library, which refuses files another account could have replaced | The same rules, checked in TypeScript by `@runsecure/hkdfguard-securefile`; who else is trusted is set with `KeyFileTrust` |
-| Install | The native package, and the native library | The npm packages; a C compiler only on Windows (for `@runsecure/hkdfguard-securefile`'s add-on) |
+| Install | The native package, and the native library | The npm packages, and a C compiler (for `@runsecure/hkdfguard-securefile`'s add-on) |
 | Platforms | Windows, Linux, macOS | Anywhere the AWS SDK runs; key files are read on Windows, Linux and Apple silicon Macs |
 
 Wrapped DEKs aren't interchangeable. A key file wrapped by one wrapper can't be unwrapped by the
@@ -126,8 +126,9 @@ npm install @runsecure/hkdfguard-keywrapping-awskms @runsecure/hkdfguard-cryptop
 
 `@runsecure/hkdfguard-keywrapping-awskms` brings `@runsecure/hkdfguard-securefile`, which on Windows
 compiles a small C add-on when it is installed - so installing on Windows needs Python 3 and Visual
-Studio Build Tools, as `@runsecure/hkdfguard-keywrapping-native-v1` does. Nothing is compiled on
-Linux or macOS.
+Studio Build Tools, as `@runsecure/hkdfguard-keywrapping-native-v1` does. On Linux and macOS it
+compiles one too, to read access control lists, which Node can't: installing there needs Python 3
+and a C compiler (`build-essential` on Debian and Ubuntu, the Xcode command line tools on macOS).
 
 ```ts
 import { KMSClient } from '@aws-sdk/client-kms';
@@ -311,8 +312,9 @@ const trusted = new AwsKmsKeyWrapper(kms, keyArn, {
 
 > **Security:** never trust the account the application itself runs as, except on a developer
 > machine. An application that can rewrite its own key files can be made to switch to an older,
-> still-valid one. Everyone, Authenticated Users, Users, Interactive and Anonymous are refused if
-> listed.
+> still-valid one. A principal that stands for a whole class of accounts - Everyone, Authenticated
+> Users, Users, Guests, Interactive, Network, Service, Local account, All Application Packages,
+> Creator Owner, a domain's Domain Users, and the like - is refused if listed.
 
 ## 7. Use the key file
 

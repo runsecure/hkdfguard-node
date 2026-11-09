@@ -34,7 +34,7 @@
 #     GitHub Release: `gh attestation verify <file> --repo runsecure/hkdfguard-node`.
 #
 # Nothing here is Authenticode- or codesign-signed, because nothing shipped is a binary: the
-# native add-ons (keywrapping-native-v1's, securefile's on Windows, and options-certificate's on
+# native add-ons (keywrapping-native-v1's, securefile's, and options-certificate's on
 # Windows and macOS) are compiled from their C
 # source on each consumer's machine at install, and the native KMS library keywrapping-native-v1
 # loads is installed, signed and verified separately. If prebuilt add-on

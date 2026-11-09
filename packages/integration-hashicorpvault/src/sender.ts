@@ -1,5 +1,6 @@
 // What the generated API calls: the client's one way of sending a request, and how paths and
 // queries are built. Its own module, so the generated classes and the client don't import each other.
+import { InvalidArgumentError } from '@runsecure/hkdfguard-abstractions';
 import type { VaultRequestOptions } from './client-options.js';
 import type { JsonValue, JsonWriter } from './json.js';
 import type { VaultResponse } from './response.js';
@@ -25,6 +26,13 @@ export interface VaultSender {
 const UNRESERVED = /[A-Za-z0-9\-_.~]/;
 const encoder = new TextEncoder();
 
+// Whether a path, as Vault will read it (percent-decoded), holds a "." or ".." segment. Vault's
+// router answers a path holding one with a redirect to the path with it resolved - another
+// mount's, "secret/data/../../sys/..." - which a client following redirects would take, token and all.
+function hasDotSegment(path: string): boolean {
+  return path.split('/').some((segment) => segment === '.' || segment === '..');
+}
+
 /** `options`' mount path, leading and trailing '/' trimmed, or `defaultMountPath`. */
 export function mountPathOr(options: VaultRequestOptions | undefined, defaultMountPath: string): string {
   const mountPath = options?.mountPath;
@@ -44,6 +52,8 @@ export function mountPathOr(options: VaultRequestOptions | undefined, defaultMou
  */
 export function escapePathSegment(value: string | number | boolean): string {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') throw new TypeError('A path parameter must be a string.');
+  // Escaped, a '/' is %2F - which Vault decodes back, so "../sys" would still climb out of the mount.
+  if (hasDotSegment(String(value))) throw new InvalidArgumentError(`The path parameter '${String(value)}' holds a '.' or '..' segment.`);
   let escaped = '';
   for (const b of encoder.encode(String(value))) {
     const c = String.fromCharCode(b);
@@ -72,9 +82,21 @@ export function queryString(query: Query | undefined): string {
   return `?${ordered.map(([name, value]) => `${escapePathSegment(name)}=${escapePathSegment(value)}`).join('&')}`;
 }
 
-/** `path` under /v1/, whether or not it starts with "/", "v1/" or "/v1/" already. */
+/**
+ * `path` under /v1/, whether or not it starts with "/", "v1/" or "/v1/" already. It is sent as it is,
+ * so it may hold no '?' or '#' - query parameters go in VaultRequestOptions.queryParameters, where
+ * they are escaped - and, decoded as Vault decodes it, no "." or ".." segment.
+ * @throws TypeError path isn't a string
+ * @throws InvalidArgumentError path holds '?', '#', or a dot segment
+ */
 export function v1Path(path: string): string {
   if (typeof path !== 'string') throw new TypeError('path must be a string.');
+  if (path.includes('?') || path.includes('#')) {
+    throw new InvalidArgumentError(`The path '${path}' holds a '?' or '#': give query parameters as VaultRequestOptions.queryParameters.`);
+  }
+  if (hasDotSegment(path.replace(/%2e/gi, '.').replace(/%2f/gi, '/'))) {
+    throw new InvalidArgumentError(`The path '${path}' holds a '.' or '..' segment.`);
+  }
   if (path.startsWith('/v1/')) return path;
   if (path.startsWith('v1/')) return `/${path}`;
   if (path.startsWith('/')) return `/v1${path}`;

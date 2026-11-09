@@ -140,8 +140,9 @@ npm install @runsecure/hkdfguard-keywrapping-hashicorpvault @runsecure/hkdfguard
 
 The package has no third-party dependency. It brings `@runsecure/hkdfguard-securefile`, which on
 Windows compiles a small C add-on when it is installed - so installing on Windows needs Python 3 and
-Visual Studio Build Tools, as `@runsecure/hkdfguard-keywrapping-native-v1` does. Nothing is compiled
-on Linux or macOS.
+Visual Studio Build Tools, as `@runsecure/hkdfguard-keywrapping-native-v1` does. On Linux and macOS
+it compiles one too, to read access control lists, which Node can't: installing there needs Python 3
+and a C compiler (`build-essential` on Debian and Ubuntu, the Xcode command line tools on macOS).
 
 ```ts
 import { HashiCorpVaultTransitKeyWrapper } from '@runsecure/hkdfguard-keywrapping-hashicorpvault';
@@ -185,12 +186,18 @@ const wrapper = new HashiCorpVaultTransitKeyWrapper('https://vault.example.com:8
   mountPath: 'transit/team-a',
   namespace: 'team-a/prod',
   tls: {
-    serverCertificateFile: 'vault-ca.pem',
-    clientCertificateFile: 'myapp.pem',
-    clientCertificateKeyFile: 'myapp-key.pem',
+    serverCertificateFile: '/etc/myapp/vault-ca.pem',
+    clientCertificateFile: '/etc/myapp/myapp.pem',
+    clientCertificateKeyFile: '/etc/myapp/myapp-key.pem',
+    // fileTrust: new KeyFileTrust({ ... }) - the account that deploys these files, besides administrators
   },
 });
 ```
+
+Each file is read through `readTrustedFile` (`@runsecure/hkdfguard-securefile`) and refused unless
+it, and every folder above it, is owned by an administrator or a principal in `fileTrust`
+(administrators only by default) and writable by no one else: whoever could replace the CA file
+could point the wrapper at a server of their own, and be handed every DEK it wraps.
 
 ### Certificates in a password-protected key store
 
@@ -231,7 +238,9 @@ Some things to know:
   reader instead, which takes the password as bytes. It reads what OpenSSL 3 and keytool (Java
   11.0.12 or later) write - PBKDF2 with AES-CBC, or PKCS#12's triple-DES encryption, under an HMAC -
   and refuses the legacy RC2 and RC4 that `openssl pkcs12 -legacy` and older Java write: re-export
-  such a store with a current `openssl pkcs12 -export` or keytool.
+  such a store with a current `openssl pkcs12 -export` or keytool. It also refuses a store without
+  its integrity MAC (`-nomac`), which nothing would tie to its password, and a client key that
+  isn't encrypted (`-keypbe NONE`).
 - The client key reaches OpenSSL as PEM from a buffer zeroed once the secure context holds it. What
   OpenSSL keeps of it, it keeps in its own memory.
 
@@ -310,6 +319,7 @@ fails before Vault is called, as described for [AWS KMS](use-aws-kms.md#if-somet
 | `400 BadRequest` ... `encryption key not found` | No key by that name in this mount (or namespace) | Check the key name, `mountPath` and `namespace` |
 | `400 BadRequest` ... `cipher: message authentication failed` | The key file was altered, wrapped under another key, or with a different context | Restore the file; use the key and context it was created with |
 | `400 BadRequest` ... `missing 'context' for key derivation` | The key is derived | Create a key with `derived=false` and rewrap |
+| `... isn't an AEAD key` | The transit key is another type - RSA, say - whose ciphertext isn't nonce, data and tag; or a key file was made with one | Use an `aes256-gcm96`, `aes128-gcm96` or `chacha20-poly1305` key, and rewrap |
 | `400 BadRequest` ... `disallowed by policy (too old)` | The file's key version is below `min_decryption_version` | Lower it, or rewrap the file under the current version |
 | `ignored a parameter` | This Vault doesn't support `associated_data` | Upgrade Vault (the integration tests run against 1.19) |
 | `503 ServiceUnavailable` | Vault is sealed, or electing a leader, beyond the retries | Unseal Vault; check its HA status |

@@ -6,7 +6,7 @@ import { UntrustedError } from './errors.js';
 import { NativeKmsLibrary } from './library.js';
 import {
   linuxCandidatePaths, linuxChoosePath, linuxListingEnvironment, linuxParseListing, linuxReadEnvironment, linuxResolveTrusted,
-  linuxVerifyDependencies, linuxVerifyEnvironment, linuxVerifyListing, linuxVerifyLoadedImage,
+  linuxVerifyDependencies, linuxVerifyPreloaded, linuxVerifyEnvironment, linuxVerifyListing, linuxVerifyLoadedImage,
 } from './linuxpolicy.js';
 import { PROBE_EXPORT } from './macpolicy.js';
 import { nativeAddon } from './native.js';
@@ -93,7 +93,7 @@ export function linuxVerifyBeforeLoading(library: string, initialEnvironment: Ui
     throw new UntrustedError(`This process's dynamic linker '${interpreter}' is not trusted, so it can't be asked what '${library}' would load: ${reason}`, { cause: error });
   }
 
-  const output = linuxListDependencies(trustedInterpreter, library, linuxListingEnvironment(initialEnvironment));
+  const output = linuxListDependencies(trustedInterpreter, library, linuxListingEnvironment(initialEnvironment, process.env));
   linuxVerifyListing(library, linuxParseListing(library, output), linuxTrustedFile);
 }
 
@@ -108,7 +108,8 @@ export function loadLinuxLibrary(): NativeKmsLibrary {
   } catch {
     initial = undefined;
   }
-  linuxVerifyEnvironment(linuxReadEnvironment(process.env, initial), (p, expected) => {
+  const environment = linuxReadEnvironment(process.env, initial);
+  linuxVerifyEnvironment(environment, (p, expected) => {
     linuxResolveTrusted(p, expected, linuxStatus, linuxReadLink, true);
   });
   linuxVerifyBeforeLoading(path, initial);
@@ -123,6 +124,7 @@ export function loadLinuxLibrary(): NativeKmsLibrary {
     const loaded = native.symbolImagePath!(handle, PROBE_EXPORT);
     linuxVerifyLoadedImage(path, loaded === null ? null : linuxTrustedFile(loaded));
     linuxVerifyDependencies(path, elfReadNeededFile, (soname) => native.loadedPath!(soname), linuxTrustedFile);
+    linuxVerifyPreloaded(environment, (soname) => native.loadedPath!(soname), linuxTrustedFile);
     return NativeKmsLibrary.bind(native, handle, path, linuxStatusDescriptions);
   } catch (error) {
     native.unload(handle);

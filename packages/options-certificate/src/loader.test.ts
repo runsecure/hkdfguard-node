@@ -1,25 +1,25 @@
 import assert from 'node:assert/strict';
 import { constants, publicEncrypt, verify, X509Certificate } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { ClosedError, KeyNotFoundError } from '@runsecure/hkdfguard-abstractions';
 import {
   certificate, ecKey, entry, FakePasswords, FakeStore, FakeStoreCertificate, fixture, fixtureCertificateDer, loader, NOW, pem, pemOptions, pfxOptions, pkcs12,
-  rsaKey, SUBJECT, utf8,
+  rsaKey, SUBJECT, trustedDirectory, utf8,
 } from './certificates.test-support.js';
 import {
-  CertificateNotFoundError, CertificateNotValidNowError, CertificateStoreError, InvalidCertificateFileError, InvalidCertificateOptionsError,
-  NativeProviderRequiredError, NoPasswordSourceError, NoPrivateKeyError, PasswordNotFoundError, UnsupportedCertificateError, WrongPasswordError,
-  type CertificateOptions,
+  CertificateNotFoundError, CertificateNotValidNowError, CertificateOptionsLoader, CertificateStoreError, InvalidCertificateFileError,
+  InvalidCertificateOptionsError, KeyFileError, KeyFileTrust, NativeProviderRequiredError, NoPasswordSourceError, NoPrivateKeyError, PasswordNotFoundError,
+  UnsupportedCertificateError, WrongPasswordError, type CertificateOptions,
 } from './index.js';
 
-const directory = mkdtempSync(join(tmpdir(), 'hkdfguard-certificate-test-'));
-after(() => rmSync(directory, { recursive: true, force: true }));
+// Where the files the tests write go: a folder readTrustedFile trusts, or none, with the file tests skipped.
+const { directory, skip, cleanUp } = trustedDirectory('hkdfguard-certificate-test-');
+after(cleanUp);
 let counter = 0;
 function write(name: string, data: Buffer | string): string {
-  const path = join(directory, `${counter++}-${name}`);
+  const path = join(directory!, `${counter++}-${name}`);
   writeFileSync(path, data);
   return path;
 }
@@ -77,6 +77,19 @@ describe('CertificateOptionsLoader from a store', () => {
     assert.equal((await loaded.decrypt(oaep, { oaepHash: 'sha256', oaepLabel: Buffer.from('label') })).toString(), 'secret');
     const sha1 = publicEncrypt(loaded.publicKey, Buffer.from('secret'));
     assert.equal((await loaded.decrypt(sha1)).toString(), 'secret');
+    await loaded.close();
+  });
+
+  it('refuses RSA PKCS #1 v1.5 decryption with a store key, before the store sees the ciphertext', async () => {
+    const certificateEntry = entry(-1, 30);
+    const loaded = await loader({ platform, store: new FakeStore([certificateEntry]) }).load(storeOptions());
+    const pkcs1 = publicEncrypt({ key: loaded.publicKey, padding: constants.RSA_PKCS1_PADDING }, Buffer.from('secret'));
+    await assert.rejects(loaded.decrypt(pkcs1, { padding: constants.RSA_PKCS1_PADDING }),
+      (e: unknown) => e instanceof UnsupportedCertificateError && /Bleichenbacher/.test((e as Error).message) && /OAEP/.test((e as Error).message));
+    assert.deepEqual(certificateEntry.opened!.decryptions, []);
+    // OAEP, the default, still goes to the store.
+    await loaded.decrypt(publicEncrypt(loaded.publicKey, Buffer.from('secret')));
+    assert.deepEqual(certificateEntry.opened!.decryptions, ['oaep']);
     await loaded.close();
   });
 
@@ -161,7 +174,7 @@ describe('CertificateOptionsLoader from a store', () => {
   });
 });
 
-describe('CertificateOptionsLoader from a file', () => {
+describe('CertificateOptionsLoader from a file', { skip }, () => {
   it('opens a PKCS#12 file with its password from the password source, and zeroes the password', async () => {
     const key = rsaKey();
     const path = write('tls.pfx', pkcs12({ keys: [key.privateKey], certificates: [certificate(key)], password: utf8() }));
@@ -209,6 +222,20 @@ describe('CertificateOptionsLoader from a file', () => {
       assert.equal(loaded.keyLocation, 'an unprotected key file');
       await loaded.close();
     }
+  });
+
+  it('refuses a PKCS#12 file its password doesn\'t protect: no MAC, or a plaintext key', async () => {
+    const key = rsaKey(1);
+    const planted = write('planted.pfx', pkcs12({ keys: [key.privateKey], certificates: [certificate(key)], keyEncryption: 'none', certificateEncryption: 'none', mac: 'none' }));
+    await assert.rejects(loader({ passwords: new FakePasswords() }).load(pfxOptions(planted)),
+      (error: Error) => error instanceof InvalidCertificateFileError && /no integrity MAC/.test(error.message));
+    const plainKey = write('plainkey.pfx', pkcs12({ keys: [key.privateKey], certificates: [certificate(key)], password: utf8(), keyEncryption: 'none', mac: 'sha256' }));
+    await assert.rejects(loader({ passwords: new FakePasswords() }).load(pfxOptions(plainKey)),
+      (error: Error) => error instanceof InvalidCertificateFileError && /isn't encrypted/.test(error.message));
+    // Allowed unprotected, with no password named, the planted file is what it says it is.
+    const loaded = await loader().load(pfxOptions(planted, null, { allowUnprotected: true }));
+    assert.equal(loaded.keyLocation, 'an unprotected key file');
+    await loaded.close();
   });
 
   it('needs a PKCS#12 password even for the certificate alone', async () => {
@@ -315,11 +342,34 @@ describe('CertificateOptionsLoader from a file', () => {
   });
 
   it('reports a missing or broken file', async () => {
-    await assert.rejects(loader({ passwords: new FakePasswords() }).load(pfxOptions(join(directory, 'missing.pfx'))), (error: Error & { code?: string }) => error.code === 'ENOENT');
+    await assert.rejects(loader({ passwords: new FakePasswords() }).load(pfxOptions(join(directory!, 'missing.pfx'))), (error: Error & { code?: string }) => error.code === 'ENOENT');
     await assert.rejects(loader({ passwords: new FakePasswords() }).load(pfxOptions(write('junk.pfx', 'junk'))), InvalidCertificateFileError);
     await assert.rejects(loader().load(pemOptions(write('junk.crt', '-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n'), undefined, undefined,
       { requirePrivateKey: false })), InvalidCertificateFileError);
     await assert.rejects(loader().load(pemOptions(write('empty.crt', 'nothing'), undefined, null, { requirePrivateKey: false })), InvalidCertificateFileError);
+  });
+
+  it("refuses a file in a location it doesn't trust, whatever it holds", async (t) => {
+    if (process.getuid?.() === 0) {
+      t.skip('Running as root, whose files are trusted.');
+      return;
+    }
+    const key = rsaKey();
+    const pfx = write('untrusted.pfx', pkcs12({ keys: [key.privateKey], certificates: [certificate(key)], password: utf8() }));
+    const crt = write('untrusted.crt', pem(certificate(key)));
+    const untrusted = loader({ passwords: new FakePasswords(), fileTrust: KeyFileTrust.administratorsOnly });
+    const refused = (error: unknown) => error instanceof KeyFileError && error.code === 'EACCES' && error.message.includes('not trusted');
+    await assert.rejects(untrusted.load(pfxOptions(pfx)), refused);
+    await assert.rejects(untrusted.load(pemOptions(crt, undefined, null, { requirePrivateKey: false })), refused);
+    // The same files, from a loader that trusts this account: only the trust differed.
+    const trusted = await loader({ passwords: new FakePasswords() }).load(pfxOptions(pfx));
+    await trusted.close();
+  });
+
+  it('reads files only through a KeyFileTrust', () => {
+    for (const fileTrust of [{ windowsPrincipals: [] }, 'S-1-5-18', 1001]) {
+      assert.throws(() => new CertificateOptionsLoader({ fileTrust: fileTrust as unknown as KeyFileTrust }), TypeError);
+    }
   });
 
   it('wipes a closed file key and refuses every use', async () => {
@@ -331,7 +381,7 @@ describe('CertificateOptionsLoader from a file', () => {
   });
 });
 
-describe('CertificateOptionsLoader', () => {
+describe('CertificateOptionsLoader', { skip }, () => {
   it('reads a Linux certificate alone from its file', async () => {
     const der = certificate(ecKey());
     const loaded = await loader({ platform: 'linux' }).load({ linux: { certificateFile: write('linux.crt', pem(der)) }, requirePrivateKey: false });

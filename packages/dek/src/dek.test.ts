@@ -380,6 +380,18 @@ describe('buildKeyRing', () => {
     }
   });
 
+  it('ages a key file written in the future from now, not from its timestamp', async () => {
+    const path = keyFile('wrapped', -3650); // dated ten years ahead
+    const before = Date.now();
+    const ring = await buildKeyRing({ ...base(new RecordingFactory()), keyFiles: { 1: path }, keyFileMaxAgeDays: 30 });
+    try {
+      const deadline = (ring.get(1) as DataEncryptionKey).deadline!;
+      assert.ok(deadline.refuseAt >= before + 30 * DAY_MS && deadline.refuseAt <= Date.now() + 30 * DAY_MS, `refuses at ${new Date(deadline.refuseAt).toISOString()}`);
+    } finally {
+      await ring.close();
+    }
+  });
+
   it('reports a current key file nearing its age at startup, once, and keeps encrypting', async () => {
     const { logger, withEventId } = capturingLogger();
     const ring = await buildKeyRing({ ...base(new RecordingFactory()), keyFiles: { 1: keyFile('wrapped', 340) }, logger });

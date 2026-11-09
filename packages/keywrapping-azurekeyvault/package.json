@@ -17,10 +17,10 @@
     "!dist/**/*.test*"
   ],
   "scripts": {
-    "test": "node --test \"dist/**/*.test.js\""
+    "test": "node --test --test-timeout=120000 \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@azure/keyvault-keys": "4.10.2",
+    "@azure/keyvault-keys": "^4.10.2",
     "@runsecure/hkdfguard-abstractions": "0.9.1",
     "@runsecure/hkdfguard-securefile": "0.9.1"
   },

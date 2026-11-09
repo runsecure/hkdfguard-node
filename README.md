@@ -30,11 +30,11 @@ implements no interface; the `pipeline-*` writers use `pipeline`, which uses `ca
 | `@runsecure/hkdfguard-keywrapping-googlekms` | HkdfGuard.KeyWrapping.GoogleKms | `KeyWrapper` over one symmetric Google Cloud KMS key, through `@google-cloud/kms` (`KeyManagementServiceClient`) |
 | `@runsecure/hkdfguard-integration-hashicorpvault` | HkdfGuard.Integration.HashiCorpVault | `VaultClient`, a vault-client-go port with tokens held only protected by the key ring; and what the Vault key wrapper and cache share - `VaultTlsOptions` (PEM, or PKCS#12 key stores whose passwords the key ring protects), the token sources, retries and address checks |
 | `@runsecure/hkdfguard-keywrapping-hashicorpvault` | HkdfGuard.KeyWrapping.HashiCorpVault | `KeyWrapper` over one key in a HashiCorp Vault transit secrets engine, through Node's own HTTP client |
-| `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through; `readTrustedFile` and `readTrustedFileWith`: the same location checks for any other file (secret files, certificates), with only a caller-chosen size limit, read at most one byte past it |
+| `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through; `readTrustedFile`, `readTrustedFileSync` and `readTrustedFileWith`: the same location checks for any other file (secret files, certificates), with only a caller-chosen size limit, read at most one byte past it. On Linux and macOS each path's access control list is checked as well as its permission bits, through the package's own add-on, compiled at install on every platform |
 | `@runsecure/hkdfguard-cryptoprovider-aesgcm256` | HkdfGuard.CryptoProvider.AesGcm256 | The AES-256-GCM `CryptoProviderFactory` and `PipelineDataProtector` (whose `writeDek` writes its key to the wrap tool's stdin from a buffer zeroed once written) |
 | `@runsecure/hkdfguard-dek` | HkdfGuard.DataEncryptionKey, HkdfGuard.Options | Key rings with rotation, data protectors, the stored format, `buildKeyRing`, and options read from an `appsettings.json` section |
 | `@runsecure/hkdfguard-cache` | HkdfGuard.Cache | Protected caches, pull-through `CacheSource`s and collections; `FilePerSecretCache` over a trusted local folder of one already-encrypted file per secret, each read through `readTrustedFile` on its first lookup and cached still encrypted; `RemoteSecretCache`, `SecretValueSink`, `SecretJsonBody` for caches over a secret store. Depends on `securefile` |
-| `@runsecure/hkdfguard-cache-jsonsecretsfile` | HkdfGuard.Cache.JsonSecretsFile | `JsonSecretsFileReadOnlyCache` over one trusted JSON file holding every secret, as a pipeline's `writeJsonSecrets` writes it: a single object mapping each secret's name to its already-encrypted value. The whole file is read through `readTrustedFile` on the first lookup, every value authenticated under its name (any failure refuses the whole file, which is read again next time), and the values kept still encrypted; names match ignoring ASCII case and follow `FilePerSecretCache`'s name rule. Depends on `cache` and `securefile` |
+| `@runsecure/hkdfguard-cache-jsonsecretsfile` | HkdfGuard.Cache.JsonSecretsFile | `JsonSecretsFileReadOnlyCache` over one trusted JSON file holding every secret, as a pipeline's `writeJsonSecrets` writes it: a single object mapping each secret's name to its already-encrypted value. The whole file is read through `readTrustedFile` on the first lookup, every value authenticated under its name (any failure refuses the whole file until it changes, or for 30 seconds), and the values kept still encrypted; names match ignoring ASCII case and follow `FilePerSecretCache`'s name rule. Depends on `cache` and `securefile` |
 | `@runsecure/hkdfguard-cache-awssecretsmanager` | HkdfGuard.Cache.AwsSecretsManager | `AwsSecretsManagerSecretCache` over AWS Secrets Manager, through the application's `SecretsManagerClient` |
 | `@runsecure/hkdfguard-cache-azurekeyvault` | HkdfGuard.Cache.AzureKeyVault | `AzureKeyVaultSecretCache` over Azure Key Vault secrets, through `@azure/keyvault-secrets` |
 | `@runsecure/hkdfguard-cache-googlesecretmanager` | HkdfGuard.Cache.GoogleSecretManager | `GoogleSecretManagerSecretCache` over Google Cloud Secret Manager, through a `SecretManagerServiceClient` |
@@ -46,7 +46,7 @@ implements no interface; the `pipeline-*` writers use `pipeline`, which uses `ca
 | `@runsecure/hkdfguard-pipeline-googlesecretmanager` | HkdfGuard.Pipeline.GoogleSecretManager | `GoogleSecretManagerSecretPipelineWriter` over one Google Cloud project's Secret Manager (`id` or `id#key`), the latest version read on the client's gRPC stub with the writer's own deserializer; each payload checked against its CRC32C and the secret it names, and zeroed, as is gRPC's received message; `create` for a client of its own (Application Default Credentials - Workload Identity on GKE) |
 | `@runsecure/hkdfguard-encryptedconfig` | HkdfGuard.EncryptedConfiguration | Reads pipeline-encrypted secrets from any configuration source (`envLookup`, `flattenJson`, `mapLookup`) |
 | `@runsecure/hkdfguard-integration-configurationresolver` | HkdfGuard.Integration.ConfigurationResolver, with the parts of ConfigurationResolver it uses | Resolves `${name}` templates from the protected caches: `ProtectedCacheValueProvider` over any cache, and `ResolvingProtectedCacheCollection`, which resolves the templates its sources hold and caches each result encrypted |
-| `@runsecure/hkdfguard-options-certificate` | HkdfGuard.Options.Certificate | `CertificateOptions` (Windows store, macOS keychain, Linux OpenSSL provider, or a password-protected PKCS#12/PEM file), its validator and `CertificateOptionsLoader`: a `LoadedCertificate` that signs and decrypts through the store - whose key is never exported - and serves TLS from a file or provider key. Its own N-API add-on on Windows and macOS |
+| `@runsecure/hkdfguard-options-certificate` | HkdfGuard.Options.Certificate | `CertificateOptions` (Windows store, macOS keychain, Linux OpenSSL provider, or a password-protected PKCS#12/PEM file), its validator and `CertificateOptionsLoader`: a `LoadedCertificate` that signs and decrypts through the store - whose key is never exported - and serves TLS from a file or provider key, every file read through `readTrustedFile`. Its own N-API add-on on Windows and macOS. Depends on `securefile` |
 
 ```ts
 import { NativeKeyWrapperV1 } from '@runsecure/hkdfguard-keywrapping-native-v1';
@@ -105,17 +105,48 @@ installing it needs Python 3 and a C compiler (Visual Studio Build Tools on Wind
 is linked with `/DEPENDENTLOADFLAG:0x800`, so the DLLs it imports - `wintrust`, `crypt32` and
 `version` among them, none a KnownDLL - resolve from System32 only: Node loads an add-on with
 `LOAD_WITH_ALTERED_SEARCH_PATH`, which would otherwise search its own folder first, letting a
-planted `wintrust.dll` decide whether `HkdfGuard.dll` is trusted. The add-on only
+planted `wintrust.dll` decide whether `HkdfGuard.dll` is trusted. All three add-ons (this one,
+securefile's and options-certificate's) are compiled and linked with Control Flow Guard
+(`/guard:cf`) on Windows, as well as ASLR and DEP, and on Linux with full RELRO (`-z relro -z now`),
+a non-executable stack, `-fstack-clash-protection` and, on x64, `-fcf-protection=full`; each
+Windows add-on's tests check its DependentLoadFlags and Control Flow Guard bits. Each package's
+install script runs node-gyp with the running Node.js, never through a shell or a `PATH` lookup.
+The add-on only
 loads and calls the library; every verification rule (path ownership, code signature on Windows and
 macOS, the dynamic linker's environment, what would be and what was actually loaded) is TypeScript,
 and is tested on every platform. On Linux, before loading, the process's own dynamic linker is asked
 in list mode (`ld.so --list`, what `ldd` uses) where it would find every library
 `libhkdfguard.so.1` pulls in; each must pass the same ownership checks, so a dependency found
-somewhere writable is refused before any of its code runs. The Linux library is not
-content-pinned: verify a release with Sigstore/cosign (`gh attestation verify`) when you install it,
-and the loader enforces path integrity from there.
-On macOS the per-user location is found from the account database (the add-on's `getpwuid_r`),
-never `$HOME`, and the library must be at least version 0.9.0 - its `LC_ID_DYLIB` current version,
+somewhere writable is refused before any of its code runs. The listing runs with the
+`LD_LIBRARY_PATH`, `LD_PRELOAD` and `GLIBC_TUNABLES` the process started with, so it searches
+where `dlopen` will; `LD_PROFILE` and `LD_DYNAMIC_WEAK`, which change how symbols are bound and
+have no production use, refuse the load. After loading, each object `LD_PRELOAD` named without a
+path must have been found in a trusted location. The Linux library is not
+content-pinned: the loader enforces where it and its dependencies come from, not what they contain,
+so verifying the packages when you install them is a required production step, not an optional
+one. Check the downloaded package's build-provenance attestation
+(`gh attestation verify <file> --repo <the native repository>`) before installing it, and the
+installed files against the package manager's checksums (`dpkg --verify hkdfguard libhkdfguard1`,
+or `rpm -V` on an RPM distribution) after, and again whenever the host's integrity is in question;
+both print nothing when every file matches. See
+[Getting started](docs/getting-started.md#1-install-the-native-package). On macOS, any `DYLD_LIBRARY_PATH`,
+`DYLD_FALLBACK_LIBRARY_PATH` or `DYLD_FALLBACK_FRAMEWORK_PATH` refuses the load, as dyld would
+look in them for the library's dependencies as well as for the library.
+
+What the loader verifies is what the library links against - its import table and dependency
+closure - and what was actually loaded for it. A library the native library itself loads later, by
+name (`LoadLibraryExW` on Windows, `dlopen` on Linux, such as a TPM transport module), is found by
+the operating system's own search, which these checks can't see in advance. So each native release
+must keep those loads to trusted locations: on Windows, `HkdfGuard.dll` linked with
+`/DEPENDENTLOADFLAG:0x800` (System32 only), as this package's add-on is (the 0.9.1 DLL isn't yet;
+its runtime loads are the C runtime's, of system DLLs); on Linux, its transport modules from root's
+library directories.
+On macOS the per-user install, `~/.hkdfguard/v1`, is loaded only when there is no system-wide one
+and the application has called `allowMacUserInstall()` before first using the library: it is
+verified by its path and then loaded by it, in a folder the user can write, so another process of
+the same user could swap in a library of its own between the two. It is for developer machines;
+production installs system-wide. Its location is found from the account database (the add-on's
+`getpwuid_r`), never `$HOME`, and the library must be at least version 0.9.0 - its `LC_ID_DYLIB` current version,
 covered by the signature - so an older signed release can't be planted in its place. On Windows
 the same 0.9.0 floor applies to `HkdfGuard.dll`'s signed version resource, and a DLL with none is
 refused.
@@ -442,7 +473,8 @@ The whole file is read through `readTrustedFile` on the first lookup, under the 
 and every value in it is authenticated under its name before any is kept: one that fails, names a
 key version the ring doesn't hold, or a file that isn't exactly that object (an
 `InvalidSecretDataError`: a name that isn't a secret's name or appears twice in any case, a value
-that isn't a non-empty string) refuses the whole file, which is read again on the next lookup.
+that isn't a non-empty string) refuses the whole file. The refusal answers every lookup until the
+file changes (its identity, size or times) or 30 seconds pass, then the file is read again.
 Names follow `FilePerSecretCache`'s rule and match ignoring ASCII case; a missing file reports every
 secret missing, and isn't remembered. A file over 1 MiB (`maxFileLength`) is refused with a
 `KeyFileError` `ERR_HKDFGUARD_FILE_TOO_LARGE`. Concurrent lookups share one load.
@@ -532,6 +564,10 @@ read, by a `SecretsNotFoundError` naming them all - the rest are kept, and can s
 other failure keeps nothing. A value that isn't UTF-8 text is refused with `InvalidSecretDataError`:
 the protector encrypts text. As in the caches, each response body is taken before the SDK parses
 it, so no value becomes a JavaScript string, and every buffer that held one is zeroed.
+`writeProtectedSecretFiles` and `writeJsonSecrets` write each file whole to a temporary name in its
+folder and rename it into place, mode 0644 in a 0755 folder (never wider, whatever the umask), so a
+reader never sees a partial file and a symbolic link planted at a secret's path is replaced rather
+than written through; a folder that is itself a symbolic link is refused.
 
 ```ts
 import { AesGcmPipelineDataProtector } from '@runsecure/hkdfguard-cryptoprovider-aesgcm256';
@@ -623,8 +659,12 @@ store, a macOS keychain, an OpenSSL 3 provider on Linux (tpm2-openssl, pkcs11-pr
 password-protected PKCS#12 or PEM file whose password comes from a protected cache. A store's key
 stays in CNG or the keychain: `sign` and `decrypt` call the store through the package's own add-on,
 and TLS from it is refused, as Node's OpenSSL can't reach it. A file's key is decrypted by the
-package's own PKCS#12/PBES2 reader and held sealed; a provider's key is the provider's object in
-Node's OpenSSL, which loads the provider from `--openssl-config`.
+PKCS#12/PBES2 reader HkdfGuard's packages share (in `abstractions`) and held sealed; a provider's key is the provider's object in
+Node's OpenSSL, which loads the provider from `--openssl-config`. Every certificate and key file is
+read through `readTrustedFile` (`securefile`): one that anyone but administrators and the loader's
+`KeyFileTrust` (`fileTrust`, administrators only by default) could have written or replaced - or a
+folder above it, or a link on the way - is refused, since whoever can replace a key file chooses
+the key the application serves TLS with, or signs as.
 
 ```ts
 import { createServer } from 'node:https';
@@ -799,3 +839,11 @@ are compiled on each consumer's machine - so there is nothing to Authenticode-si
 header of `release.yml` says where that would go if prebuilt add-on binaries are ever shipped, and
 lists the one-time npm and GitHub setup publishing depends on. Third-party actions are pinned to
 full commit SHAs.
+
+The cloud SDKs and `@opentelemetry/api` are declared with caret ranges (`^`), so an application
+deduplicates them with its own copies and takes their security fixes without waiting for a
+HkdfGuard release; the `@runsecure/hkdfguard-*` packages depend on each other at exact versions.
+Pin what you deploy with your own lockfile. This repository's lockfile, every devDependency and the
+SHA-pinned actions are kept current by Dependabot (`.github/dependabot.yml`), which waits until a
+version has been public for seven days before proposing it, and groups each SDK's packages
+together; every proposal goes through CI and review.

@@ -27,8 +27,9 @@ export const PLAINTEXT_TEXT_SCAN_LIMIT = 96;
  *   made through this package's add-on.
  * - Linux and Apple silicon macOS: it and every directory above it must be owned by root or a
  *   trusted user and writable by nobody else (by its group only if that group is trusted), and only
- *   symbolic links a trusted user owns are followed; the resolved path is then opened with
- *   O_NOFOLLOW and must still be a regular file. These checks are Node's own fs calls.
+ *   symbolic links a trusted user owns are followed; an access control list on any of them may let
+ *   write only those same users and groups; the resolved path is then opened with O_NOFOLLOW and
+ *   must still be a regular file. These checks are Node's own fs calls, and the add-on's ACL reads.
  * - Everywhere: the contents must be 1 to MAX_WRAPPED_KEY_BYTES bytes - never more than one byte
  *   past that is read - and must not look like an unwrapped key (32 raw bytes, optionally followed by
  *   one line ending (LF or CRLF), or a 32-byte key as hex or base64).

@@ -17,18 +17,18 @@
     "!dist/**/*.test*"
   ],
   "scripts": {
-    "test": "node --test \"dist/**/*.test.js\""
+    "test": "node --test --test-timeout=120000 \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@azure/core-rest-pipeline": "1.25.0",
-    "@azure/keyvault-secrets": "4.12.0",
-    "@opentelemetry/api": "1.10.0",
+    "@azure/core-rest-pipeline": "^1.25.0",
+    "@azure/keyvault-secrets": "^4.12.0",
     "@runsecure/hkdfguard-abstractions": "0.9.1",
     "@runsecure/hkdfguard-cache": "0.9.1",
     "@runsecure/hkdfguard-diagnostics": "0.9.1"
   },
   "devDependencies": {
     "@azure/identity": "4.14.1",
+    "@opentelemetry/api": "1.10.0",
     "@runsecure/hkdfguard-dek": "0.9.1",
     "@runsecure/hkdfguard-test-support": "0.0.0"
   },

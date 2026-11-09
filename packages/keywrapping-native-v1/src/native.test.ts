@@ -198,7 +198,7 @@ describe('the macOS loader against the real system', { skip: process.platform !=
   it('passes every check for the installed library', (t) => {
     let chosen;
     try {
-      chosen = macChoosePath((p) => (existsSync(p) ? 0 : 2), homedir());
+      chosen = macChoosePath((p) => (existsSync(p) ? 0 : 2), homedir(), true); // a test host is a developer machine
     } catch {
       t.skip('the native library is not installed');
       return;

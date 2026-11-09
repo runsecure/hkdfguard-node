@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 //
-// The package's install script. The add-on is only needed on Windows, where a key file's owner, DACL,
-// reparse points, final path and drive type can only be read through Win32 calls; on Linux and macOS
-// everything TrustedKeyFile checks is in Node's own fs, so nothing is built there and no C toolchain
-// is needed to install the package.
+// The package's install script. The add-on reads what Node's fs can't: on Windows a file's owner,
+// DACL, reparse points, final path and drive type; on Linux and macOS a path's access control list,
+// which can grant write to accounts its permission bits don't show. Nothing is built elsewhere.
 //
-// On Windows it runs node-gyp rebuild with this Node.js, never through a shell or a PATH lookup: the
-// node-gyp npm runs install scripts with (npm sets npm_config_node_gyp to it), else a node-gyp
-// installed as a package where this one is. It needs Python 3 and Visual Studio Build Tools.
+// It runs node-gyp rebuild with this Node.js, never through a shell or a PATH lookup: the node-gyp
+// npm runs install scripts with (npm sets npm_config_node_gyp to it), else a node-gyp installed as
+// a package where this one is. It needs Python 3 and a C compiler: Visual Studio Build Tools on
+// Windows, build-essential (or the distribution's equivalent) on Linux, the Xcode command line tools
+// on macOS.
 
 'use strict';
 
 const { spawnSync } = require('node:child_process');
 
-if (process.platform !== 'win32') {
+if (!['win32', 'linux', 'darwin'].includes(process.platform)) {
   process.exit(0);
 }
 

@@ -150,10 +150,10 @@ describe('the Linux loader against the real system', { skip: process.platform !=
 
   it("reads the linker's variables from /proc/self/environ", () => {
     // Whatever this process started with, /proc/self/environ must be readable for the loader to
-    // see it - and parse to the same three variables.
+    // see it - and parse to the variables it checks.
     const block = readFileSync('/proc/self/environ');
     const values = linuxReadEnvironment({}, block);
-    assert.deepEqual([...values.keys()].sort(), [ENV_AUDIT, ENV_LIBRARY_PATH, ENV_PRELOAD]);
+    assert.deepEqual([...values.keys()].sort(), [ENV_AUDIT, 'LD_DYNAMIC_WEAK', ENV_LIBRARY_PATH, ENV_PRELOAD, 'LD_PROFILE']);
   });
 
   it('probes tell a missing path from a present one', () => {

@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import type { TestContext } from 'node:test';
 import { awaitNativeAccess, NATIVE_ACCESS_TIMEOUT_MS } from '@runsecure/hkdfguard-test-support';
 import { NotInstalledError, UnsupportedPlatformError } from './errors.js';
-import { hostLibrary } from './host.js';
+import { allowMacUserInstall, hostLibrary } from './host.js';
 import { NativeKmsLibrary, type KmsLibrary } from './library.js';
 import { linuxCandidatePaths } from './linuxpolicy.js';
 import { macChoosePath } from './macpolicy.js';
@@ -38,6 +38,8 @@ const PACKAGE_ENTRY = join(__dirname, 'index.js');
 /** The installed library, verified and loaded; skips the test (returning undefined) when there is none here. */
 export function installedLibrary(t: TestContext): KmsLibrary | undefined {
   try {
+    // A test host is a developer machine: its library may be the per-user install.
+    allowMacUserInstall();
     return hostLibrary();
   } catch (error) {
     if (error instanceof NotInstalledError || error instanceof UnsupportedPlatformError) {
@@ -61,7 +63,7 @@ export function installedLinuxLibraryPath(): string | undefined {
 /** The hkdfguard tool installed beside the library the macOS loader would choose. */
 export function macProvisioningTool(): string | undefined {
   try {
-    const { path } = macChoosePath((p) => (existsSync(p) ? 0 : 2), homedir());
+    const { path } = macChoosePath((p) => (existsSync(p) ? 0 : 2), homedir(), true);
     const tool = join(dirname(path), 'hkdfguard');
     return existsSync(tool) ? tool : undefined;
   } catch {

@@ -169,7 +169,8 @@ The rest (-7, -14 to -15, -21 to -31, -40 to -63, ...) are reserved.
 ## macOS
 
 Installed system-wide at `/Library/Application Support/HkdfGuard/v1`, or per user at
-`~/.hkdfguard/v1`, beside `libhkdfguard.dylib`. The KEK is a Secure Enclave key, so it needs
+`~/.hkdfguard/v1`, beside `libhkdfguard.dylib`. The Node packages load a per-user install only
+when the application opts in with `allowMacUserInstall()`, for developer machines. The KEK is a Secure Enclave key, so it needs
 Apple silicon and macOS 13 or later.
 
 ```text

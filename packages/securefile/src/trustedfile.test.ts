@@ -7,7 +7,7 @@ import { InvalidArgumentError } from '@runsecure/hkdfguard-abstractions';
 import { keyFileDirectory, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
 import { FILE_TOO_LARGE, KeyFileError, UnsupportedPlatformError } from './errors.js';
 import { KeyFileTrust } from './trust.js';
-import { parseFileContents, readFileContents, readTrustedFile, readTrustedFileWith, withTrustedFile } from './trustedfile.js';
+import { parseFileContents, readFileContents, readTrustedFile, readTrustedFileSync, readTrustedFileWith, withTrustedFile } from './trustedfile.js';
 
 const isWindows = process.platform === 'win32';
 const isUnix = process.platform === 'linux' || (process.platform === 'darwin' && process.arch === 'arm64');
@@ -177,6 +177,19 @@ describe('readTrustedFile, real files', { skip: !isWindows && !isUnix && 'Window
 
     assert.deepEqual(await readTrustedFile(path, trustCurrentUser(), LIMIT), contents);
     assert.deepEqual(await readTrustedFileWith(path, trustCurrentUser(), LIMIT, (c) => c.slice()), contents);
+    assert.deepEqual(readTrustedFileSync(path, trustCurrentUser(), LIMIT), contents);
+  });
+
+  it('refuses synchronously what it refuses asynchronously: an untrusted location, a file over the limit, bad arguments', (t) => {
+    const directory = trustedDirectory(t);
+    if (directory === undefined) return;
+    const path = join(directory, 'secret.enc');
+    writeFileSync(path, new Uint8Array(LIMIT + 1));
+    assert.throws(() => readTrustedFileSync(path, trustCurrentUser(), LIMIT), fileError(FILE_TOO_LARGE));
+    if (!isRoot) assert.throws(() => readTrustedFileSync(path, KeyFileTrust.administratorsOnly, LIMIT * 2), fileError('EACCES', 'not trusted'));
+    assert.throws(() => readTrustedFileSync(join(directory, 'missing.enc'), trustCurrentUser(), LIMIT), fileError('ENOENT'));
+    assert.throws(() => readTrustedFileSync('', trustCurrentUser(), LIMIT), InvalidArgumentError);
+    assert.throws(() => readTrustedFileSync(path, trustCurrentUser(), 0), InvalidArgumentError);
   });
 
   it('reads an empty file as empty', async (t) => {

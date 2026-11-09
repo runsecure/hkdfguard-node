@@ -28,7 +28,7 @@ describe('Windows ACLs', () => {
   });
 
   it('refuse any write right for an untrusted principal', () => {
-    for (const right of [Rights.writeData, Rights.appendData, Rights.writeExtendedAttributes, Rights.deleteChild, Rights.delete, Rights.writeDac, Rights.writeOwner, 0x001301bf, Rights.genericAll, Rights.genericWrite]) {
+    for (const right of [Rights.writeData, Rights.appendData, Rights.writeExtendedAttributes, Rights.writeAttributes, Rights.deleteChild, Rights.delete, Rights.writeDac, Rights.writeOwner, 0x001301bf, Rights.genericAll, Rights.genericWrite]) {
       untrusted(() => verifyTrustedOnly(security(ADMINISTRATORS, allow(USERS, right))), USERS);
     }
   });

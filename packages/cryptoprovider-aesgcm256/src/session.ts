@@ -3,6 +3,7 @@ import {
   AuthenticationFailedError, ClosedError, EncryptionLimitReachedError, InvalidArgumentError, isZero, wipe,
 } from '@runsecure/hkdfguard-abstractions';
 import { AttributeNames, EventNames, HkdfGuardLog, HkdfGuardTelemetry, SpanNames, type Logger } from '@runsecure/hkdfguard-diagnostics';
+import { quietly } from './quietly.js';
 
 /** The AES-256 key length, in bytes. */
 export const KEY_SIZE = 32;
@@ -82,8 +83,19 @@ export function budgetFor(key: Uint8Array): EncryptionBudget {
   return budget;
 }
 
+/** Tests only: how many keys the registry holds a budget for. Never exported from the package index. */
+export function budgetRegistrySizeForTests(): number {
+  return budgetsByKey.size;
+}
+
 // Set by AesGcmSession's static block.
 let keyOf: (session: AesGcmSession) => Uint8Array;
+
+/** Whether two views share any byte of memory. */
+function overlaps(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.buffer !== b.buffer || a.byteLength === 0 || b.byteLength === 0) return false;
+  return a.byteOffset < b.byteOffset + b.byteLength && b.byteOffset < a.byteOffset + a.byteLength;
+}
 
 /** Tests only: a session's key buffer, to check it is zeroed. Never exported from the package index. */
 export function sessionKeyForTests(session: AesGcmSession): Uint8Array {
@@ -142,13 +154,20 @@ export class AesGcmSession {
         if (result.length < needed) {
           throw new InvalidArgumentError(`The result buffer holds ${result.length} bytes; encrypting ${plaintext.length} bytes needs ${needed}.`);
         }
+        // plaintext is zeroed once encrypted: sharing memory with the bytes written, it would zero
+        // the ciphertext it became, and the value would be lost while the call reported success.
+        if (overlaps(plaintext, result.subarray(0, needed))) {
+          throw new InvalidArgumentError('The plaintext and the result buffer overlap: encrypt from a buffer of its own, as the plaintext is zeroed once encrypted.');
+        }
 
         if (this.budget.consume()) {
-          span.addEvent(EventNames.encryptionBudgetWarning, {
+          // Quietly: the encryption that crosses the threshold must not fail - its plaintext
+          // already consumed - because the application's tracer or logger throws.
+          quietly(() => span.addEvent(EventNames.encryptionBudgetWarning, {
             [AttributeNames.encryptionCount]: this.budget.count, [AttributeNames.encryptionLimit]: this.budget.limit,
-          });
+          }));
           // A span event alone is lost without a tracer provider; the log is not.
-          HkdfGuardLog.encryptionBudgetWarning(this.logger, this.budget.count, this.budget.limit);
+          quietly(() => HkdfGuardLog.encryptionBudgetWarning(this.logger, this.budget.count, this.budget.limit));
         }
 
         const nonce = result.subarray(0, NONCE_SIZE);

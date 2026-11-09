@@ -14,18 +14,16 @@
 // and, from openssl-aes.pfx, by .NET 10 on Windows 11: dotnet-default.pfx (3DES, SHA-1 MAC, as Windows
 // writes), dotnet-nopassword.pfx, dotnet-aes.pfx (PBES2 AES-256 SHA-256) and dotnet-encrypted.key.
 import assert from 'node:assert/strict';
-import { createHash, createPublicKey } from 'node:crypto';
+import { createPublicKey } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { certificate, ecKey, fixture, fixtureCertificateDer, pkcs12, rsaKey, utf8 } from './certificates.test-support.js';
 import * as der from './der.js';
-import { DerError } from './der.js';
 import { InvalidCertificateFileError, UnsupportedCertificateError, WrongPasswordError } from './errors.js';
 import { decryptPemKey, publicKeyOf } from './files.js';
-import * as pbe from './pbe.js';
+import { pkcs12 as shared } from '@runsecure/hkdfguard-abstractions/internal';
 import { decodePkcs12 } from './pkcs12.js';
 
-const spkiOf = (der: Buffer) => createPublicKey({ key: der, format: 'der', type: 'spki' });
 const certificateSpki = (certificateDer: Buffer) => createPublicKey(`-----BEGIN CERTIFICATE-----\n${certificateDer.toString('base64')}\n-----END CERTIFICATE-----`)
   .export({ format: 'der', type: 'spki' });
 const isZero = (buffer: Buffer) => buffer.every((b) => b === 0);
@@ -88,12 +86,49 @@ describe('decodePkcs12', () => {
     const key = ecKey();
     const leaf = certificate(key);
     for (const [keyEncryption, certificateEncryption, mac] of [['pbes2', 'pbes2', 'sha256'], ['3des', '3des', 'sha1'], ['pbes2', 'none', 'sha512'],
-      ['none', 'none', 'none'], ['3des', 'pbes2', 'sha256']] as const) {
+      ['3des', 'pbes2', 'sha256']] as const) {
       const file = pkcs12({ keys: [key.privateKey], certificates: [leaf], password: utf8(), keyEncryption, certificateEncryption, mac });
       const contents = decodePkcs12(file, utf8());
       assert.deepEqual(contents.certificates, [leaf], `${keyEncryption}/${certificateEncryption}/${mac}`);
       assert.deepEqual(publicKeyOf(contents.keys[0]!).export({ format: 'der', type: 'spki' }), key.publicKey.export({ format: 'der', type: 'spki' }));
     }
+    // Nothing protected and nothing claimed: read without a password, as AllowUnprotectedPrivateKey does.
+    const plain = decodePkcs12(pkcs12({ keys: [key.privateKey], certificates: [leaf], keyEncryption: 'none', certificateEncryption: 'none', mac: 'none' }), undefined);
+    assert.deepEqual(plain.certificates, [leaf]);
+    assert.equal(plain.keys.length, 1);
+  });
+
+  it('refuses, with a password, a file without its MAC - however its contents are protected', () => {
+    const key = ecKey();
+    const leaf = certificate(key);
+    for (const [keyEncryption, certificateEncryption] of [['pbes2', 'pbes2'], ['3des', 'none'], ['none', 'none']] as const) {
+      const file = pkcs12({ keys: [key.privateKey], certificates: [leaf], password: utf8(), keyEncryption, certificateEncryption, mac: 'none' });
+      assert.throws(() => decodePkcs12(file, utf8()), (error: Error) => error instanceof InvalidCertificateFileError && /no integrity MAC/.test(error.message),
+        `${keyEncryption}/${certificateEncryption}`);
+    }
+    // A real file with its MAC cut off.
+    const pfx = der.sequence(der.read(readFileSync(fixture('openssl-aes.pfx'))), 'pfx');
+    const stripped = der.encode(der.SEQUENCE, pfx[0]!.encoding, pfx[1]!.encoding);
+    assert.throws(() => decodePkcs12(stripped, utf8()), (error: Error) => error instanceof InvalidCertificateFileError && /no integrity MAC/.test(error.message));
+  });
+
+  it("refuses anyone's plaintext key and certificate under any password: what the MAC is for", () => {
+    // Someone who can write the file but doesn't know the password plants their own key, unencrypted, with no MAC.
+    const theirs = rsaKey(1);
+    const planted = pkcs12({ keys: [theirs.privateKey], certificates: [certificate(theirs)], keyEncryption: 'none', certificateEncryption: 'none', mac: 'none' });
+    for (const password of [utf8(), utf8('anything')]) {
+      assert.throws(() => decodePkcs12(planted, password), InvalidCertificateFileError);
+    }
+  });
+
+  it("refuses, with a password, a key that isn't encrypted, even under a MAC", () => {
+    const key = ecKey();
+    const file = pkcs12({ keys: [key.privateKey], certificates: [certificate(key)], password: utf8(), keyEncryption: 'none', certificateEncryption: 'pbes2', mac: 'sha256' });
+    assert.throws(() => decodePkcs12(file, utf8()),
+      (error: Error) => error instanceof InvalidCertificateFileError && /isn't encrypted/.test(error.message) && /AllowUnprotectedPrivateKey/.test(error.message));
+    // The same file, certificates alone: nothing to refuse.
+    const certificatesOnly = pkcs12({ certificates: [certificate(key)], password: utf8(), certificateEncryption: 'none', mac: 'sha256' });
+    assert.equal(decodePkcs12(certificatesOnly, utf8()).certificates.length, 1);
   });
 
   it('reads a BER file - indefinite lengths and segmented strings - as its DER', () => {
@@ -121,7 +156,7 @@ describe('decodePkcs12', () => {
   });
 
   it('bounds the iterations a file may ask for', () => {
-    const file = pkcs12({ keys: [ecKey().privateKey], certificates: [certificate(ecKey())], password: utf8(), mac: 'sha256', macIterations: pbe.MAX_ITERATIONS + 1 });
+    const file = pkcs12({ keys: [ecKey().privateKey], certificates: [certificate(ecKey())], password: utf8(), mac: 'sha256', macIterations: shared.MAX_ITERATIONS + 1 });
     assert.throws(() => decodePkcs12(file, utf8()), (error: Error) => error instanceof InvalidCertificateFileError && /iteration count/.test(error.message));
   });
 });
@@ -144,64 +179,3 @@ describe('encrypted PKCS#8 keys', () => {
   });
 });
 
-describe('password-based encryption', () => {
-  it('writes the password as a big-endian UTF-16 BMPString with a terminator, and refuses one that isn\'t UTF-8', () => {
-    assert.deepEqual(pbe.bmpPassword(undefined), Buffer.from([0, 0]));
-    assert.deepEqual(pbe.bmpPassword(new Uint8Array(0)), Buffer.alloc(0));
-    for (const text of ['a', 'pässwörd', '€', '𝄞 clef']) {
-      assert.deepEqual(pbe.bmpPassword(utf8(text)), Buffer.concat([Buffer.from(text, 'utf16le').swap16(), Buffer.from([0, 0])]), text);
-    }
-    for (const bad of [[0xff], [0xc3], [0xed, 0xa0, 0x80], [0xc0, 0xaf], [0xf0, 0x9d, 0x84]]) {
-      assert.throws(() => pbe.bmpPassword(Buffer.from(bad)), WrongPasswordError, String(bad));
-    }
-  });
-
-  it("derives RFC 7292's keys", () => {
-    // RFC 7292 B.2 written out once more, plainly, for a SHA-1 key of 24 bytes (two digests).
-    const bmp = pbe.bmpPassword(utf8());
-    const salt = Buffer.from('saltsalt');
-    const iterations = 3;
-    const v = 64;
-    const u = 20;
-    const fill = (data: Buffer) => Buffer.from(Array.from({ length: v * Math.ceil(data.length / v) }, (_, i) => data[i % data.length]!));
-    const input = Buffer.concat([fill(salt), fill(bmp)]);
-    let out = Buffer.alloc(0);
-    while (out.length < 24) {
-      let a = createHash('sha1').update(Buffer.alloc(v, 1)).update(input).digest();
-      for (let i = 1; i < iterations; i++) a = createHash('sha1').update(a).digest();
-      out = Buffer.concat([out, a]);
-      const b = BigInt(`0x${Buffer.from(Array.from({ length: v }, (_, k) => a[k % u]!)).toString('hex')}`);
-      for (let block = 0; block < input.length; block += v) {
-        const value = (BigInt(`0x${input.subarray(block, block + v).toString('hex')}`) + b + 1n) % (1n << BigInt(8 * v));
-        Buffer.from(value.toString(16).padStart(2 * v, '0'), 'hex').copy(input, block);
-      }
-    }
-    assert.deepEqual(pbe.pkcs12Kdf('sha1', bmp, salt, iterations, 1, 24), out.subarray(0, 24));
-  });
-
-  it('bounds an iteration count, and every file\'s total', () => {
-    const budget = new pbe.IterationBudget();
-    for (const bad of [0, -1, pbe.MAX_ITERATIONS + 1, 1.5]) assert.throws(() => budget.spend(bad), InvalidCertificateFileError);
-    for (let i = 0; i < 4; i++) budget.spend(pbe.MAX_ITERATIONS);
-    assert.throws(() => budget.spend(1), InvalidCertificateFileError);
-  });
-});
-
-describe('the DER reader', () => {
-  it("refuses what isn't DER", () => {
-    for (const data of [[0x30], [0x30, 0x05, 0x02, 0x01], [0x04, 0x80, 0x00, 0x00], [0x30, 0x80, 0x02, 0x01, 0x01], [0x30, 0x85, 0xff, 0xff, 0xff, 0xff, 0xff],
-      [0x02, 0x01, 0x01, 0x00], [0x1f, 0x81, 0x00, 0x00]]) {
-      assert.throws(() => der.read(Buffer.from(data)), DerError, String(data));
-    }
-  });
-
-  it('reads back what it writes', () => {
-    assert.equal(der.oid(der.read(der.encodeOid('1.2.840.113549.1.12.10.1.2'))), '1.2.840.113549.1.12.10.1.2');
-    assert.equal(der.oid(der.read(der.encodeOid('2.999.3'))), '2.999.3');
-    assert.equal(der.integer(der.read(der.encodeInteger(600000)), 'n'), 600000);
-    assert.equal(der.integer(der.read(der.encodeInteger(128)), 'n'), 128);
-    const long = Buffer.alloc(70000, 7);
-    assert.deepEqual(der.octets(der.read(der.encode(der.OCTET_STRING, long)), 'x'), long);
-    assert.ok(spkiOf(rsaKey().publicKey.export({ format: 'der', type: 'spki' })));
-  });
-});

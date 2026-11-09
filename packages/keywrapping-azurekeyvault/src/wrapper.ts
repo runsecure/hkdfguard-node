@@ -33,6 +33,15 @@ export interface AzureKeyVaultKeyWrapperOptions {
    */
   readonly keyFileTrust?: KeyFileTrust;
   /**
+   * The signing key versions whose signatures {@link AzureKeyVaultKeyWrapper.unwrap} accepts, each
+   * Key Vault's 32 hex digits. Omitted, a signing key identifier that names a version accepts only
+   * that version's signatures, and one that doesn't accepts any version's. List the old version
+   * beside the new while key files signed by it are still in use after a rotation; drop it - or
+   * disable it in Key Vault - to stop accepting what it signed, such as files a principal that
+   * could sign made while it should not have.
+   */
+  readonly acceptedSigningKeyVersions?: readonly string[];
+  /**
    * Options for every Key Vault client the wrapper creates - `serviceVersion`, `retryOptions`,
    * `httpClient`, proxy and logging options; copied at construction.
    */
@@ -40,6 +49,18 @@ export interface AzureKeyVaultKeyWrapperOptions {
 }
 
 type Operation = 'wrap' | 'sign' | 'verify' | 'unwrap';
+
+const KEY_VERSION = /^[0-9A-Fa-f]{32}$/;
+
+// The signing versions unwrap accepts: those listed, else the one the signing key identifier pins,
+// else any (undefined). Lower-cased, as Key Vault writes them and envelope.parse reads them.
+function acceptedVersions(listed: unknown, pinned: string | undefined): ReadonlySet<string> | undefined {
+  if (listed === undefined) return pinned === undefined ? undefined : new Set([pinned.toLowerCase()]);
+  if (!Array.isArray(listed) || listed.length === 0 || !listed.every((v) => typeof v === 'string' && KEY_VERSION.test(v))) {
+    throw new InvalidArgumentError('acceptedSigningKeyVersions must be a non-empty list of Key Vault key versions (32 hex digits each).');
+  }
+  return new Set(listed.map((v: string) => v.toLowerCase()));
+}
 
 /**
  * A {@link KeyWrapper} that protects (wraps) and reveals (unwraps) a DEK under an RSA key in Azure
@@ -99,6 +120,8 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
   private readonly clientOptions: CryptographyClientOptions;
   private readonly context: Uint8Array;
   private readonly keyFileTrust: KeyFileTrust;
+  // The signing versions unwrap accepts, lower-cased; undefined for any version of the signing key.
+  private readonly acceptedSigningVersions: ReadonlySet<string> | undefined;
   // One client per key version, by its identifier, kept once a call through it has succeeded; and the
   // version each key given without one resolved to.
   private readonly clients = new Map<string, CryptographyClient>();
@@ -115,7 +138,8 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
    * @param credential Authenticates every call to Key Vault, e.g. a managed identity.
    * @throws InvalidArgumentError a key identifier isn't a Key Vault key's, both name the same key,
    *   `credential` has no `getToken`, the context isn't a string, is too long or isn't well-formed
-   *   text, `keyFileTrust` isn't a KeyFileTrust, or `clientOptions` isn't an object.
+   *   text, `keyFileTrust` isn't a KeyFileTrust, `acceptedSigningKeyVersions` isn't a non-empty list
+   *   of key versions, or `clientOptions` isn't an object.
    */
   constructor(wrappingKeyId: string, signingKeyId: string, credential: KeyVaultCredential, options: AzureKeyVaultKeyWrapperOptions = {}) {
     const wrappingKey = KeyVaultKeyId.parse(wrappingKeyId);
@@ -131,6 +155,7 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
     if (!(trust instanceof KeyFileTrust)) throw new InvalidArgumentError('keyFileTrust must be a KeyFileTrust.');
     const clientOptions = options.clientOptions ?? {};
     if (typeof clientOptions !== 'object' || clientOptions === null) throw new InvalidArgumentError('clientOptions must be an object.');
+    const accepted = acceptedVersions(options.acceptedSigningKeyVersions, signingKey.version);
 
     this.wrappingKeyId = wrappingKeyId;
     this.signingKeyId = signingKeyId;
@@ -140,6 +165,7 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
     this.clientOptions = { ...clientOptions };
     this.context = envelope.encodeContext(options.context);
     this.keyFileTrust = trust;
+    this.acceptedSigningVersions = accepted;
   }
 
   /**
@@ -186,6 +212,16 @@ export class AzureKeyVaultKeyWrapper implements KeyWrapper {
       // A copy, so what is verified is what is unwrapped, whatever the caller does with theirs meanwhile.
       const data = Uint8Array.from(wrapped);
       const parts = envelope.parse(data, this.fail('unwrap', this.wrappingKey));
+
+      // Only a version accepted at construction may have signed it: a signing version that was pinned
+      // away from, or left off acceptedSigningKeyVersions, can't vouch for a key file - refused before
+      // any call, so Key Vault is never asked to verify under it.
+      const accepted = this.acceptedSigningVersions;
+      if (accepted !== undefined && !accepted.has(parts.signingKeyVersion.toLowerCase())) {
+        throw new AzureKeyVaultError('verify', this.signingKey.toString(), `The wrapped DEK is signed by '${this.signingKey.name}' version `
+          + `${parts.signingKeyVersion}, which this wrapper doesn't accept (it accepts ${[...accepted].join(', ')}): list it in `
+          + 'acceptedSigningKeyVersions while key files it signed are still in use.');
+      }
 
       // The signature first: nothing reaches unwrapKey that a principal allowed to sign didn't make.
       const digest = sha256(envelope.signedData(data.subarray(0, parts.unsignedLength), this.context));

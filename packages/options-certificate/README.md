@@ -49,7 +49,9 @@ import { createServer } from 'node:https';
 import { CertificateOptionsLoader, certificateOptionsFromJson } from '@runsecure/hkdfguard-options-certificate';
 
 const options = certificateOptionsFromJson(appsettingsJson, 'Certificate');
-const loader = new CertificateOptionsLoader({ passwords }); // passwords: a ProtectedReadOnlyCache; omit if no file has one
+// passwords: a ProtectedReadOnlyCache; omit if no file has one. fileTrust: a KeyFileTrust naming who
+// besides administrators may have written the certificate and key files; administrators only if omitted.
+const loader = new CertificateOptionsLoader({ passwords });
 const certificate = await loader.load(options, 'tls');
 try {
   const server = createServer(handler);
@@ -88,7 +90,9 @@ certificates a PKCS#12 or PEM file held, in file order), `subject`, `notBefore`,
   (`'der'`, the default, or `'ieee-p1363'`).
 - `decrypt(ciphertext, options?)` - RSA only; `crypto.privateDecrypt`'s options: `padding`
   (`RSA_PKCS1_OAEP_PADDING`, the default, or `RSA_PKCS1_PADDING`), `oaepHash` (default `'sha1'`) and
-  `oaepLabel`. A new buffer to zero once used.
+  `oaepLabel`. A new buffer to zero once used. `RSA_PKCS1_PADDING` is refused for a store or provider
+  key: neither can answer bad padding with implicit rejection, so whoever submits ciphertexts could
+  recover a plaintext (Bleichenbacher's attack). A file key does it as Node does, with implicit rejection.
 - `configureServer(server, options?)` - makes a `tls.Server` (an `https` or `http2` secure server too)
   present the certificate and chain, through `server.setSecureContext`. Node's servers ignore a
   `secureContext` option, so this is how a server gets it.
@@ -101,7 +105,8 @@ Every operation that reaches a store or a file is asynchronous.
 
 ### Files
 
-The PKCS#12 and PBES2 decryption is this package's own, as in the Go and Python ports: PBES2 (PBKDF2
+The PKCS#12 and PBES2 decryption is HkdfGuard's own, as in the Go and Python ports, and shared with
+the Vault client's key stores (it lives in `abstractions`): PBES2 (PBKDF2
 with HMAC-SHA-1/224/256/384/512, AES-128/192/256-CBC or 3DES-CBC), PKCS#12's own 3DES, HMAC-SHA-1/2
 integrity MACs, BER as well as DER. Legacy RC2 and RC4 files (`openssl pkcs12 -legacy`) are refused
 with a hint to re-export with AES, as are PBMAC1 and public-key-protected files, and legacy
@@ -109,8 +114,24 @@ OpenSSL-encrypted PEM keys (`Proc-Type`); key derivations are capped at 1,000,00
 4,000,000 per file. Node's own `pfx` option isn't used: it takes the password only as a string, reads
 whichever key it finds first, and reads what OpenSSL's legacy provider would.
 
-Files are read whole into buffers sized once (libuv reads straight into them); the password arrives
-from the cache into a buffer, never a string, and is zeroed when the load ends. PBKDF2 is
+A file read with a password must carry its integrity MAC, and every private key in it must be
+encrypted; either failing is an `InvalidCertificateFileError`. RFC 7292 makes the MAC optional, but
+it is the only thing that ties the file to its password: without one, a file of anyone's plaintext
+key and certificate would read under any password. OpenSSL, keytool and Windows always write one
+unless told not to (`-nomac`); a plaintext key (`-keypbe NONE`) is refused as a plaintext PEM key is
+when a password is named. A file read without a password, under `AllowUnprotectedPrivateKey`, needs
+neither, and its key is reported as an unprotected key file.
+
+Every file - a PKCS#12, a PEM certificate or key, a Linux provider's certificate and key file - is
+read through `readTrustedFile` (`@runsecure/hkdfguard-securefile`): it is refused, with a
+`KeyFileError` of code `EACCES` saying what isn't trusted, unless it and every folder above it are
+owned by an administrator (root; SYSTEM, Administrators or TrustedInstaller) or a principal in the
+loader's `fileTrust` (`KeyFileTrust.administratorsOnly` by default) and writable by no one else,
+with no untrusted symbolic link on the way - whoever can replace a key file chooses the key the
+application serves TLS with, or signs as. Name the account your deployment writes the files as,
+never the one the application runs as, outside a developer machine. Files are read whole into
+buffers sized once (libuv reads straight into them); the password arrives from the cache into a
+buffer, never a string, and is zeroed when the load ends. PBKDF2 is
 `pbkdf2Sync`, PKCS#12's key derivation and MAC `createHash`/`createHmac`, and every derived key,
 intermediate digest and decrypted buffer is a `Buffer` zeroed once used. The decrypted PKCS#8 is
 sealed at once under a random AES-256-GCM key, and each use unseals it into a buffer wiped straight
@@ -200,7 +221,9 @@ with `failures`); `CertificateNotFoundError` (`ERR_HKDFGUARD_CERTIFICATE_NOT_FOU
 (`ERR_HKDFGUARD_OPENSSL_PROVIDER_UNAVAILABLE`); `CertificateStoreError` (`ERR_HKDFGUARD_CERTIFICATE_STORE`,
 with the store call's `status`). Bad configuration from `certificateOptionsFromJson` is an
 `InvalidArgumentError` (`ERR_HKDFGUARD_INVALID_OPTIONS_JSON`); a use after `close()` is `ClosedError`
-(`ERR_HKDFGUARD_CLOSED`); a file that can't be read rejects with Node's own error (`ENOENT`, `EACCES`).
+(`ERR_HKDFGUARD_CLOSED`); a file that can't be read rejects with `securefile`'s `KeyFileError`, whose
+`code` follows Node's (`ENOENT` for a missing file; `EACCES` for one this account may not read, or
+whose location isn't trusted - the message says what).
 
 ## Differences from .NET
 

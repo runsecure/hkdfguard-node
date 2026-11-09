@@ -8,11 +8,15 @@ import { ENOENT, ENOTDIR, FileType, PERM_GROUP_WRITE, PERM_OTHER_WRITE, type Fil
  *
  *  1. Location. The system install is used whenever it exists; the per-user install,
  *     ~/.hkdfguard/v1, only when there is no system install - anything running as the user can
- *     write to the user's home, so a per-user file must never override a root-owned system one. If
- *     the system install exists but fails a check, loading fails; nor does it fall back when the
- *     system install merely can't be examined: only "nothing is there" counts as "not installed".
- *     The home folder comes from the account database (getpwuid), never $HOME, so whoever sets the
- *     process's environment can't choose where the library is loaded from.
+ *     write to the user's home, so a per-user file must never override a root-owned system one -
+ *     and only when the application has opted in (allowMacUserInstall). The per-user install can't
+ *     be defended against another process of the same user: the library is verified by its path
+ *     and then loaded by it, in a folder that user may write, so such a process could swap in a
+ *     library of its own between the two. It is for developer machines, where it guards against
+ *     mistakes. If the system install exists but fails a check, loading fails; nor does it fall
+ *     back when the system install merely can't be examined: only "nothing is there" counts as
+ *     "not installed". The home folder comes from the account database (getpwuid), never $HOME,
+ *     so whoever sets the process's environment can't choose where the library is loaded from.
  *  2. Path integrity. No component of the path, from the file up to /, may be a symbolic link, or
  *     writable by anyone but its owner - except that the system directories above an install
  *     (/, /Library, /Library/Application Support, /Users) may also be writable by the wheel or
@@ -21,9 +25,10 @@ import { ENOENT, ENOTDIR, FileType, PERM_GROUP_WRITE, PERM_OTHER_WRITE, type Fil
  *  3. Code signature. The file's signature must be valid and satisfy MAC_CODE_REQUIREMENT.
  *     Its version - LC_ID_DYLIB's current_version, which the signature covers - must be at least
  *     MAC_MINIMUM_LIBRARY_VERSION, so an older genuine release can't be planted in its place.
- *  4. What dyld loaded. dlopen of an absolute path first looks for its leaf name in every
- *     DYLD_LIBRARY_PATH directory, so the loader refuses before dlopen if one holds the library's
- *     name, and after dlopen asks dyld (dladdr) which file it mapped.
+ *  4. What dyld loaded. dyld looks for the leaf name of the library - and of every library it
+ *     loads - in each DYLD_LIBRARY_PATH directory first, and in the DYLD_FALLBACK_* ones when a
+ *     path fails, so the loader refuses before dlopen if any of them is set, and after dlopen asks
+ *     dyld (dladdr) which file it mapped.
  */
 
 export const MAC_FILE_NAME = 'libhkdfguard.dylib';
@@ -114,17 +119,27 @@ function isPresent(path: string, probe: (path: string) => number, kind: string):
   throw new UntrustedError(`Could not tell whether the ${kind} HkdfGuard native library '${path}' exists (lstat failed with errno ${errno}); refusing to guess or to fall back to another location.`);
 }
 
-/** The system install if it exists, otherwise the user install. `probe` is lstat's errno (0 if present). */
-export function macChoosePath(probe: (path: string) => number, homeDirectory: string): { path: string; isSystem: boolean } {
+/**
+ * The system install if it exists, otherwise - when `allowUserInstall` - the user install.
+ * `probe` is lstat's errno (0 if present).
+ * @throws UntrustedError there is only a user install, and it isn't allowed
+ */
+export function macChoosePath(probe: (path: string) => number, homeDirectory: string, allowUserInstall: boolean): { path: string; isSystem: boolean } {
   if (isPresent(MAC_SYSTEM_PATH, probe, 'system-wide')) {
     return { path: MAC_SYSTEM_PATH, isSystem: true };
   }
   const user = macUserPath(homeDirectory);
   // Only an absolute home: a relative one would resolve against the working directory.
   if (homeDirectory.startsWith('/') && isPresent(user, probe, 'per-user')) {
+    if (!allowUserInstall) {
+      throw new UntrustedError(`The HkdfGuard native library is installed only for this user, at '${user}', which is loaded only when the `
+        + 'application opts in with allowMacUserInstall() before it first uses the library: another process of this user could replace '
+        + `that library as it is loaded, so it is for developer machines. Install it system-wide, at '${MAC_SYSTEM_PATH}', for production.`);
+    }
     return { path: user, isSystem: false };
   }
-  throw new NotInstalledError(`The HkdfGuard native KMS library is not installed. Install it at '${MAC_SYSTEM_PATH}' (system-wide) or '${user}' (this user); it is never loaded from anywhere else.`);
+  throw new NotInstalledError(`The HkdfGuard native KMS library is not installed. Install it at '${MAC_SYSTEM_PATH}' (system-wide), or - on a `
+    + `developer machine, with allowMacUserInstall() - at '${user}' (this user); it is never loaded from anywhere else.`);
 }
 
 /**
@@ -133,29 +148,24 @@ export function macChoosePath(probe: (path: string) => number, homeDirectory: st
  * HkdfGuard native library calls with every DEK. None is set on a production host.
  */
 export const MAC_REFUSED_DYLD_VARIABLES: readonly string[] = [
-  'DYLD_INSERT_LIBRARIES', 'DYLD_FRAMEWORK_PATH', 'DYLD_VERSIONED_LIBRARY_PATH', 'DYLD_VERSIONED_FRAMEWORK_PATH', 'DYLD_IMAGE_SUFFIX',
+  'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'DYLD_FRAMEWORK_PATH', 'DYLD_FALLBACK_LIBRARY_PATH', 'DYLD_FALLBACK_FRAMEWORK_PATH',
+  'DYLD_VERSIONED_LIBRARY_PATH', 'DYLD_VERSIONED_FRAMEWORK_PATH', 'DYLD_IMAGE_SUFFIX',
 ];
 
 /**
- * Refuses, before anything is loaded, if one of {@link MAC_REFUSED_DYLD_VARIABLES} is set, or a
- * DYLD_LIBRARY_PATH directory holds a file of the library's name.
+ * Refuses, before anything is loaded, if one of {@link MAC_REFUSED_DYLD_VARIABLES} is set. A search
+ * path is refused whatever it holds: dyld applies it to the leaf name of every library the native
+ * library loads, not only its own, and which of those it would find there can't be told in advance.
  *
  * A guard against a misconfigured environment, not against whoever controls it: dyld acts on these
  * variables when the process starts, so code they injected has already run - and can hide - by the
  * time this looks. Running the host with the Hardened Runtime, which makes dyld ignore them, is what
  * keeps that code out.
  */
-export function macRefuseShadowing(getenv: (name: string) => string | undefined, exists: (path: string) => boolean): void {
+export function macRefuseShadowing(getenv: (name: string) => string | undefined): void {
   for (const name of MAC_REFUSED_DYLD_VARIABLES) {
     if ((getenv(name) ?? '') !== '') {
       throw new UntrustedError(`${name} is set, so dyld may inject code into this process or substitute a library the HkdfGuard native library uses; refusing to load it. Unset ${name}.`);
-    }
-  }
-  for (const directory of (getenv('DYLD_LIBRARY_PATH') ?? '').split(':')) {
-    if (directory === '') continue;
-    const candidate = `${withoutTrailingSlashes(directory)}/${MAC_FILE_NAME}`;
-    if (exists(candidate)) {
-      throw new UntrustedError(`'${candidate}' is on DYLD_LIBRARY_PATH and would be loaded in place of the verified HkdfGuard native library; refusing to load. Remove it from DYLD_LIBRARY_PATH.`);
     }
   }
 }

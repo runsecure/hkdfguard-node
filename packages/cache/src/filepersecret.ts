@@ -7,6 +7,10 @@ import { AttributeNames, CacheMetrics, HkdfGuardLog, HkdfGuardTelemetry, Results
 import { KeyFileError, KeyFileTrust, readTrustedFile } from '@runsecure/hkdfguard-securefile';
 
 const MAX_NAME_LENGTH = 255;
+
+// Windows' reserved device names, alone or before an extension: CreateFile opens the device, not a
+// file in the folder - NUL discards a write, CON is the console, COM1 may block.
+const DEVICE_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 const MAX_FILE_LENGTH = 64 * 1024;
 
 const decoder = new TextDecoder();
@@ -33,7 +37,8 @@ const decoder = new TextDecoder();
  * lookup.
  *
  * A name is a file name: 1-{@link MAX_NAME_LENGTH} ASCII letters, digits, '-', '_' and '.', not
- * starting with '.' (see {@link isValidName}), so it can never reach outside the folder. Any other
+ * starting or ending with '.' and not a Windows device name (see {@link isValidName}), so it can
+ * never reach outside the folder, or be another name's file on any platform. Any other
  * name, a missing file, a missing folder and an empty file are all reported missing - decrypt
  * resolves to 0 - so the cache can sit in a ProtectedCacheCollection beside sources with other
  * naming rules. A missing secret isn't remembered: its file is looked for again on the next lookup.
@@ -104,10 +109,13 @@ export class FilePerSecretCache implements ProtectedReadOnlyCache {
 
   /**
    * Whether `name` can be a secret's file name: 1-{@link MAX_NAME_LENGTH} ASCII letters, digits, '-',
-   * '_' and '.', not starting with '.'.
+   * '_' and '.', not starting with '.' (hidden, or '..'), not ending with '.' (Windows drops it, so
+   * "key." would be the file "key"), and not a Windows device name - CON, PRN, AUX, NUL, COM1-COM9
+   * or LPT1-LPT9, in any case, with or without an extension - which Windows opens as the device.
    */
   static isValidName(name: string | undefined | null): boolean {
-    return typeof name === 'string' && name.length > 0 && name.length <= MAX_NAME_LENGTH && name[0] !== '.' && /^[A-Za-z0-9._-]+$/.test(name);
+    return typeof name === 'string' && name.length > 0 && name.length <= MAX_NAME_LENGTH && name[0] !== '.' && !name.endsWith('.')
+      && /^[A-Za-z0-9._-]+$/.test(name) && !DEVICE_NAME.test(name);
   }
 
   /**

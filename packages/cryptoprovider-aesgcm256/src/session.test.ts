@@ -3,6 +3,7 @@ import { createDecipheriv, randomBytes } from 'node:crypto';
 import { describe, it } from 'node:test';
 import { AuthenticationFailedError, ClosedError, EncryptionLimitReachedError, InvalidArgumentError, isZero } from '@runsecure/hkdfguard-abstractions';
 import { HkdfGuardTelemetry } from '@runsecure/hkdfguard-diagnostics';
+import type { Logger } from '@runsecure/hkdfguard-diagnostics';
 import { useSpanRecorder } from '@runsecure/hkdfguard-test-support';
 import { AesGcmSession, budgetFor, EncryptionBudget, OVERHEAD, sessionKeyForTests } from './session.js';
 
@@ -55,6 +56,24 @@ describe('AesGcmSession', () => {
     assert.throws(() => session.encrypt(utf8('hello'), new Uint8Array(5 + OVERHEAD - 1)), InvalidArgumentError);
     assert.throws(() => session.decrypt(new Uint8Array(OVERHEAD - 1), new Uint8Array(4)), InvalidArgumentError);
     assert.throws(() => session.decrypt(ciphertext, new Uint8Array(4)), InvalidArgumentError);
+  });
+
+  it('refuses a plaintext sharing memory with the bytes it would write, before encrypting', () => {
+    const session = newSession();
+    const plain = utf8('in place');
+    // In place: the plaintext at the start of its own result buffer, as one buffer would invite.
+    const buffer = new Uint8Array(plain.length + OVERHEAD);
+    buffer.set(plain);
+    assert.throws(() => session.encrypt(buffer.subarray(0, plain.length), buffer), InvalidArgumentError);
+    // At the end of it, still under the tag.
+    const tail = new Uint8Array(plain.length + OVERHEAD + 4);
+    assert.throws(() => session.encrypt(tail.subarray(OVERHEAD), tail.subarray(0, plain.length + OVERHEAD)), InvalidArgumentError);
+    assert.equal(session.budget.count, 0, 'nothing was encrypted');
+    // The same buffer, but past every byte written: no overlap, and it works.
+    const apart = new Uint8Array(2 * (plain.length + OVERHEAD));
+    apart.set(plain, plain.length + OVERHEAD);
+    const written = session.encrypt(apart.subarray(plain.length + OVERHEAD, 2 * plain.length + OVERHEAD), apart);
+    assert.equal(decrypt(session, apart.subarray(0, written)), 'in place');
   });
 
   it('refuses a bad key', () => {
@@ -111,6 +130,42 @@ describe('AesGcmSession', () => {
       assert.ok(recorder.spans().some((s) => s.events.length > 0));
     } finally {
       telemetry.enableSensitiveLogging = false;
+      await recorder.dispose();
+    }
+  });
+});
+
+describe('the encryption budget warning', () => {
+  /** A logger whose every method throws, as a misconfigured one might. */
+  const throwing: Logger = {
+    debug: () => { throw new Error('logger down'); },
+    info: () => { throw new Error('logger down'); },
+    warn: () => { throw new Error('logger down'); },
+    error: () => { throw new Error('logger down'); },
+  };
+
+  it("still encrypts the value that crosses the threshold when the logger throws, and the result decrypts", () => {
+    const session = new AesGcmSession(new Uint8Array(randomBytes(32)), new EncryptionBudget(2, 10), throwing);
+    const first = encrypt(session, 'before the threshold');
+    const crossing = encrypt(session, 'at the threshold'); // the warning: the logger throws here
+    const after = encrypt(session, 'after it');
+    assert.equal(session.budget.count, 3);
+    assert.deepEqual([first, crossing, after].map((c) => decrypt(session, c)), ['before the threshold', 'at the threshold', 'after it']);
+  });
+
+  it('still encrypts at the threshold when the tracer throws too', async () => {
+    const recorder = useSpanRecorder();
+    const telemetry = HkdfGuardTelemetry.cryptoProviderAesGcm256;
+    const original = telemetry.withSpan.bind(telemetry);
+    // A span whose addEvent throws, as a broken tracer provider's might.
+    telemetry.withSpan = ((name: string, run: (span: object) => unknown) => original(name, (span) => run(new Proxy(span, {
+      get: (target, property) => (property === 'addEvent' ? () => { throw new Error('tracer down'); } : Reflect.get(target, property)),
+    })))) as unknown as typeof telemetry.withSpan;
+    try {
+      const session = new AesGcmSession(new Uint8Array(randomBytes(32)), new EncryptionBudget(1, 10), throwing);
+      assert.equal(decrypt(session, encrypt(session, 'at the threshold')), 'at the threshold');
+    } finally {
+      telemetry.withSpan = original;
       await recorder.dispose();
     }
   });

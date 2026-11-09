@@ -18,7 +18,8 @@ And, on either:
 - The HkdfGuard native package for your platform.
 
 Linux works the same way with its own paths and a TPM-backed KEK; see the
-[CLI reference](reference/cli.md#linux) for what is published so far.
+[CLI reference](reference/cli.md#linux) for what is published so far, and the Linux install
+check in step 1, which production hosts must not skip.
 
 ## How the pieces fit
 
@@ -62,8 +63,11 @@ definite revocation stops the load; an offline host still starts.
 
 **macOS:** install the native package system-wide, to `/Library/Application Support/HkdfGuard/v1`.
 (A per-user install at `~/.hkdfguard/v1` is also loaded, but only when there is no system-wide
-one. Its home folder is your account's, from the account database; setting `$HOME` doesn't move
-it. Either install must be version 0.9.0 or later.)
+one and the application calls `allowMacUserInstall()` from
+`@runsecure/hkdfguard-keywrapping-native-v1` before it first uses the library. That is for a
+developer machine: another process of your account could replace a library in your home folder as
+it is loaded. Its home folder is your account's, from the account database; setting `$HOME` doesn't
+move it. Either install must be version 0.9.0 or later.)
 
 > **TODO (maintainer):** give the package's file name and where to download it.
 
@@ -73,6 +77,28 @@ Check that it installed, with the same requirement the library applies when it l
 codesign --verify --strict \
   -R='identifier "libhkdfguard" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "MFW3T8R8J3"' \
   "/Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib" && echo OK
+```
+
+**Linux:** install the `hkdfguard` and `libhkdfguard1` packages with your package manager.
+
+> **TODO (maintainer):** give the packages' file names and where to download them.
+
+On Linux the library isn't code-signed, and the native key wrapper checks only where it and its
+dependencies were loaded from: root-owned files, in folders only root can write. Nothing at load
+time checks what the files contain, so on a production host these checks are required, not
+optional. Before installing, check each downloaded package's build provenance:
+
+```sh
+gh attestation verify <package file> --repo <the native repository>
+```
+
+After installing, and again whenever you need to know the host hasn't been tampered with, check the
+installed files against the package manager's checksums. Each prints nothing when every file
+matches:
+
+```sh
+dpkg --verify hkdfguard libhkdfguard1   # Debian, Ubuntu
+rpm -V hkdfguard libhkdfguard1          # RPM distributions
 ```
 
 ## 2. Provision a KEK for your service
@@ -364,7 +390,7 @@ its meaning. The codes are the same on every platform (`Status` in
 | You see | Cause | Fix |
 |---|---|---|
 | `NotInstalledError` (`ERR_HKDFGUARD_NATIVE_NOT_INSTALLED`) | The native package isn't installed at its fixed location | Step 1 |
-| `UntrustedError` (`ERR_HKDFGUARD_NATIVE_UNTRUSTED`) | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it, or `DYLD_INSERT_LIBRARIES` or another dyld variable that injects or substitutes code is set | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
+| `UntrustedError` (`ERR_HKDFGUARD_NATIVE_UNTRUSTED`) | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) `DYLD_LIBRARY_PATH`, a `DYLD_FALLBACK_*` path, `DYLD_INSERT_LIBRARIES` or another dyld variable that injects or substitutes code is set, or (Linux) `LD_PROFILE` or `LD_DYNAMIC_WEAK` is | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
 | `UnsupportedPlatformError` (`ERR_HKDFGUARD_NATIVE_UNSUPPORTED_PLATFORM`) | An Intel Mac or an x64 `node` under Rosetta, an unsupported OS, or the add-on was never compiled | Use an arm64 `node` on Apple silicon; install Python 3 and a C compiler, then `npm rebuild @runsecure/hkdfguard-keywrapping-native-v1` |
 | `StatusError` `-17` | No KEK is provisioned for this service name | Step 2, with the same service name |
 | `StatusError` `-18` (Windows) | The KEK exists, but this account may not use it | Add the account to `HkdfGuardUsers`, then sign out and in |

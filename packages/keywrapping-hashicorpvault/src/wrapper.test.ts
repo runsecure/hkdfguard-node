@@ -18,9 +18,12 @@ import {
 } from '@runsecure/hkdfguard-integration-hashicorpvault';
 import { MAX_TOKEN_LENGTH, StaticVaultTokenSource, type HashiCorpVaultTransitKeyWrapperOptions, type VaultTokenSource } from './index.js';
 import {
-  GENERATED_KEY_LENGTH, HashiCorpVaultTransitKeyWrapper, isVaultCiphertext, MAX_CONTEXT_LENGTH, MAX_KEY_NAME_LENGTH, MAX_PLAINTEXT_LENGTH,
-  MAX_RESPONSE_LENGTH,
+  AEAD_OVERHEAD, GENERATED_KEY_LENGTH, HashiCorpVaultTransitKeyWrapper, isVaultCiphertext, MAX_CONTEXT_LENGTH, MAX_KEY_NAME_LENGTH, MAX_PLAINTEXT_LENGTH,
+  MAX_RESPONSE_LENGTH, sealedLength,
 } from './wrapper.js';
+
+/** A placeholder ciphertext of the length an AEAD key gives 32 bytes: nonce, data, tag - 60 bytes, 80 base64 characters. */
+const SEALED_32 = `vault:v1:${'A'.repeat(80)}`;
 
 const CONTEXT = 'hkdfguard.test';
 const CONTEXT_BASE64 = Buffer.from(CONTEXT).toString('base64');
@@ -816,20 +819,21 @@ describe('what Vault answers', () => {
   }
 
   it('unescape an escaped answer', async () => {
-    // vault:v1:AB+/ with '+' as a \u escape and '/' as \/, as a proxy re-encoding the answer might write it.
+    // A ciphertext ending AB+/, with '+' as a \u escape and '/' as \/, as a proxy re-encoding the answer might write it.
     const vault = await startVault();
-    vault.answer = () => ok('{"data":{"ciphertext":"vault:v1:AB\\u002B\\/"}}');
+    const start = `vault:v1:${'A'.repeat(76)}`;
+    vault.answer = () => ok(`{"data":{"ciphertext":"${start}AB\\u002B\\/"}}`);
     const wrapper = create(vault);
 
-    assert.equal(text(await wrap(wrapper, new Uint8Array(32))), 'vault:v1:AB+/');
+    assert.equal(text(await wrap(wrapper, new Uint8Array(32))), `${start}AB+/`);
   });
 
   it('accept an answer with other warnings', async () => {
     const vault = await startVault();
-    vault.answer = () => ok('{"data":{"ciphertext":"vault:v1:AAAA"},"warnings":[7,{"unrecognized parameters":1},"some other warning"]}');
+    vault.answer = () => ok(`{"data":{"ciphertext":"${SEALED_32}"},"warnings":[7,{"unrecognized parameters":1},"some other warning"]}`);
     const wrapper = create(vault);
 
-    assert.equal(text(await wrap(wrapper, new Uint8Array(32))), 'vault:v1:AAAA');
+    assert.equal(text(await wrap(wrapper, new Uint8Array(32))), SEALED_32);
   });
 
   it('refuse a Vault that ignores the context, rather than wrapping unbound', async () => {
@@ -865,13 +869,48 @@ describe('what Vault answers', () => {
 
   it('read an answer of exactly the response limit', async () => {
     const vault = await startVault();
-    const shell = envelope({ ciphertext: 'vault:v1:AAAA', padding: '' });
+    const shell = envelope({ ciphertext: SEALED_32, padding: '' });
     const body = shell.replace('"padding":""', `"padding":"${'x'.repeat(MAX_RESPONSE_LENGTH - shell.length)}"`);
     assert.equal(body.length, MAX_RESPONSE_LENGTH);
     vault.answer = () => ok(body);
     const wrapper = create(vault);
 
-    assert.equal(text(await wrap(wrapper, new Uint8Array(32))), 'vault:v1:AAAA');
+    assert.equal(text(await wrap(wrapper, new Uint8Array(32))), SEALED_32);
+  });
+
+  it("refuse to write a key file from a key that isn't AEAD - an RSA key's ciphertext - however it is asked", async () => {
+    // rsa-2048: 256 bytes, whatever is encrypted; 344 base64 characters.
+    const rsa = `vault:v1:${Buffer.alloc(256, 7).toString('base64')}`;
+    const vault = await startVault();
+    vault.answer = () => ok(envelope({ ciphertext: rsa }));
+    const wrapper = create(vault);
+    const notAead = (e: unknown) => isTransitError()(e) && /isn't an AEAD key/.test((e as Error).message);
+    await assert.rejects(wrap(wrapper, new Uint8Array(32)), notAead);
+    await assert.rejects(generate(wrapper), notAead);
+    // Off by one either way is no AEAD key's either.
+    for (const bytes of [32 + AEAD_OVERHEAD - 1, 32 + AEAD_OVERHEAD + 1]) {
+      vault.answer = () => ok(envelope({ ciphertext: `vault:v1:${Buffer.alloc(bytes).toString('base64')}` }));
+      await assert.rejects(wrap(wrapper, new Uint8Array(32)), notAead, String(bytes));
+    }
+  });
+
+  it("refuse a key file whose ciphertext isn't an AEAD key's, zeroing what Vault revealed", async () => {
+    // A key file forged with the RSA key's public half - which needs no encrypt permission - that
+    // Vault decrypts to a DEK of the forger's choosing.
+    const forged = ascii(`vault:v1:${Buffer.alloc(256, 9).toString('base64')}`);
+    const vault = await startVault();
+    vault.answer = () => ok(envelope({ plaintext: Buffer.alloc(32, 0x5a).toString('base64') }));
+    const wrapper = create(vault);
+    const result = new Uint8Array(64);
+    await assert.rejects(wrapper.unwrap(forged, result), (e: unknown) => isTransitError()(e) && /isn't an AEAD key's/.test((e as Error).message));
+    assert.ok(isZero(result));
+  });
+
+  it('measures a ciphertext from its base64 alone', () => {
+    for (const length of [1, 2, 3, 60, 61, 62, 256]) {
+      assert.equal(sealedLength(ascii(`vault:v12:${Buffer.alloc(length).toString('base64')}`)), length, String(length));
+    }
+    assert.equal(sealedLength(ascii('vault:v1:AAA')), -1);
   });
 
   it('read an answer served in many chunks', async () => {

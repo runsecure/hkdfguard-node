@@ -112,7 +112,8 @@ describe('the Windows certificate store', { skip: onWindows ? false : 'the Windo
       }
       await assert.rejects(loaded.sign('sha224', data), (error: Error) => error instanceof UnsupportedCertificateError && /SHA-224|sha224/.test(error.message));
       const pkcs1 = publicEncrypt({ key: loaded.publicKey, padding: constants.RSA_PKCS1_PADDING }, Buffer.from('secret'));
-      assert.equal((await loaded.decrypt(pkcs1, { padding: constants.RSA_PKCS1_PADDING })).toString(), 'secret');
+      // The store answers bad padding with an error of its own: PKCS #1 v1.5 decryption is refused before it is asked.
+      await assert.rejects(loaded.decrypt(pkcs1, { padding: constants.RSA_PKCS1_PADDING }), UnsupportedCertificateError);
       for (const hash of ['sha1', 'sha256', 'sha512'] as const) {
         const oaep = publicEncrypt({ key: loaded.publicKey, oaepHash: hash, oaepLabel: Buffer.from('label') }, Buffer.from('secret'));
         assert.equal((await loaded.decrypt(oaep, { oaepHash: hash, oaepLabel: Buffer.from('label') })).toString(), 'secret', `OAEP ${hash}`);

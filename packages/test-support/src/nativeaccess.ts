@@ -21,10 +21,12 @@ import { MAX_WRAPPED_KEY_BYTES } from '@runsecure/hkdfguard-abstractions';
 /** How long the first native call under a service may take on macOS. */
 export const NATIVE_ACCESS_TIMEOUT_MS = 60_000;
 
-// The child: loads the package from its entry module, and makes one generateAndWrap under the service.
+// The child: loads the package from its entry module - allowing the per-user install, as the tests
+// do on a developer Mac - and makes one generateAndWrap under the service.
 const PROBE = `
 const [entry, service, capacity] = process.argv.slice(1);
-const { NativeKeyWrapperV1 } = require(entry);
+const { NativeKeyWrapperV1, allowMacUserInstall } = require(entry);
+allowMacUserInstall?.();
 NativeKeyWrapperV1.create(service).generateAndWrap(new Uint8Array(Number(capacity))).then(() => process.exit(0), () => process.exit(0));
 `;
 

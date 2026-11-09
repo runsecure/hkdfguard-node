@@ -1,4 +1,4 @@
-import { closeSync, existsSync, lstatSync, openSync, readSync } from 'node:fs';
+import { closeSync, lstatSync, openSync, readSync } from 'node:fs';
 import { constants } from 'node:os';
 import { UntrustedError } from './errors.js';
 import { NativeKmsLibrary } from './library.js';
@@ -35,18 +35,21 @@ function lstatStatus(path: string): FileStatus {
   }
 }
 
-/** Verifies and loads the macOS native KMS library (see macpolicy.ts). */
-export function loadDarwinLibrary(): NativeKmsLibrary {
+/**
+ * Verifies and loads the macOS native KMS library (see macpolicy.ts): the system install, or - only
+ * when `allowUserInstall` (allowMacUserInstall) - the per-user one.
+ */
+export function loadDarwinLibrary(allowUserInstall: boolean): NativeKmsLibrary {
   const native = nativeAddon();
   macRequireSupportedPlatform(process.arch, native.productVersion!());
 
   // The home folder from the account database, never $HOME: whoever sets the environment must not
   // choose where the library is loaded from.
-  const { path, isSystem } = macChoosePath(unixProbe, macHomeFromAccount(native.accountHome!()));
+  const { path, isSystem } = macChoosePath(unixProbe, macHomeFromAccount(native.accountHome!()), allowUserInstall);
   macVerifyLocation(path, lstatStatus, isSystem ? [0] : [0, process.geteuid!()]);
   macVerifySignature(path, native.checkCodeSignature!);
   macRequireMinimumVersion(path, readStart(path));
-  macRefuseShadowing((name) => process.env[name], existsSync);
+  macRefuseShadowing((name) => process.env[name]);
 
   // dyld may still map a different file than the path asks for, so the loaded image is checked and,
   // if it isn't the verified file, unloaded. The library's own dependencies are absolute system paths.

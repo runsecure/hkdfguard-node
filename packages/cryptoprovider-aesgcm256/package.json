@@ -17,7 +17,7 @@
     "!dist/**/*.test*"
   ],
   "scripts": {
-    "test": "node --test \"dist/**/*.test.js\""
+    "test": "node --test --test-timeout=120000 \"dist/**/*.test.js\""
   },
   "engines": {
     "node": ">=22"
@@ -29,7 +29,6 @@
     "@runsecure/hkdfguard-encryptedconfig": "0.9.1"
   },
   "dependencies": {
-    "@opentelemetry/api": "1.10.0",
     "@runsecure/hkdfguard-abstractions": "0.9.1",
     "@runsecure/hkdfguard-diagnostics": "0.9.1"
   }

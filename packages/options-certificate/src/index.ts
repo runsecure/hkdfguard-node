@@ -9,8 +9,11 @@
  * into the store, through this package's own native add-on (native/hkdfguard_certificate.c), compiled
  * by node-gyp at install on Windows and macOS. A provider key is the provider's own object in Node's
  * OpenSSL. A file's password is read from a protected secret source into a buffer zeroed at once, and
- * never becomes a string; its key is held sealed and wiped on close.
+ * never becomes a string; its key is held sealed and wiped on close. Every certificate and key file
+ * is read through readTrustedFile (@runsecure/hkdfguard-securefile), from a location only
+ * administrators and the loader's {@link KeyFileTrust} could have written.
  */
+export { KeyFileError, KeyFileTrust, type KeyFileTrustOptions } from '@runsecure/hkdfguard-securefile';
 export {
   CertificateFileFormat, certificateOptionsFromJson, certificateOptionsFromObject, StoreLocation, StoreName,
   type CertificateFileOptions, type CertificateOptions, type CertificateStoreOptions, type LinuxOpenSslProviderOptions,

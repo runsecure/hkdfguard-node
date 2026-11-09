@@ -13,7 +13,9 @@ npm install @runsecure/hkdfguard-options-certificate
 ```
 
 On Windows and macOS this compiles the package's add-on with node-gyp, which needs Python 3 and a C
-compiler (Visual Studio Build Tools, or the Xcode command line tools). On Linux nothing is compiled.
+compiler (Visual Studio Build Tools, or the Xcode command line tools). On every platform it also
+compiles `@runsecure/hkdfguard-securefile`'s, which reads access control lists - on Linux, with
+`build-essential` or the distribution's equivalent.
 
 ## 2. Load the certificate
 
@@ -24,6 +26,8 @@ import { CertificateOptionsLoader, certificateOptionsFromJson } from '@runsecure
 
 const options = certificateOptionsFromJson(readFileSync('appsettings.json', 'utf8'), 'Certificate');
 // passwords: the ProtectedReadOnlyCache a file's password is in - a FilePerSecretCache, say.
+// fileTrust: who besides administrators may have written the certificate and key files (a KeyFileTrust);
+// administrators only when left out.
 const certificate = await new CertificateOptionsLoader({ passwords }).load(options, 'tls');
 
 const server = createServer((request, response) => response.end('hello'));
@@ -64,6 +68,8 @@ Grant the service's account read access to the key (certlm.msc, *Manage Private 
 ```
 
 `certificate.sign(...)` and `certificate.decrypt(...)` call CNG (`NCryptSignHash`, `NCryptDecrypt`).
+`decrypt` uses OAEP: RSA PKCS #1 v1.5 decryption with a store key is refused, as CNG would answer bad
+padding with an error of its own - the oracle Bleichenbacher's attack needs.
 `configureServer` and `createSecureContext` throw `NativeProviderRequiredError`: Node's TLS is
 OpenSSL, which can't reach a CNG key, and the key is never exported to give it one. Use a File or
 Linux source where Node itself must serve TLS.
@@ -80,8 +86,11 @@ use `"MacOS"` in place of `"Windows"`; only the My store is read:
 "Certificate": { "MacOS": { "StoreLocation": "LocalMachine", "Subject": "CN=api.example.com" } }
 ```
 
-As on Windows, `sign` and `decrypt` call the keychain and TLS from its key is refused. **TODO
-(maintainer):** these steps and the keychain code have not yet been run on a Mac.
+As on Windows, `sign` and `decrypt` call the keychain and TLS from its key is refused. The keychain
+is never allowed to show a dialog: a key whose access list doesn't include the application fails
+with `NoPrivateKeyError` rather than waiting for someone to click. Add the application to the key's
+access list (Keychain Access, Access Control). **TODO (maintainer):** these steps and the keychain
+code have not yet been run on a Mac.
 
 ### Linux: a key in a PKCS#11 token (pkcs11-provider)
 
@@ -173,13 +182,24 @@ The password is a secret in the `ProtectedReadOnlyCache` given to the loader - a
 `FilePerSecretCache` folder named `tls-pfx-password`, say. A PEM key must be encrypted PKCS#8
 (`openssl pkcs8 -topk8 -v2 aes-256-cbc`). A legacy RC2 or RC4 PKCS#12 (`openssl pkcs12 -legacy`, old
 Windows exports) is refused: re-export it with `openssl pkcs12 -export` from OpenSSL 3, without
-`-legacy`.
+`-legacy`. With a password named, a PKCS#12 must carry its integrity MAC (not `-nomac`) and its key
+must be encrypted (not `-keypbe NONE`): otherwise nothing ties the file to the password, and a
+planted file of anyone's key would load under it.
 
 > **Security:** The password is read into a buffer and zeroed as soon as the key is read; it never
 > becomes a string. The key is held sealed in memory and wiped by `close()`. What can't be wiped from
 > JavaScript - the copies OpenSSL makes, and the PEM a TLS context is made from - is listed in the
 > package README. `AllowUnprotectedPrivateKey` accepts a key file with no password; set it only for
 > development.
+>
+> Every certificate and key file - `Path`, `KeyPath`, a Linux source's `CertificateFile` and key
+> file - is read through `readTrustedFile` (`@runsecure/hkdfguard-securefile`), and refused unless
+> it, and every folder above it, is owned by an administrator (root; SYSTEM, Administrators or
+> TrustedInstaller) or a principal in the loader's `fileTrust`, and writable by no one else, with no
+> untrusted symbolic link on the way: whoever can replace a key file chooses the key the
+> application serves TLS with. Give `fileTrust` a `KeyFileTrust` naming the account your deployment
+> writes the files as - never the account the application runs as, outside a developer machine.
+> A refusal rejects with `KeyFileError`, code `EACCES`, saying what isn't trusted.
 
 ## 4. Run the opt-in tests
 

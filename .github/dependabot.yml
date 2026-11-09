@@ -1,0 +1,46 @@
+# Proposes dependency updates as pull requests, so the lockfile, the devDependency pins, the floor
+# of each runtime dependency's caret range and the SHA-pinned actions don't fall behind silently. Every update still goes through CI
+# and review like any other change; nothing merges itself.
+#
+# The cooldown holds back a version until it has been public for a week: a compromised release is
+# most often caught and pulled within days, before it would reach a pull request here. Security
+# updates (Dependabot's own, for a version with an advisory) aren't held back.
+version: 2
+updates:
+  - package-ecosystem: npm
+    # The root: npm workspaces, so every packages/* manifest and the one lockfile.
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    # This repository's own packages move together, through scripts/set-version.mjs.
+    ignore:
+      - dependency-name: "@runsecure/*"
+    # Each cloud SDK's packages move together, as they are released.
+    groups:
+      aws-sdk:
+        patterns: ["@aws-sdk/*", "@smithy/*"]
+      azure-sdk:
+        patterns: ["@azure/*", "@typespec/*"]
+      google-cloud:
+        patterns: ["@google-cloud/*", "google-gax", "@grpc/*", "protobufjs"]
+      opentelemetry:
+        patterns: ["@opentelemetry/*"]
+      development:
+        dependency-type: development
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

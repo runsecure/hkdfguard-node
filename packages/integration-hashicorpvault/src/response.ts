@@ -1,6 +1,7 @@
 // What Vault answers with, and how a VaultClient reads it: the response envelope, a login's token
 // and a wrapped response's - protected as they are read, never strings - and the errors a refusal lists.
 import { STATUS_CODES, type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
+import { Readable } from 'node:stream';
 import { wipe, type DataProtector } from '@runsecure/hkdfguard-abstractions';
 import { JsonReader, JsonToken, MalformedJsonError } from '@runsecure/hkdfguard-abstractions/internal';
 import { readVaultErrors } from './body.js';
@@ -126,6 +127,7 @@ export interface VaultResponse<T> {
  */
 export class VaultRawResponse implements AsyncIterable<Buffer> {
   readonly #response: IncomingMessage;
+  #body: Readable | undefined;
 
   constructor(response: IncomingMessage) {
     this.#response = response;
@@ -141,13 +143,23 @@ export class VaultRawResponse implements AsyncIterable<Buffer> {
     return this.#response.headers;
   }
 
-  /** The body: a stream of its chunks. */
+  /**
+   * The body: a stream of its chunks - a stream of its own over Node's response, never the response
+   * itself, whose `req` (and socket) lead back to the request and its X-Vault-Token header.
+   * Destroying it closes the response.
+   */
   get body(): NodeJS.ReadableStream {
-    return this.#response;
+    this.#body ??= Readable.from(this.#chunks(), { objectMode: false });
+    return this.#body;
   }
 
   [Symbol.asyncIterator](): AsyncIterator<Buffer> {
-    return this.#response[Symbol.asyncIterator]();
+    return this.#chunks();
+  }
+
+  // The response's chunks, through an iterator of their own: nothing handed out is the response.
+  async *#chunks(): AsyncGenerator<Buffer> {
+    for await (const chunk of this.#response) yield chunk as Buffer;
   }
 
   /** Closes the body and its connection, if the body wasn't read to its end. Safe to call more than once. */
@@ -201,17 +213,33 @@ export function readResponse<T>(body: Uint8Array, tokenProtector: DataProtector,
   }
 }
 
+/** How much of a body that isn't Vault's JSON a refusal's message quotes, in bytes. */
+export const MAX_QUOTED_BODY_BYTES = 512;
+
 /**
  * The error a refusal is reported as: the errors `body` lists, as {"errors":[...]} or
- * {"error":"..."}; failing those, the body itself.
+ * {"error":"..."}. A JSON object listing none - a KV v2 read of a deleted version answers 404 with
+ * the secret's metadata, custom metadata included - is reported by its status alone: the message is
+ * what reaches logs, and the body isn't Vault saying what went wrong. Anything else - a proxy's error
+ * page, say - is quoted, at most {@link MAX_QUOTED_BODY_BYTES} of it. Either way the whole body is
+ * kept in rawResponseBytes.
  */
 export function responseError(status: number, body: Uint8Array, method: string, url: string): VaultResponseError {
   const reason = reasonPhrase(status);
   const errors = readVaultErrors(body);
   if (errors !== undefined && errors.length > 0) return new VaultResponseError(`${status}${reason}: ${errors.join(', ')}`, status, errors, undefined, method, url);
   const raw = body.length > 0 ? Uint8Array.from(body) : undefined;
-  const message = raw === undefined ? `${status}${reason}` : `${status}${reason}: ${Buffer.from(raw).toString('utf8')}`;
+  const message = raw === undefined || errors !== undefined ? `${status}${reason}` : `${status}${reason}: ${quoted(raw)}`;
   return new VaultResponseError(message, status, [], raw, method, url);
+}
+
+// The start of a body as text: at most MAX_QUOTED_BODY_BYTES, cut on a character boundary, saying how
+// long the whole was when it is cut.
+function quoted(body: Uint8Array): string {
+  if (body.length <= MAX_QUOTED_BODY_BYTES) return new TextDecoder().decode(body);
+  // stream: an incomplete last character is held back rather than shown as U+FFFD.
+  const start = new TextDecoder().decode(body.subarray(0, MAX_QUOTED_BODY_BYTES), { stream: true });
+  return `${start}... (${body.length} bytes)`;
 }
 
 /** " Not Found" for 404: the space and the status's reason, as Go's http.StatusText; "" for one without a name. */

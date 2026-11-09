@@ -3,9 +3,9 @@ import { constants as bufferConstants } from 'node:buffer';
 import { win32 } from 'node:path';
 import { InvalidArgumentError, wipe } from '@runsecure/hkdfguard-abstractions';
 import { FILE_TOO_LARGE, KeyFileError, UnsupportedPlatformError } from './errors.js';
-import { windowsAddon, type OpenFileHandle, type WindowsAddon } from './native.js';
+import { unixAddon, windowsAddon, type OpenFileHandle, type WindowsAddon } from './native.js';
 import { KeyFileTrust } from './trust.js';
-import { readLink, resolveTrusted, statusOrUndefined, untrusted as unixUntrusted } from './unix.js';
+import { aclWriters, readLink, resolveTrusted, statusOrUndefined, untrusted as unixUntrusted } from './unix.js';
 import {
   DriveType, GUARDED_RIGHTS, GUARDED_ROOT_RIGHTS, trustedPrincipals, verifyFinalPath, verifyNotReparsePoint, verifyPathForm, verifyTrustedOnly,
   type WinSecurity,
@@ -67,6 +67,23 @@ export async function readTrustedFileWith<T>(path: string, trust: KeyFileTrust, 
   validateArguments(path, trust, maxBytes);
   if (typeof parse !== 'function') throw new InvalidArgumentError('parse must be a function.');
   return withTrustedFile(process.platform, process.arch, path, trust, (file) => parseFileContents(file.read, file.path, maxBytes, parse));
+}
+
+/**
+ * {@link readTrustedFile}, synchronously - for code that must read a file where it can't wait, such
+ * as a constructor that reads its TLS certificates. The checks and the read are the same, made on
+ * the calling thread as readTrustedFile's are; only the result isn't a promise. For contents that
+ * are themselves secret, zero the buffer once it is used.
+ *
+ * @param path The file's path, absolute or relative to the working directory.
+ * @param trust Who besides administrators is trusted; {@link KeyFileTrust.administratorsOnly} for no one.
+ * @param maxBytes The longest file accepted: a positive integer.
+ * @returns The file's contents, which may be empty, in a buffer the caller owns.
+ * @throws KeyFileError, InvalidArgumentError, UnsupportedPlatformError as {@link readTrustedFile}.
+ */
+export function readTrustedFileSync(path: string, trust: KeyFileTrust, maxBytes: number): Uint8Array {
+  validateArguments(path, trust, maxBytes);
+  return withTrustedFile(process.platform, process.arch, path, trust, (file) => readFileContents(file.read, file.path, maxBytes));
 }
 
 function validateArguments(path: string, trust: KeyFileTrust, maxBytes: number): void {
@@ -270,7 +287,8 @@ function withUnixFile<T>(path: string, trust: KeyFileTrust, use: (file: TrustedF
     const workingDirectory = process.cwd();
     absolute = workingDirectory.endsWith('/') ? workingDirectory + path : `${workingDirectory}/${path}`;
   }
-  const resolved = resolveTrusted(absolute, trust, statusOrUndefined, readLink);
+  const addon = unixAddon(); // loaded first: no file is trusted unless its ACL can be read
+  const resolved = resolveTrusted(absolute, trust, statusOrUndefined, readLink, (p) => aclWriters(p, addon));
 
   // resolved holds no symbolic link, so O_NOFOLLOW changes nothing for a file that passed; it only
   // makes certain the last component is still not one when it is opened. (libuv adds O_CLOEXEC.)

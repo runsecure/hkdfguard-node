@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { ClosedError, HkdfGuardError } from '@runsecure/hkdfguard-abstractions';
+import { readBody } from './body.js';
 import { VaultJsonError, VaultRedirectError, VaultResponseError } from './client-errors.js';
 import type { VaultRequest } from './client-options.js';
 import { VaultClient } from './client.js';
@@ -275,7 +276,7 @@ describe('VaultClient requests', () => {
     h.vault.answer(400, '{"error":"bad thing"}');
     h.vault.answer(404, 'not json');
     const client = h.client();
-    await assert.rejects(client.read('a?b'), (error: VaultResponseError) => {
+    await assert.rejects(client.read('a', { queryParameters: [['b', '']] }), (error: VaultResponseError) => {
       assert.ok(error instanceof VaultRequestError);
       assert.equal(error.statusCode, 403);
       assert.deepEqual(error.errors, ['permission denied']);
@@ -299,6 +300,28 @@ describe('VaultClient requests', () => {
     assert.equal(VaultClient.isErrorStatus(undefined, 404), false);
   });
 
+  it("refuses a generic path holding a query, a fragment or a dot segment, sending nothing", async () => {
+    const client = h.client();
+    for (const path of ['a?version=1', 'a#b', 'secret/data/../../sys/raw', '../sys', 'a/./b', 'a/..', '/v1/a/%2e%2e/b', 'a/%2E', 'a%2f..%2fb']) {
+      for (const call of [() => client.read(path), () => client.readRaw(path), () => client.write(path, {}), () => client.list(path), () => client.delete(path)]) {
+        await assert.rejects(call(), (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_ARGUMENT', path);
+      }
+    }
+    assert.equal(h.vault.requests.length, 0);
+    // A dot inside a name is a name.
+    await client.read('secret/data/app.v2/..config');
+    assert.equal(h.vault.single().target, '/v1/secret/data/app.v2/..config');
+  });
+
+  it("refuses a path parameter that would climb out of its mount, though '/' in it is escaped", async () => {
+    const client = h.client();
+    for (const path of ['../other', 'a/../../sys', '..', '.']) {
+      await assert.rejects(client.secrets.kvV2Read(path), (e: unknown) => e instanceof HkdfGuardError && e.code === 'ERR_HKDFGUARD_INVALID_ARGUMENT', path);
+    }
+    await assert.rejects(client.secrets.kvV2Read('app', { mountPath: '../sys' }), (e: unknown) => e instanceof HkdfGuardError);
+    assert.equal(h.vault.requests.length, 0);
+  });
+
   it("doesn't treat a 304 as an error", async () => {
     h.vault.answer(304);
     assert.equal(await h.client().read('a'), undefined);
@@ -313,6 +336,67 @@ describe('VaultClient requests', () => {
     for await (const chunk of raw) chunks.push(chunk);
     assert.equal(Buffer.concat(chunks).toString(), 'teapot body');
     raw.close();
+  });
+
+  it("gives a raw response's body as a stream of its own, with no way back to the request's token", async () => {
+    h.vault.answer(200, 'raw body');
+    const raw = await h.client().readRaw('a');
+    const body = raw.body as Readable & { req?: unknown; socket?: unknown };
+    assert.equal(body.req, undefined);
+    assert.equal(body.socket, undefined);
+    assert.equal(raw.body, body, 'the same stream each time');
+    const chunks: Buffer[] = [];
+    for await (const chunk of body) chunks.push(chunk as Buffer);
+    assert.equal(Buffer.concat(chunks).toString(), 'raw body');
+    raw.close();
+  });
+
+  it('refuses a response longer than maxResponseBytes', async () => {
+    const big = 'x'.repeat(4096);
+    h.vault.answer(200, `{"data":{"v":"${big}"}}`);
+    h.vault.answer(200, '{"data":{}}');
+    h.vault.answer(502, big);
+    const client = h.client({ maxResponseBytes: 1024, retry: { retryMax: 0 } });
+    await assert.rejects(client.read('a'), (error: VaultRequestError) =>
+      error instanceof VaultRequestError && /longer than 1024 bytes/.test(error.message) && error.statusCode === 200 && !error.message.includes(big));
+    // Under the limit, as before.
+    assert.ok(await client.read('a'));
+    // A refusal is held to the limit too.
+    await assert.rejects(client.read('a'), /longer than 1024 bytes/);
+  });
+
+  it("sizes its first buffer by the limit, not by what Content-Length claims", async () => {
+    // What a lying Content-Length of 2 GiB once allocated up front; now the limit bounds it.
+    async function* chunks() { yield Buffer.from('{}'); }
+    const body = await readBody(chunks(), 1024, 2 ** 31);
+    assert.equal(Buffer.from(body!.view()).toString(), '{}');
+    body!.close();
+  });
+
+  it('checks maxResponseBytes', () => {
+    for (const bad of [0, -1, 1.5, Number.NaN, 2 ** 53, '1024']) {
+      assert.throws(() => h.client({ maxResponseBytes: bad as number }), HkdfGuardError, String(bad));
+    }
+  });
+
+  it("quotes no more than the start of a body that isn't Vault's, and none of a JSON one listing no errors", async () => {
+    const page = `<html>${'proxy error '.repeat(200)}</html>`;
+    h.vault.answer(502, page);
+    // A KV v2 read of a deleted version: 404, the secret's metadata, no errors.
+    h.vault.answer(404, '{"data":{"data":null,"metadata":{"custom_metadata":{"owner":"payroll"},"deletion_time":"2026-01-01T00:00:00Z"}}}');
+    const client = h.client({ retry: { retryMax: 0 } });
+    await assert.rejects(client.read('a'), (error: VaultResponseError) => {
+      assert.ok(error.message.startsWith('502 Bad Gateway: <html>proxy error'));
+      assert.ok(error.message.endsWith(`... (${Buffer.byteLength(page)} bytes)`), error.message);
+      assert.ok(error.message.length < 600);
+      assert.equal(Buffer.from(error.rawResponseBytes!).toString(), page);
+      return true;
+    });
+    await assert.rejects(client.read('a'), (error: VaultResponseError) => {
+      assert.equal(error.message, '404 Not Found');
+      assert.ok(Buffer.from(error.rawResponseBytes!).toString().includes('payroll'));
+      return true;
+    });
   });
 
   it("runs the client's callbacks before the request's", async () => {

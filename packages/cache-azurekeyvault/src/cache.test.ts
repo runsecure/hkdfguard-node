@@ -440,6 +440,19 @@ describe('AzureKeyVaultSecretCache: fetching and caching', () => {
     });
   }
 
+  it("reports a 404 that isn't Key Vault's SecretNotFound as a failure, not a missing secret", async (t) => {
+    const vault = await FakeKeyVault.start(t);
+    const cache = create(vault);
+    vault.set('item', 'value');
+    vault.failWith = 404; // answered with error code InternalServerError: what a proxy or a wrong path might say
+
+    await assert.rejects(cache.decrypt('item', new Uint8Array(16)), restError(404));
+    await assert.rejects(cache.maxDecryptedLength('item'), restError(404));
+
+    vault.failWith = undefined;
+    assert.equal(await decryptString(cache, 'item'), 'value');
+  });
+
   it('captures a retried attempt once it succeeds', async (t) => {
     // The policy runs per attempt: the 503 is left for the retry policy, and the 200 that follows is captured.
     const vault = await FakeKeyVault.start(t);

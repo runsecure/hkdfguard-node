@@ -12,6 +12,9 @@
       "path": "../abstractions"
     },
     {
+      "path": "../securefile"
+    },
+    {
       "path": "../test-support"
     }
   ]

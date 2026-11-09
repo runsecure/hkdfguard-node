@@ -1,5 +1,6 @@
 import { constants as bufferConstants, isUtf8 } from 'node:buffer';
 import { statSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
   configurationAad, InvalidArgumentError, wipe, type EncryptedFormatProvider, type KeyRing, type KeyTrackingValue, type ProtectedReadOnlyCache,
@@ -55,7 +56,10 @@ export interface JsonSecretsFileCacheOptions {
  * value moved under any other name fails authentication. The file is delivered as one, so it is
  * loaded as one: a value that fails authentication (AuthenticationFailedError), names a key version
  * the ring doesn't hold (KeyNotFoundError) or isn't in the format (the format provider's error)
- * fails the whole load, and nothing is kept, so the file is read again on the next lookup.
+ * fails the whole load, and nothing is kept. The refusal is remembered, and every lookup answered
+ * with it, until the file changes - its identity, size or times, as replacing it, rewriting it or
+ * changing its permissions does - or {@link FAILURE_RETRY_MS} has passed; then the file is read again.
+ * One bad value doesn't make every lookup re-read, re-parse and re-decrypt the whole file.
  *
  * **The file must be exactly that object** - one member per secret, each name a valid
  * FilePerSecretCache name ({@link FilePerSecretCache.isValidName}), no name twice ignoring case,
@@ -96,6 +100,8 @@ export class JsonSecretsFileReadOnlyCache implements ProtectedReadOnlyCache {
   #values: Map<string, KeyTrackingValue> | undefined;
   // The load in flight, shared by every lookup that arrives while it runs.
   #loading: Promise<Map<string, KeyTrackingValue> | undefined> | undefined;
+  // The last load's failure, the file it failed on (signatureOf), and until when it stands.
+  #failure: { error: unknown; signature: string; until: number } | undefined;
 
   /**
    * @param filePath the JSON file holding the secrets, absolute or relative to the working directory
@@ -179,10 +185,29 @@ export class JsonSecretsFileReadOnlyCache implements ProtectedReadOnlyCache {
 
   // The values, from the load in flight or a new one; undefined if the file is missing.
   #load(): Promise<Map<string, KeyTrackingValue> | undefined> {
-    this.#loading ??= this.#loadOnce().finally(() => {
+    this.#loading ??= this.#loadUnlessRefused().finally(() => {
       this.#loading = undefined;
     });
     return this.#loading;
+  }
+
+  // The last refusal again while the file is the one refused and it still stands; otherwise a load,
+  // whose failure is remembered against the file as it was when the load began - so a change made
+  // while it read is never mistaken for the file it refused.
+  async #loadUnlessRefused(): Promise<Map<string, KeyTrackingValue> | undefined> {
+    const failure = this.#failure;
+    const signature = await signatureOf(this.filePath);
+    if (failure !== undefined) {
+      if (Date.now() < failure.until && signature !== undefined && signature === failure.signature) throw failure.error;
+      this.#failure = undefined;
+    }
+    try {
+      return await this.#loadOnce();
+    } catch (error) {
+      // A file that can't even be examined is looked at again next time.
+      if (signature !== undefined) this.#failure = { error, signature, until: Date.now() + FAILURE_RETRY_MS };
+      throw error;
+    }
   }
 
   // Reads, parses and authenticates the whole file, keeping its values once every one passes.
@@ -236,12 +261,16 @@ export class JsonSecretsFileReadOnlyCache implements ProtectedReadOnlyCache {
 
       // The reader throws on anything malformed or incomplete, so inside the object each token read
       // is a member's name or the object's end, and after a name, its value.
-      for (;;) {
+      for (let member = 1; ; member++) {
         reader.read();
         if (reader.token() === JsonToken.EndObject) break;
 
         const name = reader.getString();
-        if (!FilePerSecretCache.isValidName(name)) throw this.#invalid(`names a secret '${name}', which isn't a secret's name`);
+        // Not quoted: a name that isn't a secret's means this isn't the secrets file, so it is anything,
+        // of any length - a secret, even - and the message is logged on every lookup.
+        if (!FilePerSecretCache.isValidName(name)) {
+          throw this.#invalid(`names, in its member ${member}, a secret by a name of ${name.length} characters that isn't a secret's name`);
+        }
 
         reader.read();
         const encrypted = reader.token() === JsonToken.String ? reader.getString().trim() : '';
@@ -275,6 +304,21 @@ export class JsonSecretsFileReadOnlyCache implements ProtectedReadOnlyCache {
     } finally {
       wipe(plaintext);
     }
+  }
+}
+
+/** How long a refused file's refusal stands, at most, while the file doesn't change: 30 seconds. */
+export const FAILURE_RETRY_MS = 30_000;
+
+// What tells one version of the file from another: its device and inode, size, and modification
+// and change times to the nanosecond. undefined if it can't be examined (missing, say). Not a trust
+// check - the file is read only through readTrustedFile - only a way to know it has changed.
+async function signatureOf(path: string): Promise<string | undefined> {
+  try {
+    const status = await stat(path, { bigint: true });
+    return `${status.dev}:${status.ino}:${status.size}:${status.mtimeNs}:${status.ctimeNs}`;
+  } catch {
+    return undefined;
   }
 }
 
