@@ -11,7 +11,7 @@ import { afterEach, describe, it } from 'node:test';
 import { InvalidArgumentError, type DataProtector } from '@runsecure/hkdfguard-abstractions';
 import { KeyRing } from '@runsecure/hkdfguard-dek';
 import { KeyFileTrust } from '@runsecure/hkdfguard-securefile';
-import { linuxKeyFileRoot, RecordingKey, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
+import { linuxKeyFileRoot, RecordingKey, trustedFixtureCopy, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
 import { apiBase, checkTlsOptions } from './connection.js';
 import { createVaultAgent as createVaultAgentAsGiven, VaultConnector } from './http.js';
 import { pkcs12 } from '@runsecure/hkdfguard-abstractions/internal';
@@ -33,8 +33,9 @@ const createVaultAgent = (tls: VaultTlsOptions, options?: Parameters<typeof crea
 // trusted-file checks would refuse anything in it (test-support's private root instead).
 const scratchRoot = () => (process.platform === 'linux' ? linuxKeyFileRoot().root ?? tmpdir() : tmpdir());
 
-// Made by test-fixtures/generate.sh: throwaway keys, trusted nowhere else.
-const FIXTURES = join(__dirname, '..', 'test-fixtures');
+// Made by test-fixtures/generate.sh: throwaway keys, trusted nowhere else. Read from a private copy,
+// since the checkout's folder may not pass the trusted-file checks (see trustedFixtureCopy).
+const FIXTURES = trustedFixtureCopy(join(__dirname, '..', 'test-fixtures'));
 const fixture = (name: string) => join(FIXTURES, name);
 const PASSWORD = 'store-pass-1';
 

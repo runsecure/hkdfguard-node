@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { connect, createServer, type SecureContext, type Server } from 'node:tls';
 import type { ProtectedReadOnlyCache } from '@runsecure/hkdfguard-abstractions';
 import { KeyFileTrust } from '@runsecure/hkdfguard-securefile';
-import { linuxKeyFileRoot, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
+import { linuxKeyFileRoot, trustedFixtureCopy, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
 import * as der from './der.js';
 import { CertificateOptionsLoader } from './loader.js';
 import type { CertificateOptions } from './options.js';
@@ -22,7 +22,8 @@ import { encodePem } from './pem.js';
 import type { StoreCertificate, StoreKey, StoreReader } from './store.js';
 import { CertificateOptionsValidator, type CertificatePlatform } from './validator.js';
 
-export const TESTDATA = join(__dirname, '..', 'testdata');
+// A private copy: the checkout's folder may not pass the trusted-file checks (see trustedFixtureCopy).
+export const TESTDATA = trustedFixtureCopy(join(__dirname, '..', 'testdata'), 'hkdfguard-testdata-');
 export const SUBJECT = 'CN=api.example.com, O=Contoso';
 
 /**

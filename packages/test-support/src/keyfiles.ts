@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { TestContext } from 'node:test';
@@ -118,5 +118,29 @@ export function keyFileDirectory(t: TestContext, prefix = 'hkdfguard-keyfile-'):
   }
   directory = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
+  return directory;
+}
+
+/**
+ * A private copy of the fixture folder `source`, made once per process and removed when it exits,
+ * for tests whose fixtures go through the trusted-file checks. The checkout can't be relied on: a
+ * GitHub-hosted Windows runner checks out under D:\a, which inherits BUILTIN\Users' right to add
+ * files from the drive root, so every file in it is refused. The copy is made where
+ * keyFileDirectory's folders are - the temp folder, by its long path, on Windows and macOS; the
+ * private root on Linux - or, on a Linux host with no private root, isn't made: `source` is used
+ * as it is.
+ */
+export function trustedFixtureCopy(source: string, prefix = 'hkdfguard-fixtures-'): string {
+  let root: string;
+  if (process.platform === 'linux') {
+    const linux = linuxKeyFileRoot().root;
+    if (linux === undefined) return source;
+    root = linux;
+  } else {
+    root = tmpdir();
+  }
+  const directory = realpathSync.native(mkdtempSync(join(root, prefix)));
+  process.once('exit', () => rmSync(directory, { recursive: true, force: true }));
+  cpSync(source, directory, { recursive: true });
   return directory;
 }

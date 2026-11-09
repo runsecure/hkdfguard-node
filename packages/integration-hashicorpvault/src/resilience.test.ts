@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { KeyFileTrust } from '@runsecure/hkdfguard-securefile';
-import { capturingLogger, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
+import { capturingLogger, trustedFixtureCopy, windowsCurrentUserSid } from '@runsecure/hkdfguard-test-support';
 import { VaultRedirectError, VaultResponseError } from './client-errors.js';
 import { VaultClient } from './client.js';
 import { DROP, harness, makeProtector, TOKEN, type Harness } from './fake-vault.test-support.js';
@@ -215,7 +215,9 @@ describe('VaultClient read-your-writes', () => {
 });
 
 describe('VaultClient TLS', () => {
-  const fixture = (name: string) => join(__dirname, '..', 'test-fixtures', name);
+  // A private copy: the checkout's folder may not pass the trusted-file checks (see trustedFixtureCopy).
+  const fixtures = trustedFixtureCopy(join(__dirname, '..', 'test-fixtures'));
+  const fixture = (name: string) => join(fixtures, name);
 
   async function tlsServer(): Promise<{ port: number; close(): void }> {
     const server = createServer({ key: readFileSync(fixture('server.key')), cert: readFileSync(fixture('server.pem')) }, (_request, response) => {
@@ -228,17 +230,20 @@ describe('VaultClient TLS', () => {
 
   it("trusts Vault's CA given in the TLS options", async () => {
     const server = await tlsServer();
-    const client = new VaultClient(makeProtector(), {
-      address: `https://127.0.0.1:${server.port}`,
-      // The fixture belongs to the account running the tests: trusted here, besides administrators.
-      tls: { serverCertificateFile: fixture('ca.pem'), serverName: 'vault.test', fileTrust: process.platform === 'win32'
-        ? new KeyFileTrust({ windowsPrincipals: [windowsCurrentUserSid()] })
-        : new KeyFileTrust({ unixUserIds: [process.geteuid!()], unixGroupIds: [process.getegid!()] }) },
-    });
+    let client: VaultClient | undefined;
     try {
+      // Inside the try: should the client refuse its options, the server still closes and the
+      // test fails, rather than the server holding the test process open.
+      client = new VaultClient(makeProtector(), {
+        address: `https://127.0.0.1:${server.port}`,
+        // The fixture belongs to the account running the tests: trusted here, besides administrators.
+        tls: { serverCertificateFile: fixture('ca.pem'), serverName: 'vault.test', fileTrust: process.platform === 'win32'
+          ? new KeyFileTrust({ windowsPrincipals: [windowsCurrentUserSid()] })
+          : new KeyFileTrust({ unixUserIds: [process.geteuid!()], unixGroupIds: [process.getegid!()] }) },
+      });
       assert.equal((await client.read('a'))?.data?.tls?.asBoolean(), true);
     } finally {
-      client.close();
+      client?.close();
       server.close();
     }
   });
@@ -246,15 +251,16 @@ describe('VaultClient TLS', () => {
   it('refuses an untrusted certificate without retrying', async () => {
     const server = await tlsServer();
     let attempts = 0;
-    const client = new VaultClient(makeProtector(), {
-      address: `https://127.0.0.1:${server.port}`, requestTimeoutMs: 10_000,
-      retry: { retryWaitMinMs: 1, retryWaitMaxMs: 1, checkRetry: (status, failure) => { attempts++; return defaultRetryPolicy(status, failure); } },
-    });
+    let client: VaultClient | undefined;
     try {
+      client = new VaultClient(makeProtector(), {
+        address: `https://127.0.0.1:${server.port}`, requestTimeoutMs: 10_000,
+        retry: { retryWaitMinMs: 1, retryWaitMaxMs: 1, checkRetry: (status, failure) => { attempts++; return defaultRetryPolicy(status, failure); } },
+      });
       await assert.rejects(client.read('a'), (error: NodeJS.ErrnoException) => typeof error.code === 'string');
       assert.equal(attempts, 1);
     } finally {
-      client.close();
+      client?.close();
       server.close();
     }
   });
