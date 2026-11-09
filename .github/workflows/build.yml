@@ -3,7 +3,7 @@
 # "the build", not two.
 #
 # Runs scripts/check.sh - the same script a developer runs - on each supported OS: a clean npm ci
-# (which compiles the native add-ons with that OS's C toolchain - securefile's on Windows only,
+# (which compiles the native add-ons with that OS's C toolchain - securefile's everywhere,
 # options-certificate's on Windows and macOS), a forced build that type-checks every platform's loader, every package's tests, npm audit of the
 # runtime dependencies, and a dry-run pack of every published package. The native round trips are
 # reported as skipped on GitHub's runners, which have no HkdfGuard native library installed; a

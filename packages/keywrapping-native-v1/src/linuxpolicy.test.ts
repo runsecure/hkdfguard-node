@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { NotInstalledError, UnsupportedPlatformError, UntrustedError } from './errors.js';
 import {
   LINUX_MAX_SYMBOLIC_LINKS, linuxCandidatePaths, linuxChoosePath, linuxListingEnvironment, linuxParentOf, linuxParseListing,
-  linuxReadEnvironment, linuxResolveTrusted, linuxVerifyDependencies, linuxVerifyEnvironment, linuxVerifyListing,
+  linuxReadEnvironment, linuxResolveTrusted, linuxVerifyDependencies, linuxVerifyEnvironment, linuxVerifyListing, linuxVerifyPreloaded,
   linuxVerifyLoadedImage,
 } from './linuxpolicy.js';
 import { PROBE_EXPORT } from './macpolicy.js';
@@ -131,7 +131,8 @@ describe('Linux environment', () => {
   it("collects the linker variables' initial and current values", () => {
     const values = linuxReadEnvironment({ LD_LIBRARY_PATH: '/now', LD_PRELOAD: '/same.so' },
       block('PATH=/usr/bin', 'LD_LIBRARY_PATH=/at/exec', 'LD_PRELOAD=/same.so', 'LD_AUDIT=/a.so=b', '=junk', 'NOEQUALS'));
-    assert.deepEqual(Object.fromEntries(values), { LD_LIBRARY_PATH: ['/at/exec', '/now'], LD_PRELOAD: ['/same.so'], LD_AUDIT: ['/a.so=b'] });
+    assert.deepEqual(Object.fromEntries(values),
+      { LD_LIBRARY_PATH: ['/at/exec', '/now'], LD_PRELOAD: ['/same.so'], LD_AUDIT: ['/a.so=b'], LD_PROFILE: [], LD_DYNAMIC_WEAK: [] });
     assert.deepEqual(linuxReadEnvironment({ LD_PRELOAD: 'x.so' }, undefined).get('LD_PRELOAD'), ['x.so']);
   });
 
@@ -159,6 +160,29 @@ describe('Linux environment', () => {
       ['LD_AUDIT', '/home/dev/lib/libtss2-esys.so.0'], ['LD_AUDIT', 'lib/evil.so']] as const) {
       untrusted(() => verifyEnv(standardHost(), variable, value), variable);
     }
+  });
+
+  it('refuses LD_PROFILE and LD_DYNAMIC_WEAK, set now or at startup, whatever their value', () => {
+    for (const variable of ['LD_PROFILE', 'LD_DYNAMIC_WEAK']) {
+      untrusted(() => verifyEnv(standardHost(), variable, 'libhkdfguard.so.1'), variable, 'Unset');
+      untrusted(() => linuxVerifyEnvironment(linuxReadEnvironment({}, block(`${variable}=1`)), () => undefined), variable);
+      untrusted(() => linuxVerifyEnvironment(linuxReadEnvironment({ [variable]: '1' }, undefined), () => undefined), variable);
+      verifyEnv(standardHost(), variable, ''); // set but empty is unset, as the linker treats it
+    }
+  });
+
+  it("checks where each preloaded bare name was actually loaded from, passing over one that isn't loaded", () => {
+    const loaded = new Map([['libjemalloc.so.2', `${LIB_DIR}/libjemalloc.so.2`], ['libevil.so', '/home/dev/lib/libevil.so']]);
+    const trusted = (path: string) => {
+      if (path.startsWith('/home/')) throw new UntrustedError(`'${path}' is writable by others.`);
+      return path;
+    };
+    const checked: string[] = [];
+    const loadedPathOf = (name: string) => { checked.push(name); return loaded.get(name) ?? null; };
+    linuxVerifyPreloaded(new Map([['LD_PRELOAD', ['libjemalloc.so.2 libmissing.so:/usr/lib/x86_64-linux-gnu/libc.so.6']]]), loadedPathOf, trusted);
+    assert.deepEqual(checked, ['libjemalloc.so.2', 'libmissing.so'], 'a name with a path was checked before loading');
+    untrusted(() => linuxVerifyPreloaded(new Map([['LD_PRELOAD', ['libjemalloc.so.2', 'libevil.so']]]), loadedPathOf, trusted),
+      'libevil.so', '/home/dev/lib/libevil.so', 'unloaded');
   });
 
   it('refuses a location that cannot be examined, keeping the cause', () => {
@@ -234,11 +258,18 @@ describe("Linux dynamic linker's list mode", () => {
     untrusted(() => linuxParseListing('lib', '\tlibx.so => relative/libx.so (0x1000)\n'), 'not an absolute path');
   });
 
-  it('runs with only the startup LD_LIBRARY_PATH and LD_PRELOAD', () => {
-    const initial = new TextEncoder().encode('HOME=/root\0LD_LIBRARY_PATH=/opt/lib\0LD_AUDIT=/opt/audit.so\0PATH=/usr/bin\0LD_PRELOAD=/opt/pre.so\0');
-    assert.deepEqual(linuxListingEnvironment(initial), { LD_LIBRARY_PATH: '/opt/lib', LD_PRELOAD: '/opt/pre.so' });
+  it('runs with only the startup LD_LIBRARY_PATH, LD_PRELOAD and GLIBC_TUNABLES', () => {
+    const initial = new TextEncoder().encode('HOME=/root\0LD_LIBRARY_PATH=/opt/lib\0LD_AUDIT=/opt/audit.so\0PATH=/usr/bin\0LD_PRELOAD=/opt/pre.so\0'
+      + 'GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX2\0');
+    assert.deepEqual(linuxListingEnvironment(initial, { LD_LIBRARY_PATH: '/changed/since' }),
+      { LD_LIBRARY_PATH: '/opt/lib', LD_PRELOAD: '/opt/pre.so', GLIBC_TUNABLES: 'glibc.cpu.hwcaps=-AVX2' });
     assert.deepEqual(linuxListingEnvironment(undefined), {});
     assert.deepEqual(linuxListingEnvironment(new Uint8Array(0)), {});
+  });
+
+  it("runs with the current values when the startup environment can't be read, never with none", () => {
+    assert.deepEqual(linuxListingEnvironment(undefined, { LD_LIBRARY_PATH: '/opt/lib', LD_AUDIT: '/opt/a.so', GLIBC_TUNABLES: 't=1', HOME: '/root' }),
+      { LD_LIBRARY_PATH: '/opt/lib', GLIBC_TUNABLES: 't=1' });
   });
 
   it('refuses the first untrusted path', () => {

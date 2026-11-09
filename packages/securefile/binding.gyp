@@ -5,6 +5,9 @@
       "sources": ["native/hkdfguard_securefile.c"],
       "cflags": ["-Wall", "-Wextra", "-Werror", "-fstack-protector-strong", "-D_FORTIFY_SOURCE=2"],
       "conditions": [
+        ["OS=='mac'", {
+          "xcode_settings": { "OTHER_CFLAGS": ["-Wall", "-Wextra", "-Werror", "-fstack-protector-strong"] }
+        }],
         ["OS=='win'", {
           "msvs_settings": {
             "VCCLCompilerTool": { "WarningLevel": 4, "WarnAsError": "true" },

@@ -18,7 +18,8 @@ export interface KeyFileTrustOptions {
   /**
    * Linux and macOS group ids whose members may write a key file or a directory above it: a
    * group-writable file or directory is refused unless its group is listed. Writable by others is
-   * refused whatever is listed.
+   * refused whatever is listed. An access control list may let write only these groups and
+   * {@link unixUserIds}' users (and root); one letting anyone else write refuses the path.
    */
   readonly unixGroupIds?: Iterable<number>;
 }

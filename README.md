@@ -30,11 +30,11 @@ implements no interface; the `pipeline-*` writers use `pipeline`, which uses `ca
 | `@runsecure/hkdfguard-keywrapping-googlekms` | HkdfGuard.KeyWrapping.GoogleKms | `KeyWrapper` over one symmetric Google Cloud KMS key, through `@google-cloud/kms` (`KeyManagementServiceClient`) |
 | `@runsecure/hkdfguard-integration-hashicorpvault` | HkdfGuard.Integration.HashiCorpVault | `VaultClient`, a vault-client-go port with tokens held only protected by the key ring; and what the Vault key wrapper and cache share - `VaultTlsOptions` (PEM, or PKCS#12 key stores whose passwords the key ring protects), the token sources, retries and address checks |
 | `@runsecure/hkdfguard-keywrapping-hashicorpvault` | HkdfGuard.KeyWrapping.HashiCorpVault | `KeyWrapper` over one key in a HashiCorp Vault transit secrets engine, through Node's own HTTP client |
-| `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through; `readTrustedFile`, `readTrustedFileSync` and `readTrustedFileWith`: the same location checks for any other file (secret files, certificates), with only a caller-chosen size limit, read at most one byte past it |
+| `@runsecure/hkdfguard-securefile` | HkdfGuard.SecureFile | `readTrustedKeyFile`: the native library's key-file checks in TypeScript, for key wrappers with no native library to read through; `readTrustedFile`, `readTrustedFileSync` and `readTrustedFileWith`: the same location checks for any other file (secret files, certificates), with only a caller-chosen size limit, read at most one byte past it. On Linux and macOS each path's access control list is checked as well as its permission bits, through the package's own add-on, compiled at install on every platform |
 | `@runsecure/hkdfguard-cryptoprovider-aesgcm256` | HkdfGuard.CryptoProvider.AesGcm256 | The AES-256-GCM `CryptoProviderFactory` and `PipelineDataProtector` (whose `writeDek` writes its key to the wrap tool's stdin from a buffer zeroed once written) |
 | `@runsecure/hkdfguard-dek` | HkdfGuard.DataEncryptionKey, HkdfGuard.Options | Key rings with rotation, data protectors, the stored format, `buildKeyRing`, and options read from an `appsettings.json` section |
 | `@runsecure/hkdfguard-cache` | HkdfGuard.Cache | Protected caches, pull-through `CacheSource`s and collections; `FilePerSecretCache` over a trusted local folder of one already-encrypted file per secret, each read through `readTrustedFile` on its first lookup and cached still encrypted; `RemoteSecretCache`, `SecretValueSink`, `SecretJsonBody` for caches over a secret store. Depends on `securefile` |
-| `@runsecure/hkdfguard-cache-jsonsecretsfile` | HkdfGuard.Cache.JsonSecretsFile | `JsonSecretsFileReadOnlyCache` over one trusted JSON file holding every secret, as a pipeline's `writeJsonSecrets` writes it: a single object mapping each secret's name to its already-encrypted value. The whole file is read through `readTrustedFile` on the first lookup, every value authenticated under its name (any failure refuses the whole file, which is read again next time), and the values kept still encrypted; names match ignoring ASCII case and follow `FilePerSecretCache`'s name rule. Depends on `cache` and `securefile` |
+| `@runsecure/hkdfguard-cache-jsonsecretsfile` | HkdfGuard.Cache.JsonSecretsFile | `JsonSecretsFileReadOnlyCache` over one trusted JSON file holding every secret, as a pipeline's `writeJsonSecrets` writes it: a single object mapping each secret's name to its already-encrypted value. The whole file is read through `readTrustedFile` on the first lookup, every value authenticated under its name (any failure refuses the whole file until it changes, or for 30 seconds), and the values kept still encrypted; names match ignoring ASCII case and follow `FilePerSecretCache`'s name rule. Depends on `cache` and `securefile` |
 | `@runsecure/hkdfguard-cache-awssecretsmanager` | HkdfGuard.Cache.AwsSecretsManager | `AwsSecretsManagerSecretCache` over AWS Secrets Manager, through the application's `SecretsManagerClient` |
 | `@runsecure/hkdfguard-cache-azurekeyvault` | HkdfGuard.Cache.AzureKeyVault | `AzureKeyVaultSecretCache` over Azure Key Vault secrets, through `@azure/keyvault-secrets` |
 | `@runsecure/hkdfguard-cache-googlesecretmanager` | HkdfGuard.Cache.GoogleSecretManager | `GoogleSecretManagerSecretCache` over Google Cloud Secret Manager, through a `SecretManagerServiceClient` |
@@ -111,9 +111,24 @@ macOS, the dynamic linker's environment, what would be and what was actually loa
 and is tested on every platform. On Linux, before loading, the process's own dynamic linker is asked
 in list mode (`ld.so --list`, what `ldd` uses) where it would find every library
 `libhkdfguard.so.1` pulls in; each must pass the same ownership checks, so a dependency found
-somewhere writable is refused before any of its code runs. The Linux library is not
+somewhere writable is refused before any of its code runs. The listing runs with the
+`LD_LIBRARY_PATH`, `LD_PRELOAD` and `GLIBC_TUNABLES` the process started with, so it searches
+where `dlopen` will; `LD_PROFILE` and `LD_DYNAMIC_WEAK`, which change how symbols are bound and
+have no production use, refuse the load. After loading, each object `LD_PRELOAD` named without a
+path must have been found in a trusted location. The Linux library is not
 content-pinned: verify a release with Sigstore/cosign (`gh attestation verify`) when you install it,
-and the loader enforces path integrity from there.
+and the loader enforces path integrity from there. On macOS, any `DYLD_LIBRARY_PATH`,
+`DYLD_FALLBACK_LIBRARY_PATH` or `DYLD_FALLBACK_FRAMEWORK_PATH` refuses the load, as dyld would
+look in them for the library's dependencies as well as for the library.
+
+What the loader verifies is what the library links against - its import table and dependency
+closure - and what was actually loaded for it. A library the native library itself loads later, by
+name (`LoadLibraryExW` on Windows, `dlopen` on Linux, such as a TPM transport module), is found by
+the operating system's own search, which these checks can't see in advance. So each native release
+must keep those loads to trusted locations: on Windows, `HkdfGuard.dll` linked with
+`/DEPENDENTLOADFLAG:0x800` (System32 only), as this package's add-on is (the 0.9.1 DLL isn't yet;
+its runtime loads are the C runtime's, of system DLLs); on Linux, its transport modules from root's
+library directories.
 On macOS the per-user install, `~/.hkdfguard/v1`, is loaded only when there is no system-wide one
 and the application has called `allowMacUserInstall()` before first using the library: it is
 verified by its path and then loaded by it, in a folder the user can write, so another process of
@@ -446,7 +461,8 @@ The whole file is read through `readTrustedFile` on the first lookup, under the 
 and every value in it is authenticated under its name before any is kept: one that fails, names a
 key version the ring doesn't hold, or a file that isn't exactly that object (an
 `InvalidSecretDataError`: a name that isn't a secret's name or appears twice in any case, a value
-that isn't a non-empty string) refuses the whole file, which is read again on the next lookup.
+that isn't a non-empty string) refuses the whole file. The refusal answers every lookup until the
+file changes (its identity, size or times) or 30 seconds pass, then the file is read again.
 Names follow `FilePerSecretCache`'s rule and match ignoring ASCII case; a missing file reports every
 secret missing, and isn't remembered. A file over 1 MiB (`maxFileLength`) is refused with a
 `KeyFileError` `ERR_HKDFGUARD_FILE_TOO_LARGE`. Concurrent lookups share one load.

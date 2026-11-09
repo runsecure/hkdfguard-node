@@ -3,9 +3,9 @@ import { constants as bufferConstants } from 'node:buffer';
 import { win32 } from 'node:path';
 import { InvalidArgumentError, wipe } from '@runsecure/hkdfguard-abstractions';
 import { FILE_TOO_LARGE, KeyFileError, UnsupportedPlatformError } from './errors.js';
-import { windowsAddon, type OpenFileHandle, type WindowsAddon } from './native.js';
+import { unixAddon, windowsAddon, type OpenFileHandle, type WindowsAddon } from './native.js';
 import { KeyFileTrust } from './trust.js';
-import { readLink, resolveTrusted, statusOrUndefined, untrusted as unixUntrusted } from './unix.js';
+import { aclWriters, readLink, resolveTrusted, statusOrUndefined, untrusted as unixUntrusted } from './unix.js';
 import {
   DriveType, GUARDED_RIGHTS, GUARDED_ROOT_RIGHTS, trustedPrincipals, verifyFinalPath, verifyNotReparsePoint, verifyPathForm, verifyTrustedOnly,
   type WinSecurity,
@@ -287,7 +287,8 @@ function withUnixFile<T>(path: string, trust: KeyFileTrust, use: (file: TrustedF
     const workingDirectory = process.cwd();
     absolute = workingDirectory.endsWith('/') ? workingDirectory + path : `${workingDirectory}/${path}`;
   }
-  const resolved = resolveTrusted(absolute, trust, statusOrUndefined, readLink);
+  const addon = unixAddon(); // loaded first: no file is trusted unless its ACL can be read
+  const resolved = resolveTrusted(absolute, trust, statusOrUndefined, readLink, (p) => aclWriters(p, addon));
 
   // resolved holds no symbolic link, so O_NOFOLLOW changes nothing for a file that passed; it only
   // makes certain the last component is still not one when it is opened. (libuv adds O_CLOEXEC.)

@@ -37,7 +37,50 @@ export interface WindowsAddon {
   accountName(sid: string): string | null;
 }
 
+/** One entry of a macOS extended ACL, as native/hkdfguard_securefile.c reads it. */
+export interface MacAclEntry {
+  /** An allow entry (true) or a deny entry. */
+  readonly allow: boolean;
+  /** Whether it applies only to what is created inside a folder, never the folder itself. */
+  readonly inheritOnly: boolean;
+  /** Whom it names: a user or group id, or 'unknown' (id -1) for a principal that doesn't resolve to one. */
+  readonly kind: 'user' | 'group' | 'unknown';
+  readonly id: number;
+  /** The write rights it names, one bit each, in MAC_WRITE_RIGHTS' order. */
+  readonly rights: number;
+}
+
+/** What native/hkdfguard_securefile.c exports on Linux and macOS: a path's ACL, as facts. */
+export interface UnixAddon {
+  /** Linux: the raw system.posix_acl_access attribute of the path itself, null for none, or the errno. */
+  posixAcl?(path: string): Uint8Array | null | number;
+  /** macOS: the entries of the path's own extended ACL, [] for none, or the errno. */
+  extendedAcl?(path: string): MacAclEntry[] | number;
+}
+
 let addon: WindowsAddon | undefined;
+let unix: UnixAddon | undefined;
+
+/**
+ * The compiled add-on on Linux and macOS, loaded on first use, for reading ACLs, which Node's fs
+ * can't. Built by node-gyp when the package is installed; a build that failed (no C toolchain) is
+ * reported here, and no file is trusted without it.
+ */
+export function unixAddon(): UnixAddon {
+  if (unix === undefined) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      unix = require('../build/Release/hkdfguard_securefile.node') as UnixAddon;
+    } catch (error) {
+      throw new UnsupportedPlatformError(
+        'The native add-on of @runsecure/hkdfguard-securefile is not built. It reads access control lists, which Node can\'t, and is compiled at '
+        + 'install by node-gyp, which needs Python 3 and a C compiler (build-essential on Debian and Ubuntu, the Xcode command line tools on '
+        + 'macOS); install them and run "npm rebuild @runsecure/hkdfguard-securefile".',
+        { cause: error });
+    }
+  }
+  return unix;
+}
 
 /**
  * The compiled add-on, loaded on first use - Windows only. It is built from this package's own C

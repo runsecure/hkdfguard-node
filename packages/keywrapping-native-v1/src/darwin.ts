@@ -1,4 +1,4 @@
-import { closeSync, existsSync, lstatSync, openSync, readSync } from 'node:fs';
+import { closeSync, lstatSync, openSync, readSync } from 'node:fs';
 import { constants } from 'node:os';
 import { UntrustedError } from './errors.js';
 import { NativeKmsLibrary } from './library.js';
@@ -49,7 +49,7 @@ export function loadDarwinLibrary(allowUserInstall: boolean): NativeKmsLibrary {
   macVerifyLocation(path, lstatStatus, isSystem ? [0] : [0, process.geteuid!()]);
   macVerifySignature(path, native.checkCodeSignature!);
   macRequireMinimumVersion(path, readStart(path));
-  macRefuseShadowing((name) => process.env[name], existsSync);
+  macRefuseShadowing((name) => process.env[name]);
 
   // dyld may still map a different file than the path asks for, so the loaded image is checked and,
   // if it isn't the verified file, unloaded. The library's own dependencies are absolute system paths.

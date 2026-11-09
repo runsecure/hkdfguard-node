@@ -11,10 +11,12 @@
  * parser and zeroes them once it returns. {@link KeyFileTrust} says who, besides the operating
  * system's administrators, may have written the file, for both. It runs on Windows, Linux and Apple
  * silicon Macs with no native HkdfGuard library installed: on Linux and macOS the checks are Node's own fs calls
- * (lstat, readlink, open with O_NOFOLLOW, fstat); on Windows they are Win32 calls - owner and DACL,
- * reparse points, final path, drive type - made through this package's own small add-on
- * (native/hkdfguard_securefile.c), compiled by node-gyp when the package is installed on Windows.
- * Nothing is compiled on Linux or macOS.
+ * (lstat, readlink, open with O_NOFOLLOW, fstat) and each path's access control list - a POSIX ACL
+ * on Linux, an extended ACL on macOS, either of which can let accounts write that the permission
+ * bits don't show; on Windows they are Win32 calls - owner and DACL, reparse points, final path,
+ * drive type. What Node can't do is done by this package's own small add-on
+ * (native/hkdfguard_securefile.c), compiled by node-gyp when the package is installed: it needs
+ * Python 3 and a C compiler on every platform.
  *
  * This package is standalone: it does not depend on, or load, the native KMS library or its loader.
  */

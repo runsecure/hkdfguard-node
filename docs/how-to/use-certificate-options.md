@@ -13,7 +13,9 @@ npm install @runsecure/hkdfguard-options-certificate
 ```
 
 On Windows and macOS this compiles the package's add-on with node-gyp, which needs Python 3 and a C
-compiler (Visual Studio Build Tools, or the Xcode command line tools). On Linux nothing is compiled.
+compiler (Visual Studio Build Tools, or the Xcode command line tools). On every platform it also
+compiles `@runsecure/hkdfguard-securefile`'s, which reads access control lists - on Linux, with
+`build-essential` or the distribution's equivalent.
 
 ## 2. Load the certificate
 

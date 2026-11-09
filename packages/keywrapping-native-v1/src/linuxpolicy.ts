@@ -14,10 +14,13 @@ import { ENOENT, ENOTDIR, FileType, PERM_GROUP_WRITE, PERM_OTHER_WRITE, type Fil
  *  2. Path integrity. Every directory walked through, every symbolic link followed, and the file
  *     itself must be owned by root, and no directory or file may be writable by group or others.
  *  3. Environment. Every location LD_LIBRARY_PATH, LD_PRELOAD or LD_AUDIT names must pass the same
- *     path checks, in both the environment the process started with and the current one.
+ *     path checks, in both the environment the process started with and the current one; and
+ *     LD_PROFILE and LD_DYNAMIC_WEAK, which change how the linker binds the library's symbols and
+ *     have no use in production, must be unset.
  *  4. What would be loaded. Before dlopen, the process's own dynamic linker is asked, in list mode
  *     (ld.so --list, the mechanism ldd uses), where it would find every object the library pulls
- *     in, under the LD_LIBRARY_PATH and LD_PRELOAD the process started with. List mode resolves
+ *     in, under the LD_LIBRARY_PATH, LD_PRELOAD and GLIBC_TUNABLES the process started with (the
+ *     tunables can choose which hardware-capability subdirectories are searched). List mode resolves
  *     exactly as dlopen would - RUNPATH, ld.so.cache and all - but runs none of the libraries'
  *     code, so every path it reports must pass the path checks before any of it can run here. A
  *     name it can't find refuses the load.
@@ -38,6 +41,10 @@ export const LINUX_MAX_SYMBOLIC_LINKS = 40;
 export const ENV_LIBRARY_PATH = 'LD_LIBRARY_PATH';
 export const ENV_PRELOAD = 'LD_PRELOAD';
 export const ENV_AUDIT = 'LD_AUDIT';
+/** Settings the linker reads at startup that decide which subdirectories it searches; passed to its list mode as they are. */
+export const ENV_TUNABLES = 'GLIBC_TUNABLES';
+/** Variables that change how the linker binds symbols, refused whatever their value: nothing in production sets them. */
+export const LINUX_REFUSED_VARIABLES: readonly string[] = ['LD_PROFILE', 'LD_DYNAMIC_WEAK'];
 
 /** Where the package may have installed the library for a process of `arch`, in the order tried. */
 export function linuxCandidatePaths(arch: string): string[] {
@@ -152,7 +159,7 @@ export function linuxResolveTrusted(path: string, expected: FileType, getStatus:
  * in the current one.
  */
 export function linuxReadEnvironment(current: Readonly<Record<string, string | undefined>>, initialEnvironment: Uint8Array | undefined): Map<string, string[]> {
-  const names = [ENV_LIBRARY_PATH, ENV_PRELOAD, ENV_AUDIT];
+  const names = [ENV_LIBRARY_PATH, ENV_PRELOAD, ENV_AUDIT, ...LINUX_REFUSED_VARIABLES];
   const values = new Map(names.map((n) => [n, [] as string[]]));
   if (initialEnvironment !== undefined) {
     for (const entry of new TextDecoder().decode(initialEnvironment).split('\0')) {
@@ -188,6 +195,13 @@ function verifyVariableLocation(variable: string, value: string, entry: string, 
 
 /** Requires every location the dynamic-linker variables could make it load from to pass the path checks. */
 export function linuxVerifyEnvironment(environment: ReadonlyMap<string, readonly string[]>, resolveTrusted: (path: string, expected: FileType) => void): void {
+  for (const variable of LINUX_REFUSED_VARIABLES) {
+    const value = (environment.get(variable) ?? []).find((v) => v !== '');
+    if (value !== undefined) {
+      throw new UntrustedError(`${variable} is set ('${value}'), which changes how the dynamic linker binds the HkdfGuard native library's `
+        + `symbols; refusing to load it. Unset ${variable}.`);
+    }
+  }
   // An empty LD_LIBRARY_PATH is ignored; an empty entry within one is the working directory.
   for (const value of environment.get(ENV_LIBRARY_PATH) ?? []) {
     if (value === '') continue;
@@ -197,7 +211,9 @@ export function linuxVerifyEnvironment(environment: ReadonlyMap<string, readonly
     }
   }
   // Objects to preload or audit: separated by spaces or colons (LD_PRELOAD), or colons (LD_AUDIT). A
-  // bare name is found by the same search as any dependency, which the check above covers.
+  // bare name can't be checked here - the linker searched for it at startup, in places (the
+  // executable's own RUNPATH among them) this can't reproduce - so where each preloaded one was
+  // found is checked once the library is loaded (linuxVerifyPreloaded).
   for (const [variable, separators] of [[ENV_PRELOAD, /[ :]/], [ENV_AUDIT, /:/]] as const) {
     for (const value of environment.get(variable) ?? []) {
       for (const entry of value.split(separators)) {
@@ -210,19 +226,25 @@ export function linuxVerifyEnvironment(environment: ReadonlyMap<string, readonly
 }
 
 /**
- * The whole environment the dynamic linker's list mode runs with: the LD_LIBRARY_PATH and
- * LD_PRELOAD the process started with (`initialEnvironment`, /proc/self/environ's block) - what
- * dlopen itself uses, since the linker reads them once at startup - and nothing else. LD_AUDIT is
- * left out: an audit module is code the list run would execute, and its locations were already
- * checked before this runs.
+ * The whole environment the dynamic linker's list mode runs with: the LD_LIBRARY_PATH, LD_PRELOAD
+ * and GLIBC_TUNABLES the process started with (`initialEnvironment`, /proc/self/environ's block) -
+ * what dlopen itself uses, since the linker reads them once at startup - and nothing else. When
+ * that block can't be read, the current environment's values stand in for it, rather than none.
+ * LD_AUDIT is left out: an audit module is code the list run would execute, and its locations were
+ * already checked before this runs.
  */
-export function linuxListingEnvironment(initialEnvironment: Uint8Array | undefined): Record<string, string> {
+export function linuxListingEnvironment(initialEnvironment: Uint8Array | undefined,
+  current: Readonly<Record<string, string | undefined>> = {}): Record<string, string> {
   const environment: Record<string, string> = {};
-  if (initialEnvironment === undefined) return environment;
+  const names = [ENV_LIBRARY_PATH, ENV_PRELOAD, ENV_TUNABLES];
+  if (initialEnvironment === undefined) {
+    for (const name of names) if (current[name] !== undefined) environment[name] = current[name];
+    return environment;
+  }
   for (const entry of new TextDecoder().decode(initialEnvironment).split('\0')) {
     const equals = entry.indexOf('=');
     const name = equals < 0 ? '' : entry.slice(0, equals);
-    if (name === ENV_LIBRARY_PATH || name === ENV_PRELOAD) environment[name] = entry.slice(equals + 1);
+    if (names.includes(name)) environment[name] = entry.slice(equals + 1);
   }
   return environment;
 }
@@ -278,6 +300,30 @@ export function linuxVerifyLoadedImage(expectedPath: string, loadedPath: string 
   }
   if (loadedPath !== expectedPath) {
     throw new UntrustedError(`The dynamic linker bound '${expectedPath}' to '${loadedPath}', a different file; it has been unloaded and the HkdfGuard native library was not loaded.`);
+  }
+}
+
+/**
+ * Requires each object LD_PRELOAD names without a path (`environment`'s values) and the process
+ * has loaded to be a trusted file - where the linker actually found it at startup, which no
+ * check before loading can see. A name that isn't loaded (the linker couldn't find it, and only
+ * warned) is passed over; a name with a path was checked before loading.
+ */
+export function linuxVerifyPreloaded(environment: ReadonlyMap<string, readonly string[]>, loadedPathOf: (soname: string) => string | null,
+  resolveTrusted: (path: string) => string): void {
+  for (const value of environment.get(ENV_PRELOAD) ?? []) {
+    for (const name of value.split(/[ :]/)) {
+      if (name === '' || name.includes('/') || name.includes('$')) continue;
+      const loaded = loadedPathOf(name);
+      if (loaded === null) continue;
+      try {
+        resolveTrusted(loaded);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new UntrustedError(`${ENV_PRELOAD} names '${name}', which this process loaded from '${loaded}' - not trusted: ${reason} Its code `
+          + `shares this process with the HkdfGuard native library, so the library has been unloaded. Preload it from a location only root can modify.`, { cause: error });
+      }
+    }
   }
 }
 

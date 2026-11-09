@@ -140,8 +140,9 @@ npm install @runsecure/hkdfguard-keywrapping-hashicorpvault @runsecure/hkdfguard
 
 The package has no third-party dependency. It brings `@runsecure/hkdfguard-securefile`, which on
 Windows compiles a small C add-on when it is installed - so installing on Windows needs Python 3 and
-Visual Studio Build Tools, as `@runsecure/hkdfguard-keywrapping-native-v1` does. Nothing is compiled
-on Linux or macOS.
+Visual Studio Build Tools, as `@runsecure/hkdfguard-keywrapping-native-v1` does. On Linux and macOS
+it compiles one too, to read access control lists, which Node can't: installing there needs Python 3
+and a C compiler (`build-essential` on Debian and Ubuntu, the Xcode command line tools on macOS).
 
 ```ts
 import { HashiCorpVaultTransitKeyWrapper } from '@runsecure/hkdfguard-keywrapping-hashicorpvault';
