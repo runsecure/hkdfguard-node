@@ -13,7 +13,7 @@ import { buildKeyRing, DefaultFormatProvider, type KeyRing } from '@runsecure/hk
 import { EncryptedConfigurationReader, mapLookup } from '@runsecure/hkdfguard-encryptedconfig';
 import { keyFileDirectory } from '@runsecure/hkdfguard-test-support';
 import {
-  KeyFileRefusedError, NativeKeyWrapperV1, NotInstalledError, Status, StatusError, UnsupportedPlatformError,
+  allowMacUserInstall, KeyFileRefusedError, NativeKeyWrapperV1, NotInstalledError, Status, StatusError, UnsupportedPlatformError,
 } from '@runsecure/hkdfguard-keywrapping-native-v1';
 import { otherServiceName, testServiceName } from './testservice.js';
 
@@ -22,6 +22,9 @@ import { otherServiceName, testServiceName } from './testservice.js';
 // the runtime keys a process generates for itself - the Node port of the .NET NativeEndToEndTests.
 
 const KEY_FILE_VERSION = 3;
+
+// A test host is a developer machine: on macOS its library may be the per-user install.
+allowMacUserInstall();
 
 const open: KeyRing[] = [];
 after(async () => {

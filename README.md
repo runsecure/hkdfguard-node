@@ -114,8 +114,12 @@ in list mode (`ld.so --list`, what `ldd` uses) where it would find every library
 somewhere writable is refused before any of its code runs. The Linux library is not
 content-pinned: verify a release with Sigstore/cosign (`gh attestation verify`) when you install it,
 and the loader enforces path integrity from there.
-On macOS the per-user location is found from the account database (the add-on's `getpwuid_r`),
-never `$HOME`, and the library must be at least version 0.9.0 - its `LC_ID_DYLIB` current version,
+On macOS the per-user install, `~/.hkdfguard/v1`, is loaded only when there is no system-wide one
+and the application has called `allowMacUserInstall()` before first using the library: it is
+verified by its path and then loaded by it, in a folder the user can write, so another process of
+the same user could swap in a library of its own between the two. It is for developer machines;
+production installs system-wide. Its location is found from the account database (the add-on's
+`getpwuid_r`), never `$HOME`, and the library must be at least version 0.9.0 - its `LC_ID_DYLIB` current version,
 covered by the signature - so an older signed release can't be planted in its place. On Windows
 the same 0.9.0 floor applies to `HkdfGuard.dll`'s signed version resource, and a DLL with none is
 refused.

@@ -145,7 +145,7 @@ describe('macOS home folder', () => {
 
   it('with no usable home, considers only the system install', () => {
     const probed: string[] = [];
-    assert.throws(() => macChoosePath((path) => { probed.push(path); return ENOENT; }, macHomeFromAccount(null)), NotInstalledError);
+    assert.throws(() => macChoosePath((path) => { probed.push(path); return ENOENT; }, macHomeFromAccount(null), true), NotInstalledError);
     assert.deepEqual(probed, [MAC_SYSTEM_PATH]);
   });
 });

@@ -1,6 +1,6 @@
 import { InvalidArgumentError, validateServiceName, wipe, type KeyWrapper } from '@runsecure/hkdfguard-abstractions';
 import { StatusError } from './errors.js';
-import { hostLibrary } from './host.js';
+import { allowMacUserInstall as allowUserInstall, hostLibrary } from './host.js';
 import { HARDEN_REQUIRE_PROTECTED_SIGNATURE, openKeyFile, type KmsLibrary } from './library.js';
 
 /** The length, in bytes, of every DEK the native library wraps and unwraps. */
@@ -170,6 +170,25 @@ const HARDENING_OPTIONS: ReadonlySet<string> = new Set(['requireProtectedSignatu
  * @throws StatusError if the hardening failed, or the process can't meet
  *   `requireProtectedSignature` - treat that as a reason not to start.
  */
+/**
+ * Lets this process load the HkdfGuard native library from the per-user install on macOS,
+ * ~/.hkdfguard/v1, when there is no system-wide one at /Library/Application Support/HkdfGuard/v1.
+ * Without it, a per-user install is refused with UntrustedError.
+ *
+ * For developer machines. The library is verified by its path and then loaded by it, so in a
+ * folder the user can write, another process of the same user could swap in a library of its own
+ * between the two - one that would be handed every DEK. The checks still catch a misplaced,
+ * unsigned or outdated library; they can't stop that process. Production hosts install
+ * system-wide, where only root can write.
+ *
+ * Call it before the first NativeKeyWrapperV1.create or hardenProcess. It does nothing on Windows
+ * and Linux, which have no per-user install, and nothing if the system-wide install is there.
+ * @throws HkdfGuardError (ERR_HKDFGUARD_INVALID_STATE) the library is already loaded, and this would have changed where from
+ */
+export function allowMacUserInstall(): void {
+  allowUserInstall();
+}
+
 export function hardenProcess(options: ProcessHardeningOptions = {}): void {
   hardenProcessWith(options, hostLibrary);
 }

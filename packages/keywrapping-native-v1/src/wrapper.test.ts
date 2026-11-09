@@ -2,13 +2,13 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { InvalidArgumentError, InvalidServiceNameError, isZero, MAX_WRAPPED_KEY_BYTES, type KeyWrapper } from '@runsecure/hkdfguard-abstractions';
 import { KeyFileRefusedError, NotInstalledError, StatusError, UntrustedError } from './errors.js';
-import { hostLibrary, swapLoaderForTesting } from './host.js';
+import { hostLibrary, isMacUserInstallAllowedForTesting, swapLoaderForTesting } from './host.js';
 import { HARDEN_REQUIRE_PROTECTED_SIGNATURE, NativeKmsLibrary, openKeyFile, type KmsLibrary } from './library.js';
 import type { LibraryHandle, NativeAddon } from './native.js';
 import {
   linuxStatusDescriptions, macStatusDescriptions, sharedStatusDescriptions, Status, windowsStatusDescriptions, WRAPPED_DEK_LENGTHS,
 } from './status.js';
-import { DEK_LENGTH, hardenProcess, hardenProcessForTests, NativeKeyWrapperV1, wrapperForTests } from './wrapper.js';
+import { allowMacUserInstall, DEK_LENGTH, hardenProcess, hardenProcessForTests, NativeKeyWrapperV1, wrapperForTests } from './wrapper.js';
 
 /** A KmsLibrary that records its calls and answers as configured. */
 class FakeLibrary implements KmsLibrary {
@@ -193,6 +193,29 @@ describe('hardenProcess', () => {
       assert.equal(loads, 0);
     } finally {
       restore();
+    }
+  });
+
+  it('allows the macOS per-user install only before the library is loaded, and never by default', () => {
+    const restore = swapLoaderForTesting(() => new FakeLibrary());
+    try {
+      assert.equal(isMacUserInstallAllowedForTesting(), false);
+      allowMacUserInstall();
+      allowMacUserInstall(); // again: nothing more
+      assert.equal(isMacUserInstallAllowedForTesting(), true);
+      hostLibrary();
+      allowMacUserInstall(); // loaded, but already allowed: it changes nothing, so it is no error
+    } finally {
+      restore();
+    }
+    const again = swapLoaderForTesting(() => new FakeLibrary());
+    try {
+      hostLibrary(); // loaded without it
+      assert.throws(() => allowMacUserInstall(), (e: unknown) => (e as { code?: string }).code === 'ERR_HKDFGUARD_INVALID_STATE'
+        && (e as Error).message.includes('before the first NativeKeyWrapperV1.create'));
+      assert.equal(isMacUserInstallAllowedForTesting(), false);
+    } finally {
+      again();
     }
   });
 

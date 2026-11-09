@@ -62,8 +62,11 @@ definite revocation stops the load; an offline host still starts.
 
 **macOS:** install the native package system-wide, to `/Library/Application Support/HkdfGuard/v1`.
 (A per-user install at `~/.hkdfguard/v1` is also loaded, but only when there is no system-wide
-one. Its home folder is your account's, from the account database; setting `$HOME` doesn't move
-it. Either install must be version 0.9.0 or later.)
+one and the application calls `allowMacUserInstall()` from
+`@runsecure/hkdfguard-keywrapping-native-v1` before it first uses the library. That is for a
+developer machine: another process of your account could replace a library in your home folder as
+it is loaded. Its home folder is your account's, from the account database; setting `$HOME` doesn't
+move it. Either install must be version 0.9.0 or later.)
 
 > **TODO (maintainer):** give the package's file name and where to download it.
 

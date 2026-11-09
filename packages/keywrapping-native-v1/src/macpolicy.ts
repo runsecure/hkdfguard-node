@@ -8,11 +8,15 @@ import { ENOENT, ENOTDIR, FileType, PERM_GROUP_WRITE, PERM_OTHER_WRITE, type Fil
  *
  *  1. Location. The system install is used whenever it exists; the per-user install,
  *     ~/.hkdfguard/v1, only when there is no system install - anything running as the user can
- *     write to the user's home, so a per-user file must never override a root-owned system one. If
- *     the system install exists but fails a check, loading fails; nor does it fall back when the
- *     system install merely can't be examined: only "nothing is there" counts as "not installed".
- *     The home folder comes from the account database (getpwuid), never $HOME, so whoever sets the
- *     process's environment can't choose where the library is loaded from.
+ *     write to the user's home, so a per-user file must never override a root-owned system one -
+ *     and only when the application has opted in (allowMacUserInstall). The per-user install can't
+ *     be defended against another process of the same user: the library is verified by its path
+ *     and then loaded by it, in a folder that user may write, so such a process could swap in a
+ *     library of its own between the two. It is for developer machines, where it guards against
+ *     mistakes. If the system install exists but fails a check, loading fails; nor does it fall
+ *     back when the system install merely can't be examined: only "nothing is there" counts as
+ *     "not installed". The home folder comes from the account database (getpwuid), never $HOME,
+ *     so whoever sets the process's environment can't choose where the library is loaded from.
  *  2. Path integrity. No component of the path, from the file up to /, may be a symbolic link, or
  *     writable by anyone but its owner - except that the system directories above an install
  *     (/, /Library, /Library/Application Support, /Users) may also be writable by the wheel or
@@ -114,17 +118,27 @@ function isPresent(path: string, probe: (path: string) => number, kind: string):
   throw new UntrustedError(`Could not tell whether the ${kind} HkdfGuard native library '${path}' exists (lstat failed with errno ${errno}); refusing to guess or to fall back to another location.`);
 }
 
-/** The system install if it exists, otherwise the user install. `probe` is lstat's errno (0 if present). */
-export function macChoosePath(probe: (path: string) => number, homeDirectory: string): { path: string; isSystem: boolean } {
+/**
+ * The system install if it exists, otherwise - when `allowUserInstall` - the user install.
+ * `probe` is lstat's errno (0 if present).
+ * @throws UntrustedError there is only a user install, and it isn't allowed
+ */
+export function macChoosePath(probe: (path: string) => number, homeDirectory: string, allowUserInstall: boolean): { path: string; isSystem: boolean } {
   if (isPresent(MAC_SYSTEM_PATH, probe, 'system-wide')) {
     return { path: MAC_SYSTEM_PATH, isSystem: true };
   }
   const user = macUserPath(homeDirectory);
   // Only an absolute home: a relative one would resolve against the working directory.
   if (homeDirectory.startsWith('/') && isPresent(user, probe, 'per-user')) {
+    if (!allowUserInstall) {
+      throw new UntrustedError(`The HkdfGuard native library is installed only for this user, at '${user}', which is loaded only when the `
+        + 'application opts in with allowMacUserInstall() before it first uses the library: another process of this user could replace '
+        + `that library as it is loaded, so it is for developer machines. Install it system-wide, at '${MAC_SYSTEM_PATH}', for production.`);
+    }
     return { path: user, isSystem: false };
   }
-  throw new NotInstalledError(`The HkdfGuard native KMS library is not installed. Install it at '${MAC_SYSTEM_PATH}' (system-wide) or '${user}' (this user); it is never loaded from anywhere else.`);
+  throw new NotInstalledError(`The HkdfGuard native KMS library is not installed. Install it at '${MAC_SYSTEM_PATH}' (system-wide), or - on a `
+    + `developer machine, with allowMacUserInstall() - at '${user}' (this user); it is never loaded from anywhere else.`);
 }
 
 /**

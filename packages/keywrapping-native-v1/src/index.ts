@@ -9,7 +9,9 @@
  * (Authenticode on Windows, Developer ID on macOS), the dynamic linker's environment and - after
  * loading - which file was actually mapped. On Linux, which has no platform code signature, a
  * release's authenticity is verified with Sigstore/cosign when the package is installed. Any failed
- * check throws UntrustedError; there is no fallback and no override.
+ * check throws UntrustedError; there is no fallback and no override. On macOS a per-user install,
+ * ~/.hkdfguard/v1, is used only when there is no system-wide one and the application has called
+ * allowMacUserInstall() first: it can't be defended against another process of the same user.
  *
  * Key files are read through the native library too (NativeKeyWrapperV1.readKeyFile, which
  * buildKeyRing uses), so its checks on who could have written a key file, and on what it holds,
@@ -18,6 +20,6 @@
  * The library is called through this package's own native add-on (native/hkdfguard_native.c),
  * compiled by node-gyp at install.
  */
-export { NativeKeyWrapperV1, DEK_LENGTH, hardenProcess, type ProcessHardeningOptions } from './wrapper.js';
+export { NativeKeyWrapperV1, DEK_LENGTH, allowMacUserInstall, hardenProcess, type ProcessHardeningOptions } from './wrapper.js';
 export { KeyFileRefusedError, NotInstalledError, StatusError, UnsupportedPlatformError, UntrustedError } from './errors.js';
 export { Status, WRAPPED_DEK_LENGTHS } from './status.js';
