@@ -17,7 +17,7 @@
     "!dist/**/*.test*"
   ],
   "scripts": {
-    "test": "node --test \"dist/**/*.test.js\""
+    "test": "node --test --test-timeout=120000 \"dist/**/*.test.js\""
   },
   "dependencies": {
     "@google-cloud/kms": "^6.3.0",

@@ -17,7 +17,7 @@
     "!dist/**/*.test*"
   ],
   "scripts": {
-    "test": "node --test \"dist/**/*.test.js\""
+    "test": "node --test --test-timeout=120000 \"dist/**/*.test.js\""
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1162.0",

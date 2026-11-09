@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "install": "node scripts/build-addon.js",
-    "test": "node --test \"dist/**/*.test.js\""
+    "test": "node --test --test-timeout=120000 \"dist/**/*.test.js\""
   },
   "dependencies": {
     "@runsecure/hkdfguard-abstractions": "0.9.1"
