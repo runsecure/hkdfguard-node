@@ -12,12 +12,14 @@
     },
     "./package.json": "./package.json"
   },
-  "files": ["dist", "!dist/**/*.test*"],
+  "files": [
+    "dist",
+    "!dist/**/*.test*"
+  ],
   "scripts": {
     "test": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@opentelemetry/api": "1.10.0",
     "@runsecure/hkdfguard-abstractions": "0.9.1",
     "@runsecure/hkdfguard-diagnostics": "0.9.1"
   },
@@ -26,5 +28,7 @@
     "@runsecure/hkdfguard-dek": "0.9.1",
     "@runsecure/hkdfguard-test-support": "0.0.0"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  }
 }

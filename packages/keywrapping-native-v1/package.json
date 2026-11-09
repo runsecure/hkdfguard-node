@@ -21,7 +21,7 @@
     "scripts"
   ],
   "scripts": {
-    "install": "node-gyp rebuild",
+    "install": "node scripts/build-addon.js",
     "test": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {

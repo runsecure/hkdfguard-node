@@ -20,8 +20,8 @@
     "test": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@azure/core-rest-pipeline": "1.25.0",
-    "@azure/keyvault-secrets": "4.12.0",
+    "@azure/core-rest-pipeline": "^1.25.0",
+    "@azure/keyvault-secrets": "^4.12.0",
     "@runsecure/hkdfguard-abstractions": "0.9.1",
     "@runsecure/hkdfguard-pipeline": "0.9.1"
   },

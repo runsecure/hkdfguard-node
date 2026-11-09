@@ -105,7 +105,13 @@ installing it needs Python 3 and a C compiler (Visual Studio Build Tools on Wind
 is linked with `/DEPENDENTLOADFLAG:0x800`, so the DLLs it imports - `wintrust`, `crypt32` and
 `version` among them, none a KnownDLL - resolve from System32 only: Node loads an add-on with
 `LOAD_WITH_ALTERED_SEARCH_PATH`, which would otherwise search its own folder first, letting a
-planted `wintrust.dll` decide whether `HkdfGuard.dll` is trusted. The add-on only
+planted `wintrust.dll` decide whether `HkdfGuard.dll` is trusted. All three add-ons (this one,
+securefile's and options-certificate's) are compiled and linked with Control Flow Guard
+(`/guard:cf`) on Windows, as well as ASLR and DEP, and on Linux with full RELRO (`-z relro -z now`),
+a non-executable stack, `-fstack-clash-protection` and, on x64, `-fcf-protection=full`; each
+Windows add-on's tests check its DependentLoadFlags and Control Flow Guard bits. Each package's
+install script runs node-gyp with the running Node.js, never through a shell or a `PATH` lookup.
+The add-on only
 loads and calls the library; every verification rule (path ownership, code signature on Windows and
 macOS, the dynamic linker's environment, what would be and what was actually loaded) is TypeScript,
 and is tested on every platform. On Linux, before loading, the process's own dynamic linker is asked
@@ -116,8 +122,14 @@ somewhere writable is refused before any of its code runs. The listing runs with
 where `dlopen` will; `LD_PROFILE` and `LD_DYNAMIC_WEAK`, which change how symbols are bound and
 have no production use, refuse the load. After loading, each object `LD_PRELOAD` named without a
 path must have been found in a trusted location. The Linux library is not
-content-pinned: verify a release with Sigstore/cosign (`gh attestation verify`) when you install it,
-and the loader enforces path integrity from there. On macOS, any `DYLD_LIBRARY_PATH`,
+content-pinned: the loader enforces where it and its dependencies come from, not what they contain,
+so verifying the packages when you install them is a required production step, not an optional
+one. Check the downloaded package's build-provenance attestation
+(`gh attestation verify <file> --repo <the native repository>`) before installing it, and the
+installed files against the package manager's checksums (`dpkg --verify hkdfguard libhkdfguard1`,
+or `rpm -V` on an RPM distribution) after, and again whenever the host's integrity is in question;
+both print nothing when every file matches. See
+[Getting started](docs/getting-started.md#1-install-the-native-package). On macOS, any `DYLD_LIBRARY_PATH`,
 `DYLD_FALLBACK_LIBRARY_PATH` or `DYLD_FALLBACK_FRAMEWORK_PATH` refuses the load, as dyld would
 look in them for the library's dependencies as well as for the library.
 
@@ -827,3 +839,11 @@ are compiled on each consumer's machine - so there is nothing to Authenticode-si
 header of `release.yml` says where that would go if prebuilt add-on binaries are ever shipped, and
 lists the one-time npm and GitHub setup publishing depends on. Third-party actions are pinned to
 full commit SHAs.
+
+The cloud SDKs and `@opentelemetry/api` are declared with caret ranges (`^`), so an application
+deduplicates them with its own copies and takes their security fixes without waiting for a
+HkdfGuard release; the `@runsecure/hkdfguard-*` packages depend on each other at exact versions.
+Pin what you deploy with your own lockfile. This repository's lockfile, every devDependency and the
+SHA-pinned actions are kept current by Dependabot (`.github/dependabot.yml`), which waits until a
+version has been public for seven days before proposing it, and groups each SDK's packages
+together; every proposal goes through CI and review.

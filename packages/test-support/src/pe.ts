@@ -8,6 +8,23 @@ import { readFileSync } from 'node:fs';
  * System32's. The ports of the .NET NativeImportSearchPathTests.
  */
 
+/** IMAGE_DLLCHARACTERISTICS_GUARD_CF: the image was linked with Control Flow Guard (/guard:cf). */
+export const IMAGE_DLLCHARACTERISTICS_GUARD_CF = 0x4000;
+
+/**
+ * The DllCharacteristics of the PE32+ image at path: its ASLR, DEP and Control Flow Guard bits among
+ * them. Throws for a file that isn't a PE32+ image.
+ */
+export function peDllCharacteristics(path: string): number {
+  const image = readFileSync(path);
+  if (image.readUInt16LE(0) !== 0x5a4d) throw new Error(`${path} isn't a PE image: no MZ header.`);
+  const pe = image.readUInt32LE(0x3c);
+  if (image.readUInt32LE(pe) !== 0x4550) throw new Error(`${path} isn't a PE image: no PE signature.`);
+  const optional = pe + 24;
+  if (image.readUInt16LE(optional) !== IMAGE_NT_OPTIONAL_HDR64_MAGIC) throw new Error(`${path} isn't a PE32+ image.`);
+  return image.readUInt16LE(optional + 70);
+}
+
 /** LOAD_LIBRARY_SEARCH_SYSTEM32: the DependentLoadFlags value that resolves imports from System32 only. */
 export const LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800;
 

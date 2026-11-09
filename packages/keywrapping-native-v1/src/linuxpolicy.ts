@@ -29,8 +29,10 @@ import { ENOENT, ENOTDIR, FileType, PERM_GROUP_WRITE, PERM_OTHER_WRITE, type Fil
  *     catches what list mode can't see: a dependency name the process had already bound to some
  *     other object before the library was loaded.
  *
- * The library is not content-pinned: a release's authenticity is verified with Sigstore/cosign when
- * the package is installed, so path integrity is what the loader enforces.
+ * The library is not content-pinned: path integrity is what the loader enforces. A release's
+ * authenticity is the installer's to verify - its build-provenance attestation before installing,
+ * dpkg --verify or rpm -V after - which the README and getting-started guide make a required
+ * production step.
  */
 
 export const LINUX_FILE_NAME = 'libhkdfguard.so.1';

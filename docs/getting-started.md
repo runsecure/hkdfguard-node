@@ -18,7 +18,8 @@ And, on either:
 - The HkdfGuard native package for your platform.
 
 Linux works the same way with its own paths and a TPM-backed KEK; see the
-[CLI reference](reference/cli.md#linux) for what is published so far.
+[CLI reference](reference/cli.md#linux) for what is published so far, and the Linux install
+check in step 1, which production hosts must not skip.
 
 ## How the pieces fit
 
@@ -76,6 +77,28 @@ Check that it installed, with the same requirement the library applies when it l
 codesign --verify --strict \
   -R='identifier "libhkdfguard" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "MFW3T8R8J3"' \
   "/Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib" && echo OK
+```
+
+**Linux:** install the `hkdfguard` and `libhkdfguard1` packages with your package manager.
+
+> **TODO (maintainer):** give the packages' file names and where to download them.
+
+On Linux the library isn't code-signed, and the native key wrapper checks only where it and its
+dependencies were loaded from: root-owned files, in folders only root can write. Nothing at load
+time checks what the files contain, so on a production host these checks are required, not
+optional. Before installing, check each downloaded package's build provenance:
+
+```sh
+gh attestation verify <package file> --repo <the native repository>
+```
+
+After installing, and again whenever you need to know the host hasn't been tampered with, check the
+installed files against the package manager's checksums. Each prints nothing when every file
+matches:
+
+```sh
+dpkg --verify hkdfguard libhkdfguard1   # Debian, Ubuntu
+rpm -V hkdfguard libhkdfguard1          # RPM distributions
 ```
 
 ## 2. Provision a KEK for your service
