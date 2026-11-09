@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, it, mock, type TestContext } from 'node:test';
 import { SpanStatusCode } from '@opentelemetry/api';
@@ -60,6 +60,12 @@ interface Fixture {
   writeRaw(json: string | Uint8Array): void;
 }
 
+// Each write's modification time, in seconds: a second later every time. The cache tells a rewritten
+// file from the one it refused by identity, size and times, and a rewrite of the same size in place
+// can land in the same tick of the file system's clock as the write before it - often, on a fast
+// Windows runner - leaving all of them unchanged, so the cache rightly keeps refusing it.
+let lastWriteTime = Math.floor(Date.now() / 1000);
+
 /** A fixture for `t`, or undefined - the test skipped, saying why - when this host has no trusted folder. */
 function fixture(t: TestContext, ring = ringWith(1)): Fixture | undefined {
   const folder = keyFileDirectory(t, 'hkdfguard-jsonsecrets-');
@@ -67,7 +73,11 @@ function fixture(t: TestContext, ring = ringWith(1)): Fixture | undefined {
   const trust = trustCurrentUser();
   const path = join(folder, 'secrets.json');
   const encrypt = (name: string, value: string) => ring.createProtector(configurationPurpose(name)).encrypt(value);
-  const writeRaw = (json: string | Uint8Array) => writeFileSync(path, json);
+  const writeRaw = (json: string | Uint8Array) => {
+    writeFileSync(path, json);
+    lastWriteTime++;
+    utimesSync(path, lastWriteTime, lastWriteTime);
+  };
   return {
     folder,
     path,
