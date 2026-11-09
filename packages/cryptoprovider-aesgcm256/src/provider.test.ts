@@ -8,7 +8,7 @@ import {
 import { EventNames, SpanNames } from '@runsecure/hkdfguard-diagnostics';
 import { capturingLogger, FakeKeyWrapper, useSpanRecorder } from '@runsecure/hkdfguard-test-support';
 import { AesGcmCryptoProvider, AesGcmCryptoProviderFactory, createProviderForTests, type AesGcmProviderOptions } from './provider.js';
-import { EncryptionBudget, OVERHEAD } from './session.js';
+import { budgetRegistrySizeForTests, EncryptionBudget, OVERHEAD } from './session.js';
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
 const kekDown = new Error('KEK unavailable');
@@ -376,6 +376,41 @@ describe('AesGcmCryptoProviderFactory', () => {
     } finally {
       await created.close();
       await ephemeral.close();
+    }
+  });
+
+  it('keeps no lasting budget for an ephemeral key, which nothing can reveal again', async () => {
+    const before = budgetRegistrySizeForTests();
+    for (let i = 0; i < 20; i++) {
+      // Each reveals a key of its own: the fake wrapper unwraps to fresh random bytes.
+      const ephemeral = await factory.createEphemeral(new FakeKeyWrapper(), { expirySeconds: 60 }) as AesGcmCryptoProvider;
+      encrypt(ephemeral, 'counted');
+      assert.equal(ephemeral.encryptionCount, 1, 'still counted, by the provider itself');
+      await ephemeral.close();
+    }
+    assert.equal(budgetRegistrySizeForTests(), before);
+  });
+
+  it('shares one budget between providers revealing the same key file, however many open and close', async () => {
+    const key = new Uint8Array(randomBytes(32));
+    const before = budgetRegistrySizeForTests();
+    const first = await factory.create(new FakeKeyWrapper(key), utf8('wrapped'), { expirySeconds: 60 }) as AesGcmCryptoProvider;
+    const second = await factory.create(new FakeKeyWrapper(key), utf8('wrapped'), { expirySeconds: 60 }) as AesGcmCryptoProvider;
+    try {
+      encrypt(first, 'one');
+      encrypt(second, 'two');
+      assert.deepEqual([first.encryptionCount, second.encryptionCount], [2, 2]);
+      assert.equal(budgetRegistrySizeForTests(), before + 1);
+    } finally {
+      await first.close();
+      await second.close();
+    }
+    // Closing them doesn't reset the count: a ring reopened later in this process starts from it.
+    const reopened = await factory.create(new FakeKeyWrapper(key), utf8('wrapped'), { expirySeconds: 60 }) as AesGcmCryptoProvider;
+    try {
+      assert.equal(reopened.encryptionCount, 2);
+    } finally {
+      await reopened.close();
     }
   });
 

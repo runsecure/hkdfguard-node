@@ -1,5 +1,5 @@
 import { randomFillSync } from 'node:crypto';
-import type { Writable } from 'node:stream';
+import { Transform, type Writable } from 'node:stream';
 import {
   ClosedError, configurationAad, InvalidArgumentError, KeyNotFoundError, wipe,
   type EncryptedFormatProvider, type PipelineDataProtector,
@@ -75,25 +75,30 @@ export class AesGcmPipelineDataProtector implements PipelineDataProtector {
   /**
    * Writes the key to `destination` as the wrap tool's `--dek-stdin` reads it: its base64 form as
    * ASCII, no line ending. Encoded straight from the key into a Buffer of its own - never through a
-   * string, nor the buffer {@link keyBase64} returns - which is zeroed once the stream's write calls
-   * back (or the call is aborted). Resolves once the stream has accepted the bytes; `destination`
-   * is left open. See PipelineDataProtector.writeDek.
-   * @throws TypeError (rejecting) destination isn't a Writable
+   * string, nor the buffer {@link keyBase64} returns - which is zeroed once the stream is done with
+   * it: its write called back, or the stream closed. An abort destroys `destination` first, so no
+   * more of the key is written, and still zeroes the buffer only once the stream lets go of it.
+   * Resolves once the stream has accepted the bytes; `destination` is left open. See
+   * PipelineDataProtector.writeDek.
+   * @throws TypeError (rejecting) destination isn't a Writable, or is a Transform (a PassThrough among
+   *   them), which hands the very buffer it is given to its reader, so zeroing it would zero what the
+   *   reader gets
    * @throws ClosedError (rejecting) the protector has been closed; nothing is written
    * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) destination has already ended or been destroyed
    */
   async writeDek(destination: Writable, signal?: AbortSignal): Promise<void> {
     if (!isWritable(destination)) throw new TypeError('destination must be a Writable stream.');
+    if (destination instanceof Transform) {
+      throw new TypeError("destination is a Transform (such as a PassThrough), which hands the key's buffer to its reader as it is: "
+        + 'it would read zeros once the buffer is zeroed. Write to the process\'s stdin, a socket or a file stream.');
+    }
     this.#requireOpen();
     signal?.throwIfAborted();
 
     const encoded = base64Bytes(this.#key);
     const ascii = Buffer.from(encoded.buffer, encoded.byteOffset, encoded.length);
-    try {
-      await writeChunks(destination, [ascii], signal, wipe);
-    } finally {
-      wipe(ascii);
-    }
+    // Zeroed by writeChunks, exactly once, when the stream is done with it - never sooner.
+    await writeChunks(destination, [ascii], signal, wipe);
   }
 
   encrypt(plaintext: Uint8Array | string, secretIdentifier: string): string {

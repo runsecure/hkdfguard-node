@@ -3,7 +3,8 @@ import {
   type CryptoProvider, type CryptoProviderFactory, type CryptoProviderOptions, type KeyWrapper,
 } from '@runsecure/hkdfguard-abstractions';
 import { AttributeNames, EventNames, HkdfGuardLog, HkdfGuardTelemetry, recordException, SpanNames, type Logger } from '@runsecure/hkdfguard-diagnostics';
-import { AesGcmSession, budgetFor, KEY_SIZE, OVERHEAD, type EncryptionBudget } from './session.js';
+import { quietly } from './quietly.js';
+import { AesGcmSession, budgetFor, EncryptionBudget, KEY_SIZE, OVERHEAD } from './session.js';
 
 /** The refresh interval range every provider accepts, in seconds. */
 export const MIN_EXPIRY_SECONDS = 1;
@@ -34,14 +35,6 @@ export interface ProviderInternals {
 
 type RevealOutcome = { kind: 'revealed'; session: AesGcmSession } | { kind: 'timedOut' } | { kind: 'shutdown' };
 
-/** Runs application code (its logger, its tracer) so that an exception from it can never decide whether the key stays in use. */
-function quietly(action: () => void): void {
-  try {
-    action();
-  } catch {
-    // Deliberately ignored: see above.
-  }
-}
 
 function validate(expirySeconds: number): void {
   if (!Number.isInteger(expirySeconds) || expirySeconds < MIN_EXPIRY_SECONDS || expirySeconds > MAX_EXPIRY_SECONDS) {
@@ -344,7 +337,14 @@ export class AesGcmCryptoProviderFactory implements CryptoProviderFactory {
     return AesGcmCryptoProvider.create(wrapper, wrapped, { ...options, logger: this.options.logger });
   }
 
-  /** Has `wrapper` generate and wrap a fresh DEK, then builds a provider revealing it. Bad arguments fail before anything is generated. */
+  /**
+   * Has `wrapper` generate and wrap a fresh DEK, then builds a provider revealing it. Bad arguments
+   * fail before anything is generated. Its encryptions are counted against a budget of its own -
+   * kept across its refreshes, as every provider's is - rather than one in the process-wide
+   * registry: the key is new, and only this provider holds what reveals it, so no other provider
+   * can share its count, and a registry entry would only outlive it. An application that rotates
+   * ephemeral keys would otherwise grow the registry by one entry a rotation, forever.
+   */
   async createEphemeral(wrapper: KeyWrapper, options: CryptoProviderOptions): Promise<CryptoProvider> {
     validate(options.expirySeconds);
     options.signal?.throwIfAborted();
@@ -355,6 +355,6 @@ export class AesGcmCryptoProviderFactory implements CryptoProviderFactory {
     if (!Number.isInteger(length) || length <= 0 || length > buffer.length) {
       throw new InvalidArgumentError(`Key wrapper reported a ${length}-byte wrapped key in a ${buffer.length}-byte buffer.`, 'ERR_HKDFGUARD_INVALID_LENGTH');
     }
-    return this.create(wrapper, buffer.slice(0, length), options);
+    return createWithInternals(wrapper, buffer.slice(0, length), { ...options, logger: this.options.logger }, { budget: new EncryptionBudget() });
   }
 }

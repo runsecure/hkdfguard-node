@@ -238,7 +238,7 @@ export abstract class SecretPipelineWriter implements SecretPipelineWriterContra
    * back the writes rather than the archive piling up in memory. Resolves once the stream has
    * accepted the end of the archive; `destination` is left open: end it afterwards.
    * @param destination where to write the archive: a process's standard input
-   * @param signal cancels the write; the destination then holds part of an archive - destroy it
+   * @param signal cancels the write: the destination, which may hold part of an archive, is destroyed
    * @throws TypeError (rejecting) destination isn't a Writable
    * @throws HkdfGuardError (rejecting; ERR_HKDFGUARD_INVALID_STATE) no pull has completed, or
    *   destination has already ended or been destroyed
